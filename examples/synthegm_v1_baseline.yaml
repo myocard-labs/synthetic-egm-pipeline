@@ -1,0 +1,67 @@
+# synthegm-generate-dataset — v1 baseline (clean dataset only).
+#
+# Project default for the Phase 1 synthetic training corpus: 100
+# simulations × 20 bipolar pairs = 2,000 traces, fibrosis density
+# sampled uniformly over [0, 0.5], local-density labelling at 2 mm /
+# 0.1 threshold, no inline noise mixing. Pair with
+# ``synthegm_v1_hybrid.yaml`` to add the IAFDB noise overlay in one
+# run, or run ``synthegm-mix`` separately against the clean output.
+#
+# Output: ../banks/synthegm_v1_baseline.classifier.h5
+
+dataset:
+  n_simulations: 100                       # 100 sims × 20 pairs = 2000 traces
+  master_seed: 42                          # reproducibility anchor; per-sim seeds derive from this
+  show_progress: true                      # tqdm bar; override with --no-progress
+
+backend:
+  type: finitewave                         # Phase 1: only 'finitewave'
+
+geometry:
+  type: patch_2d                           # Phase 1: only 'patch_2d'
+  size_mm: 40.0                            # 4 cm square (Sánchez 2021 patch scale)
+  dr_mm: 0.25                              # 0.25 mm; Finitewave default for AP
+  fiber_angle_rad: 0.0                     # fibers along +x
+  anisotropy_ratio: 3.0                    # CV_along / CV_across; atrial ~2-3:1
+
+substrate:
+  type: uniform_random_fibrosis            # Phase 1: only uniform-random
+  density_range: [0.0, 0.5]                # uniform; capped at 0.5 to stay below propagation failure
+  fraction_healthy: 0.3                    # force 30% of sims to density=0 exactly for class balance
+
+activation:
+  type: planar_edge                        # Phase 1: only planar-edge
+  fixed_edge: null                         # null = randomize per sim across all four edges
+
+electrodes:
+  type: centered_grid_2d                   # Phase 1: only centered-grid-2d
+  n_rows: 5                                # 5 rows of 5 electrodes
+  n_cols: 5                                # → 4 bipolar pairs per row × 5 rows = 20 pairs per sim
+  spacing_mm: 2.0                          # 2 mm intra-row spacing; matches IAFDB CS pairs / PentaRay
+  height_mm_range: [0.2, 1.0]              # per-sim height sampled uniformly; models contact-quality variation
+
+label_policy:
+  type: local_density                      # 'local_density' or 'global_density'
+  radius_mm: 2.0                           # bipolar receptive field; pair midpoint + radius
+  threshold: 0.1                           # local density > 0.1 → label 1 (fibrotic)
+  healthy_name: healthy                    # surfaces in ClassifierBank.labels dict
+  fibrotic_name: fibrotic
+
+run:
+  trace_duration_ms: 200.0                 # captures one full activation
+  output_fs_hz: 1000.0                     # matches IAFDB so synthetic + real are length-comparable
+  ap_time_unit_ms: 1.97                    # AP non-dimensional time → ms (calibrated 2026-06-10)
+  capture_oversample: 4                    # backend captures at 4× output rate; runner downsamples
+
+output:
+  classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
+  # clean_intermediate is unused when there's no inline mixer (the
+  # classifier_bank IS the clean bank in that case).
+  clean_intermediate: null
+  also_emit_synthetic_bank: false          # set true to also write a Pydantic SyntheticBank sibling
+  synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
+  description: >
+    Phase 1 baseline synthetic corpus — 100 sims, LocalDensityLabel(r=2mm, t=0.1),
+    uniform density sweep with 30% forced-healthy. No noise overlay.
+
+# No `mix:` block → write the clean ClassifierBank only.

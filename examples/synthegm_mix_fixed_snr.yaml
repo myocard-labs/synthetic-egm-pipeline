@@ -1,0 +1,36 @@
+# synthegm-mix — fixed SNR for ablation studies.
+#
+# Collapses ``snr_db_range`` to a single value so every trace gets the
+# same target SNR. Useful for studies that need to isolate the
+# classifier's behaviour at one operating point — e.g. a sweep over
+# fixed-SNR mixes at 5, 10, 15, 20, 25 dB to plot the classifier's
+# AUROC vs SNR curve.
+#
+# All other parameters identical to ``synthegm_mix.yaml``; the only
+# changes are ``snr_db_range`` and the output filename so each fixed
+# point gets its own hybrid bank.
+#
+# Run several copies of this config with different snr_db_range
+# values (e.g. ``[5.0, 5.0]``, ``[10.0, 10.0]``, ...) to build the
+# sweep. Bump master_seed per run to make the noise selection
+# independent across operating points.
+#
+# Output: ../banks/synthegm_v1_hybrid_snr15.classifier.h5
+
+input:
+  classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
+  noise_bank:      ../banks/iafdb_noise_v1.h5
+
+output:
+  classifier_bank: ../banks/synthegm_v1_hybrid_snr15.classifier.h5
+  also_emit_synthetic_bank: false
+  synthetic_bank: null
+
+mixer:
+  snr_db_range: [15.0, 15.0]               # collapsed to a single value → every trace gets 15 dB exactly
+  bandpass_clean: true
+  band_hz: [30.0, 300.0]
+  master_seed: 0
+  show_progress: true
+  description: >
+    Ablation point — every trace at SNR = 15 dB exactly.

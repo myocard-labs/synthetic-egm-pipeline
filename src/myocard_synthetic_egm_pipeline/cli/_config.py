@@ -1,0 +1,470 @@
+"""YAML config loading + per-CLI typed config builders.
+
+Two CLIs share this module:
+
+- ``synthegm-generate-dataset`` consumes a YAML config that pins every
+  knob of one N-simulation run (geometry, substrate, activation,
+  electrodes, label policy, backend, output, optional inline mixer).
+- ``synthegm-mix`` consumes a smaller YAML that pins one mixing run
+  against an already-written clean ClassifierBank.
+
+The shared helpers (``ConfigError``, ``load_yaml``, ``_required``,
+``_optional``, ``_resolve_path``) mirror the iafdb-pipeline convention:
+every path is resolved against the config file's directory; missing
+required fields raise a precise error; unknown ``type`` enum values
+fail loudly at load time rather than crashing the runner.
+
+Schema for both YAMLs is documented in the example configs under
+``examples/``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+
+# egm-signal owns the bandpass default; importing for the mixer block.
+from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ
+
+from myocard_synthetic_egm_pipeline.backends import RunConfig
+from myocard_synthetic_egm_pipeline.constants import (
+    AP_TIME_UNIT_MS,
+    DEFAULT_ANISOTROPY_RATIO,
+    DEFAULT_ELECTRODE_GRID_COLS,
+    DEFAULT_ELECTRODE_GRID_ROWS,
+    DEFAULT_ELECTRODE_HEIGHT_MM_RANGE,
+    DEFAULT_ELECTRODE_SPACING_MM,
+    DEFAULT_FIBROSIS_DENSITY_RANGE,
+    DEFAULT_OUTPUT_FS_HZ,
+    DEFAULT_PATCH_DR_MM,
+    DEFAULT_PATCH_SIZE_MM,
+    DEFAULT_TRACE_DURATION_MS,
+)
+from myocard_synthetic_egm_pipeline.mixer import DEFAULT_SNR_DB_RANGE, MixerConfig
+from myocard_synthetic_egm_pipeline.simulate import (
+    EDGES,
+    Edge,
+    GeometrySpec,
+    GlobalDensityLabel,
+    LabelPolicy,
+    LocalDensityLabel,
+    Patch2DGeometry,
+)
+
+
+class ConfigError(ValueError):
+    """Raised when a config file is malformed or missing required keys."""
+
+
+# ---------------------------------------------------------------------------
+# Generic helpers
+# ---------------------------------------------------------------------------
+
+
+def load_yaml(path: Path | str) -> dict[str, Any]:
+    """Load a YAML file into a dict.
+
+    Resolves the parent path into the returned dict under
+    ``_config_dir`` so subsequent relative paths in the doc resolve
+    against the YAML's directory (same convention iafdb-pipeline and
+    egm-classifier use).
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise ConfigError(f"Config file not found: {p}")
+    with p.open(encoding="utf-8") as f:
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"Config {p} did not parse as a YAML mapping at the top level.")
+    loaded["_config_dir"] = p.parent.resolve()
+    return loaded
+
+
+def _required(doc: dict[str, Any], *path: str) -> Any:
+    """Walk ``path`` into the nested dict; raise on any missing key."""
+    node: Any = doc
+    for k in path:
+        if not isinstance(node, dict) or k not in node:
+            dotted = ".".join(path)
+            raise ConfigError(f"Required config field missing: {dotted}")
+        node = node[k]
+    return node
+
+
+def _optional(doc: dict[str, Any], *path: str, default: Any = None) -> Any:
+    """Walk ``path`` into the nested dict; return ``default`` if missing."""
+    node: Any = doc
+    for k in path:
+        if not isinstance(node, dict) or k not in node:
+            return default
+        node = node[k]
+    return node
+
+
+def _resolve_path(value: str | None, config_dir: Path) -> Path | None:
+    """Resolve a YAML-supplied path against the config file's dir.
+
+    ``None`` / empty string returns ``None``. Absolute paths pass
+    through; relative paths resolve against ``config_dir``.
+    """
+    if value is None or value == "":
+        return None
+    p = Path(value)
+    return p if p.is_absolute() else (config_dir / p).resolve()
+
+
+def _required_path(doc: dict[str, Any], *path: str) -> Path:
+    """Variant of :func:`_required` that resolves the result as a path."""
+    cfg_dir: Path = doc["_config_dir"]
+    value = _required(doc, *path)
+    resolved = _resolve_path(str(value), cfg_dir)
+    if resolved is None:
+        dotted = ".".join(path)
+        raise ConfigError(f"Required path field is empty: {dotted}")
+    return resolved
+
+
+def _expect_range(value: Any, *, field_path: str) -> tuple[float, float]:
+    """Validate that ``value`` is a 2-element numeric list ``[lo, hi]``."""
+    if not (isinstance(value, list | tuple) and len(value) == 2):
+        raise ConfigError(f"{field_path} must be a two-element list [lo, hi]; got {value!r}.")
+    return float(value[0]), float(value[1])
+
+
+# ---------------------------------------------------------------------------
+# Strategy / policy / backend builders
+# ---------------------------------------------------------------------------
+
+
+def _build_geometry(doc: dict[str, Any]) -> GeometrySpec:
+    """Construct a :class:`GeometrySpec` from the ``geometry:`` block."""
+    block = _optional(doc, "geometry", default={}) or {}
+    g_type = str(_optional(block, "type", default="patch_2d"))
+    if g_type != "patch_2d":
+        raise ConfigError(
+            f"geometry.type must be 'patch_2d' for Phase 1; got {g_type!r}. "
+            "Future 3D geometries land alongside patch_2d in a later release."
+        )
+    return Patch2DGeometry(
+        size_mm=float(_optional(block, "size_mm", default=DEFAULT_PATCH_SIZE_MM)),
+        dr_mm=float(_optional(block, "dr_mm", default=DEFAULT_PATCH_DR_MM)),
+        fiber_angle_rad=float(_optional(block, "fiber_angle_rad", default=0.0)),
+        anisotropy_ratio=float(
+            _optional(block, "anisotropy_ratio", default=DEFAULT_ANISOTROPY_RATIO)
+        ),
+    )
+
+
+def _build_label_policy(doc: dict[str, Any]) -> LabelPolicy:
+    """Construct a :class:`LabelPolicy` from the ``label_policy:`` block."""
+    block = _optional(doc, "label_policy", default={}) or {}
+    p_type = str(_optional(block, "type", default="global_density"))
+    if p_type == "global_density":
+        return GlobalDensityLabel(
+            threshold=float(_optional(block, "threshold", default=0.1)),
+            healthy_name=str(_optional(block, "healthy_name", default="healthy")),
+            fibrotic_name=str(_optional(block, "fibrotic_name", default="fibrotic")),
+        )
+    if p_type == "local_density":
+        return LocalDensityLabel(
+            radius_mm=float(_optional(block, "radius_mm", default=2.0)),
+            threshold=float(_optional(block, "threshold", default=0.1)),
+            healthy_name=str(_optional(block, "healthy_name", default="healthy")),
+            fibrotic_name=str(_optional(block, "fibrotic_name", default="fibrotic")),
+        )
+    raise ConfigError(
+        f"label_policy.type must be 'global_density' or 'local_density'; got {p_type!r}."
+    )
+
+
+def _build_run_config(doc: dict[str, Any]) -> RunConfig:
+    """Construct a :class:`RunConfig` from the ``run:`` block."""
+    block = _optional(doc, "run", default={}) or {}
+    return RunConfig(
+        trace_duration_ms=float(
+            _optional(block, "trace_duration_ms", default=DEFAULT_TRACE_DURATION_MS)
+        ),
+        output_fs_hz=float(_optional(block, "output_fs_hz", default=DEFAULT_OUTPUT_FS_HZ)),
+        ap_time_unit_ms=float(_optional(block, "ap_time_unit_ms", default=AP_TIME_UNIT_MS)),
+        capture_oversample=int(_optional(block, "capture_oversample", default=4)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# generate-dataset config
+# ---------------------------------------------------------------------------
+
+
+BackendType = Literal["finitewave"]
+
+
+@dataclass(frozen=True)
+class InlineMixConfig:
+    """Inline mixer block inside a generate-dataset config.
+
+    The mixer runs against the just-generated clean ClassifierBank
+    in memory, then the dataset CLI writes the hybrid bank to
+    ``output.classifier_bank``. Set ``output.clean_intermediate``
+    to write the pre-mix clean bank as a sibling artifact.
+    """
+
+    noise_bank_path: Path
+    mixer_config: MixerConfig
+
+
+@dataclass(frozen=True)
+class GenerateDatasetCLIConfig:
+    """Typed config for ``synthegm-generate-dataset``.
+
+    Holds the fully-constructed strategy / policy / backend / mixer
+    objects ready to feed into
+    :func:`~myocard_synthetic_egm_pipeline.simulate.generate_dataset`
+    and the storage layer.
+    """
+
+    # Dataset orchestrator
+    n_simulations: int
+    master_seed: int
+    show_progress: bool
+
+    # Backend choice
+    backend_type: BackendType
+
+    # Strategy specs / per-sim sampling
+    geometry: GeometrySpec
+    fibrosis_density_range: tuple[float, float]
+    fraction_healthy: float
+    fixed_stim_edge: Edge | None
+    electrode_n_rows: int
+    electrode_n_cols: int
+    electrode_spacing_mm: float
+    electrode_height_mm_range: tuple[float, float]
+
+    # Label policy + run config
+    label_policy: LabelPolicy
+    run_config: RunConfig
+
+    # Output
+    classifier_bank_output: Path
+    clean_intermediate_output: Path | None
+    also_emit_synthetic_bank: bool
+    synthetic_bank_output: Path | None
+    description: str
+
+    # Optional inline mixing
+    mix: InlineMixConfig | None
+
+
+def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConfig:
+    """Translate a parsed YAML dict into a typed generate-dataset config."""
+    # --- dataset block --------------------------------------------------
+    n_simulations = int(_required(doc, "dataset", "n_simulations"))
+    if n_simulations < 1:
+        raise ConfigError("dataset.n_simulations must be >= 1.")
+    master_seed = int(_optional(doc, "dataset", "master_seed", default=0))
+    show_progress = bool(_optional(doc, "dataset", "show_progress", default=True))
+
+    # --- backend block --------------------------------------------------
+    backend_type_raw = str(_optional(doc, "backend", "type", default="finitewave"))
+    if backend_type_raw != "finitewave":
+        raise ConfigError(
+            f"backend.type must be 'finitewave' for Phase 1; got {backend_type_raw!r}."
+        )
+    backend_type: BackendType = "finitewave"
+
+    # --- strategies + policy --------------------------------------------
+    geometry = _build_geometry(doc)
+    label_policy = _build_label_policy(doc)
+    run_config = _build_run_config(doc)
+
+    # --- substrate block ------------------------------------------------
+    substrate_block = _optional(doc, "substrate", default={}) or {}
+    substrate_type = str(_optional(substrate_block, "type", default="uniform_random_fibrosis"))
+    if substrate_type != "uniform_random_fibrosis":
+        raise ConfigError(
+            f"substrate.type must be 'uniform_random_fibrosis' for Phase 1; got {substrate_type!r}."
+        )
+    density_range = _expect_range(
+        _optional(substrate_block, "density_range", default=list(DEFAULT_FIBROSIS_DENSITY_RANGE)),
+        field_path="substrate.density_range",
+    )
+    fraction_healthy = float(_optional(substrate_block, "fraction_healthy", default=0.0))
+
+    # --- activation block -----------------------------------------------
+    activation_block = _optional(doc, "activation", default={}) or {}
+    activation_type = str(_optional(activation_block, "type", default="planar_edge"))
+    if activation_type != "planar_edge":
+        raise ConfigError(
+            f"activation.type must be 'planar_edge' for Phase 1; got {activation_type!r}."
+        )
+    fixed_edge_raw = _optional(activation_block, "fixed_edge", default=None)
+    fixed_stim_edge: Edge | None
+    if fixed_edge_raw is None:
+        fixed_stim_edge = None
+    else:
+        fixed_edge_str = str(fixed_edge_raw)
+        if fixed_edge_str not in EDGES:
+            raise ConfigError(
+                f"activation.fixed_edge must be None or one of {EDGES}; got {fixed_edge_str!r}."
+            )
+        # Membership check above narrows fixed_edge_str to Edge.
+        fixed_stim_edge = fixed_edge_str
+
+    # --- electrodes block -----------------------------------------------
+    electrodes_block = _optional(doc, "electrodes", default={}) or {}
+    electrodes_type = str(_optional(electrodes_block, "type", default="centered_grid_2d"))
+    if electrodes_type != "centered_grid_2d":
+        raise ConfigError(
+            f"electrodes.type must be 'centered_grid_2d' for Phase 1; got {electrodes_type!r}."
+        )
+    electrode_n_rows = int(
+        _optional(electrodes_block, "n_rows", default=DEFAULT_ELECTRODE_GRID_ROWS)
+    )
+    electrode_n_cols = int(
+        _optional(electrodes_block, "n_cols", default=DEFAULT_ELECTRODE_GRID_COLS)
+    )
+    electrode_spacing_mm = float(
+        _optional(electrodes_block, "spacing_mm", default=DEFAULT_ELECTRODE_SPACING_MM)
+    )
+    electrode_height_mm_range = _expect_range(
+        _optional(
+            electrodes_block,
+            "height_mm_range",
+            default=list(DEFAULT_ELECTRODE_HEIGHT_MM_RANGE),
+        ),
+        field_path="electrodes.height_mm_range",
+    )
+
+    # --- output block ---------------------------------------------------
+    classifier_bank_output = _required_path(doc, "output", "classifier_bank")
+    clean_intermediate_output = _resolve_path(
+        _optional(doc, "output", "clean_intermediate", default=None),
+        doc["_config_dir"],
+    )
+    also_emit_synthetic_bank = bool(
+        _optional(doc, "output", "also_emit_synthetic_bank", default=False)
+    )
+    synthetic_bank_output = _resolve_path(
+        _optional(doc, "output", "synthetic_bank", default=None),
+        doc["_config_dir"],
+    )
+    description = str(_optional(doc, "output", "description", default=""))
+
+    # --- optional mix block --------------------------------------------
+    mix: InlineMixConfig | None = None
+    mix_block = _optional(doc, "mix", default=None)
+    if mix_block is not None:
+        mix = _build_inline_mix(mix_block, doc["_config_dir"])
+
+    return GenerateDatasetCLIConfig(
+        n_simulations=n_simulations,
+        master_seed=master_seed,
+        show_progress=show_progress,
+        backend_type=backend_type,
+        geometry=geometry,
+        fibrosis_density_range=density_range,
+        fraction_healthy=fraction_healthy,
+        fixed_stim_edge=fixed_stim_edge,
+        electrode_n_rows=electrode_n_rows,
+        electrode_n_cols=electrode_n_cols,
+        electrode_spacing_mm=electrode_spacing_mm,
+        electrode_height_mm_range=electrode_height_mm_range,
+        label_policy=label_policy,
+        run_config=run_config,
+        classifier_bank_output=classifier_bank_output,
+        clean_intermediate_output=clean_intermediate_output,
+        also_emit_synthetic_bank=also_emit_synthetic_bank,
+        synthetic_bank_output=synthetic_bank_output,
+        description=description,
+        mix=mix,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Standalone mix config
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MixCLIConfig:
+    """Typed config for ``synthegm-mix``."""
+
+    input_classifier_bank: Path
+    noise_bank_path: Path
+    output_classifier_bank: Path
+    also_emit_synthetic_bank: bool
+    output_synthetic_bank: Path | None
+    mixer_config: MixerConfig
+
+
+def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
+    """Translate a parsed YAML dict into a typed standalone-mix config."""
+    cfg_dir = doc["_config_dir"]
+
+    input_classifier_bank = _required_path(doc, "input", "classifier_bank")
+    noise_bank_path = _required_path(doc, "input", "noise_bank")
+
+    output_classifier_bank = _required_path(doc, "output", "classifier_bank")
+    also_emit_synthetic_bank = bool(
+        _optional(doc, "output", "also_emit_synthetic_bank", default=False)
+    )
+    output_synthetic_bank = _resolve_path(
+        _optional(doc, "output", "synthetic_bank", default=None), cfg_dir
+    )
+
+    mixer_block = _optional(doc, "mixer", default={}) or {}
+    mixer_config = _build_mixer_config(mixer_block)
+
+    return MixCLIConfig(
+        input_classifier_bank=input_classifier_bank,
+        noise_bank_path=noise_bank_path,
+        output_classifier_bank=output_classifier_bank,
+        also_emit_synthetic_bank=also_emit_synthetic_bank,
+        output_synthetic_bank=output_synthetic_bank,
+        mixer_config=mixer_config,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared mixer-block builders
+# ---------------------------------------------------------------------------
+
+
+def _build_mixer_config(block: dict[str, Any]) -> MixerConfig:
+    """Construct a :class:`MixerConfig` from a ``mixer:`` block."""
+    snr_range = _expect_range(
+        _optional(block, "snr_db_range", default=list(DEFAULT_SNR_DB_RANGE)),
+        field_path="mixer.snr_db_range",
+    )
+    band_hz = _expect_range(
+        _optional(block, "band_hz", default=list(DEFAULT_BIPOLAR_BAND_HZ)),
+        field_path="mixer.band_hz",
+    )
+    return MixerConfig(
+        snr_db_range=snr_range,
+        bandpass_clean=bool(_optional(block, "bandpass_clean", default=True)),
+        band_hz=band_hz,
+        master_seed=int(_optional(block, "master_seed", default=0)),
+        show_progress=bool(_optional(block, "show_progress", default=True)),
+        description=str(_optional(block, "description", default="")),
+    )
+
+
+def _build_inline_mix(block: dict[str, Any], config_dir: Path) -> InlineMixConfig:
+    """Construct an :class:`InlineMixConfig` from a ``mix:`` block.
+
+    The ``mix:`` block has the same mixer knobs as the standalone
+    ``mixer:`` block (delegated to :func:`_build_mixer_config`) plus
+    the noise bank path it wraps.
+    """
+    noise_raw = _optional(block, "noise_bank", default=None)
+    noise_bank_path = _resolve_path(str(noise_raw) if noise_raw is not None else "", config_dir)
+    if noise_bank_path is None:
+        raise ConfigError("mix.noise_bank must be set when the 'mix:' block is present.")
+    return InlineMixConfig(
+        noise_bank_path=noise_bank_path,
+        mixer_config=_build_mixer_config(block),
+    )
