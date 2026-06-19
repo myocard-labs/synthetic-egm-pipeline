@@ -1,16 +1,21 @@
 # ---------------------------------------------------------------------------
-# pyproject.toml — myocard-labs python template
+# pyproject.toml — myocard-synthetic-egm-pipeline
 #
-# Find/replace before publishing:
-#   myocard-package-name   → PyPI distribution name (dash-separated, with myocard- prefix)
-#   myocard_package_name   → Python import name (underscore-separated)
-#   PACKAGE_DESCRIPTION    → one-line summary used by PyPI
-#   GITHUB_REPO_NAME       → bare repo name (no myocard- prefix)
+# Synthetic-side producer for the myocard-labs intracardiac-EGM stack.
+# Finitewave-driven clean EGM simulation + additive noise mixing. Writes
+# two artifacts, both against the synthetic_bank schema in
+# myocard-egm-contracts:
 #
-# Convention recap (LOCKED-IN 2026-06-13, see intracardiac-platform/project/refactor_checklist.md):
-#   GitHub repo  : egm-contracts                  (bare)
-#   PyPI dist    : myocard-egm-contracts          (myocard- prefix)
-#   Import name  : myocard_egm_contracts          (underscore)
+#   - <name>.h5             : clean synthetic_bank (simulator output)
+#   - <name>.hybrid.h5      : mixed synthetic_bank (clean + noise overlay)
+#
+# All bank-writing goes through myocard-egm-data; this package owns the
+# simulator orchestration, the pseudo-EGM math, and the mixer.
+#
+# Convention recap:
+#   GitHub repo  : synthetic-egm-pipeline             (bare)
+#   PyPI dist    : myocard-synthetic-egm-pipeline     (myocard- prefix)
+#   Import name  : myocard_synthetic_egm_pipeline     (underscore)
 # ---------------------------------------------------------------------------
 
 [build-system]
@@ -18,16 +23,25 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "myocard-package-name"
-version = "0.1.0"
-description = "PACKAGE_DESCRIPTION"
+name = "myocard-synthetic-egm-pipeline"
+version = "0.2.0"
+description = "Finitewave-driven synthetic intracardiac-EGM producer + additive-noise mixer. Writes synthetic_bank artifacts consumable by myocard-egm-classifier."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
   { name = "Daniel Klein", email = "daniel.anthony.klein.88@gmail.com" },
 ]
-keywords = ["cardiac", "electrophysiology", "signal-processing", "egm"]
+keywords = [
+  "cardiac",
+  "electrophysiology",
+  "signal-processing",
+  "egm",
+  "intracardiac",
+  "atrial-fibrillation",
+  "finitewave",
+  "synthetic-data",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -41,38 +55,67 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 
+# Runtime deps. The bank-writing path is owned by myocard-egm-data; the
+# schemas live in myocard-egm-contracts (and come in transitively via
+# egm-data). h5py is NOT pulled in directly — egm-data carries it.
+# Finitewave is a hard runtime dep — the entire purpose of this package
+# is the simulator + mixer pipeline.
 dependencies = [
-  # Runtime deps go here. Keep this lean. Common floor: numpy + h5py.
-  # "numpy>=1.26",
-  # "h5py>=3.10",
+  "myocard-egm-contracts @ git+https://github.com/myocard-labs/egm-contracts.git@v0.2.0",
+  "myocard-egm-data @ git+https://github.com/myocard-labs/egm-data.git@v0.2.0",
+  "myocard-egm-signal @ git+https://github.com/myocard-labs/egm-signal.git@v0.1.0",
+  "numpy>=1.26",
+  "scipy>=1.10",
+  "finitewave>=0.9",
+  "tqdm>=4.65",
+  # YAML is the project-wide config format (matches egm-classifier
+  # and iafdb-pipeline).
+  "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
-  "ruff>=0.6.0",
-  "mypy>=1.10",
+  # ruff and mypy pinned to exact versions (matching the rest of the
+  # myocard-labs stack) so local dev, CI, and the pre-commit hook all
+  # run the same binary. Bumping ruff or mypy means updating this line,
+  # .pre-commit-config.yaml, and ci.yml together.
+  "ruff==0.15.17",
+  "mypy==2.1.0",
   "pre-commit>=3.7",
   "nbstripout>=0.7",
+  # Type stubs for PyYAML so mypy strict-checks the config loader.
+  "types-PyYAML>=6.0",
 ]
 
 [project.urls]
-Homepage      = "https://github.com/myocard-labs/GITHUB_REPO_NAME"
-Repository    = "https://github.com/myocard-labs/GITHUB_REPO_NAME"
-Issues        = "https://github.com/myocard-labs/GITHUB_REPO_NAME/issues"
+Homepage      = "https://github.com/myocard-labs/synthetic-egm-pipeline"
+Repository    = "https://github.com/myocard-labs/synthetic-egm-pipeline"
+Issues        = "https://github.com/myocard-labs/synthetic-egm-pipeline/issues"
 Organization  = "https://github.com/myocard-labs"
 
-# Optional CLI entry points — uncomment + edit when the package ships commands.
-# [project.scripts]
-# myocard-foo = "myocard_package_name.cli:main"
+[project.scripts]
+synthegm-generate-dataset = "myocard_synthetic_egm_pipeline.cli.generate_dataset_cmd:main"
+synthegm-mix              = "myocard_synthetic_egm_pipeline.cli.mix_cmd:main"
 
 # ---------------------------------------------------------------------------
 # Hatch
 # ---------------------------------------------------------------------------
 
+# Hatchling refuses direct URL references in dependencies by default; we
+# need it during pre-1.0 iteration so we can pin the egm-* siblings to git
+# tags. Drop this once everything ships on (Test)PyPI.
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/myocard_package_name"]
+packages = ["src/myocard_synthetic_egm_pipeline"]
+# Ship py.typed so downstream consumers (and CI mypy) can type-check
+# imports from this package without an ignore-missing-imports override.
+artifacts = [
+  "src/myocard_synthetic_egm_pipeline/py.typed",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -113,6 +156,17 @@ ignore = [
 "tests/**/*.py" = ["B011"]
 "__init__.py"   = ["F401"]
 
+# Pin isort groups so local + CI agree on first-party vs third-party
+# attribution.
+[tool.ruff.lint.isort]
+known-first-party = ["myocard_synthetic_egm_pipeline"]
+known-third-party = [
+  "myocard_egm_contracts",
+  "myocard_egm_data",
+  "myocard_egm_signal",
+  "finitewave",
+]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
@@ -132,12 +186,14 @@ addopts = [
 ]
 filterwarnings = [
   "error",
-  # Add per-package allowlist below as needed, e.g.:
-  # "ignore::DeprecationWarning:some_third_party_lib",
+  # finitewave / scipy occasionally surface harmless deprecation warnings;
+  # let them through rather than crash the suite on third-party churn.
+  "ignore::DeprecationWarning",
+  "ignore::PendingDeprecationWarning",
 ]
 
 [tool.coverage.run]
-source = ["src/myocard_package_name"]
+source = ["src/myocard_synthetic_egm_pipeline"]
 branch = true
 
 [tool.coverage.report]
@@ -161,17 +217,24 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
-files = ["src", "tests"]
+files = ["src"]
 
-# Per-module overrides for libraries without type stubs.
-# Uncomment + edit when the package starts importing one of these.
-# Listing them here when the imports aren't present triggers
-# `warn_unused_configs` and clutters the mypy output.
+# finitewave + tqdm + scipy ship without complete inline stubs; ignore-
+# missing silences these third-party hops without losing strict checking
+# on our own code. myocard-egm-contracts, myocard-egm-data, and
+# myocard-egm-signal all ship py.typed and are NOT in this override list.
 #
+[[tool.mypy.overrides]]
+module = [
+  "finitewave.*",
+  "tqdm.*",
+]
+ignore_missing_imports = true
+
+# Activate the scipy override once any module imports scipy directly.
+# Strict mypy flags unused overrides under ``warn_unused_configs``.
 # [[tool.mypy.overrides]]
 # module = [
-#   "h5py.*",
 #   "scipy.*",
-#   "matplotlib.*",
 # ]
 # ignore_missing_imports = true

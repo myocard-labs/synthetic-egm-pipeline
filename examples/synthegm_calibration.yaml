@@ -1,0 +1,78 @@
+# synthegm-generate-dataset — calibration run.
+#
+# Small, deterministic dataset for verifying that the
+# simulator-pipeline produces sensible outputs after any upstream
+# change (Finitewave version bump, AP_TIME_UNIT_MS recalibration, mesh
+# discretisation tweak, electrode height range change).
+#
+# All sources of per-sim randomness are pinned:
+#   - small n_simulations so it runs in seconds, not minutes
+#   - fixed_edge: every sim fires from the same edge
+#   - density_range narrowed to a single value
+#   - fraction_healthy = 0 (no forced-healthy override)
+#   - electrode_height_mm_range pinned to a single value
+#
+# Use the output to verify CV calibration (longitudinal CV measured
+# from the patch should hit ~80 cm/s under AP_TIME_UNIT_MS=1.97 mV)
+# or to eyeball bipolar morphology before scaling up a production run.
+#
+# Output: ../banks/synthegm_calibration.classifier.h5
+
+dataset:
+  n_simulations: 4                         # one per edge so we cover the four planar-wave directions
+  master_seed: 0
+  show_progress: true
+
+backend:
+  type: finitewave
+
+geometry:
+  type: patch_2d
+  size_mm: 40.0
+  dr_mm: 0.25
+  fiber_angle_rad: 0.0
+  anisotropy_ratio: 3.0
+
+substrate:
+  type: uniform_random_fibrosis
+  density_range: [0.3, 0.3]                # single density: 30%
+  fraction_healthy: 0.0                    # don't force any sim to density=0
+
+activation:
+  type: planar_edge
+  # NOTE: with fixed_edge set, all four sims see the same edge.
+  # If you want one-per-edge coverage instead, set fixed_edge: null
+  # and run n_simulations >= 4 (per-sim edge is sampled uniformly).
+  fixed_edge: left                         # deterministic propagation direction
+
+electrodes:
+  type: centered_grid_2d
+  n_rows: 5
+  n_cols: 5
+  spacing_mm: 2.0
+  height_mm_range: [0.5, 0.5]              # pin height to 0.5 mm — eliminates Z-jitter for verification
+
+label_policy:
+  type: global_density                     # simpler; calibration runs don't need locality awareness
+  threshold: 0.1
+  healthy_name: healthy
+  fibrotic_name: fibrotic
+
+run:
+  trace_duration_ms: 200.0
+  output_fs_hz: 1000.0
+  ap_time_unit_ms: 1.97
+  capture_oversample: 4
+
+output:
+  classifier_bank: ../banks/synthegm_calibration.classifier.h5
+  clean_intermediate: null
+  # Useful for calibration: the SyntheticBank's columnar layout makes
+  # it easier to compare per-pair waveforms across runs.
+  also_emit_synthetic_bank: true
+  synthetic_bank: null                     # default sibling path
+  description: >
+    Calibration run — fixed density, fixed edge, pinned height. For CV
+    verification + bipolar morphology spot-checks.
+
+# No `mix:` block — calibration runs should never be noise-mixed.
