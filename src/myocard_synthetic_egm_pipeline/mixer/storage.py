@@ -1,6 +1,6 @@
-"""Hybrid-bank write helpers.
+"""Noise-mixed-bank write helpers.
 
-The mixer's default output is a hybrid
+The mixer's default output is a noise-mixed
 :class:`~myocard_egm_data.banks.ClassifierBank` with the mixer
 metadata stamped into each trace's ``trace_metadata`` and a "mixer"
 provenance entry appended to ``banks``. That bank goes straight
@@ -11,7 +11,7 @@ This module owns the *optional* Pydantic
 :class:`~myocard_egm_contracts._generated.python.synthetic_bank.SyntheticBank`
 sibling output, parallel to
 :func:`myocard_synthetic_egm_pipeline.simulate.storage.write_synthetic_bank_from_dataset`.
-The in-memory transformation (hybrid ClassifierBank → Pydantic
+The in-memory transformation (noise-mixed ClassifierBank → Pydantic
 SyntheticBank) lives in
 :func:`myocard_synthetic_egm_pipeline.simulate.builders.build_synthetic_bank_from_classifier`;
 this module is the thin disk-write wrapper around it.
@@ -30,16 +30,17 @@ from myocard_synthetic_egm_pipeline.simulate.builders import (
 )
 
 
-def write_hybrid_synthetic_bank_from_classifier(
+def write_noise_mixed_synthetic_bank_from_classifier(
     *,
-    hybrid_bank: ClassifierBank,
+    noise_mixed_bank: ClassifierBank,
     output_path: Path | str,
     description: str = "",
     overwrite: bool = False,
+    bank_id: str | None = None,
 ) -> Path:
-    """Build + write a hybrid Pydantic SyntheticBank sibling.
+    """Build + write a noise-mixed Pydantic SyntheticBank sibling.
 
-    The hybrid ClassifierBank must have been produced by
+    The noise-mixed ClassifierBank must have been produced by
     :func:`~myocard_synthetic_egm_pipeline.mixer.mixing.mix_classifier_bank`
     — this writer reads the mixer audit fields from the bank's
     per-trace ``trace_metadata`` and from the "mixer" provenance
@@ -54,12 +55,13 @@ def write_hybrid_synthetic_bank_from_classifier(
     """
     output_path = Path(output_path)
     bank = build_synthetic_bank_from_classifier(
-        hybrid_bank=hybrid_bank,
+        noise_mixed_bank=noise_mixed_bank,
         description=description,
+        bank_id=bank_id,
     )
     return write_synthetic_bank(bank, output_path, overwrite=overwrite)
 
 
 __all__ = [
-    "write_hybrid_synthetic_bank_from_classifier",
+    "write_noise_mixed_synthetic_bank_from_classifier",
 ]

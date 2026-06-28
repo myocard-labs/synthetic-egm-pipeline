@@ -212,13 +212,17 @@ def small_dataset_config() -> DatasetConfig:
     )
 
 
+_FIXTURE_BANK_ID = "tbank_synthetic_aliev_panfilov_2026-06-27"
+"""Stable id on the fixture bank (egm-data v0.4.0+ requires a string id)."""
+
+
 @pytest.fixture
 def small_classifier_bank() -> ClassifierBank:
     """A tiny ClassifierBank ready for mixer tests.
 
     4 traces, all 200 samples at 1 kHz, two healthy + two fibrotic
     labels. Per-trace metadata mirrors what the producer's builder
-    stamps, so the mixer + the hybrid SyntheticBank builder both
+    stamps, so the mixer + the noise_mixed SyntheticBank builder both
     accept it.
     """
     rng = np.random.default_rng(0)
@@ -229,7 +233,7 @@ def small_classifier_bank() -> ClassifierBank:
         label = 0 if sim_id == 0 else 1
         traces.append(
             ClassifierTrace(
-                bank_id=0,
+                bank_id=_FIXTURE_BANK_ID,
                 signal=rng.standard_normal(200).astype(np.float32),
                 freq_hz=1000.0,
                 amp_type="synthetic_au",
@@ -250,7 +254,7 @@ def small_classifier_bank() -> ClassifierBank:
             )
         )
     bank_meta = ClassifierBankMetaData(
-        bank_id=0,
+        bank_id=_FIXTURE_BANK_ID,
         bank_type="synthetic_egm_pipeline",
         bank_path="<test fixture>",
         bank_metadata={

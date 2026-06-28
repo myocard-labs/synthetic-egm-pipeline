@@ -152,12 +152,12 @@ def test_mix_classifier_bank_stamps_audit_fields(
     small_classifier_bank: ClassifierBank, small_noise_bank: NoiseBank
 ) -> None:
     """Every output trace gains snr_db / noise_record / noise_channel."""
-    hybrid = mix_classifier_bank(
+    noise_mixed = mix_classifier_bank(
         clean_bank=small_classifier_bank,
         noise_bank=small_noise_bank,
         config=MixerConfig(snr_db_range=(15.0, 15.0), show_progress=False),
     )
-    for trace in hybrid.traces:
+    for trace in noise_mixed.traces:
         assert "snr_db" in trace.trace_metadata
         assert "noise_record" in trace.trace_metadata
         assert "noise_channel" in trace.trace_metadata
@@ -169,15 +169,15 @@ def test_mix_classifier_bank_appends_mixer_provenance(
     small_classifier_bank: ClassifierBank, small_noise_bank: NoiseBank
 ) -> None:
     """A 'mixer' ClassifierBankMetaData entry is appended; the clean entry survives."""
-    hybrid = mix_classifier_bank(
+    noise_mixed = mix_classifier_bank(
         clean_bank=small_classifier_bank,
         noise_bank=small_noise_bank,
         config=MixerConfig(show_progress=False),
         noise_bank_path="/path/to/noise_bank.h5",
     )
     # Two entries: the original synthetic source + the new mixer entry.
-    assert len(hybrid.banks) == 2
-    mixer_entry = hybrid.banks[1]
+    assert len(noise_mixed.banks) == 2
+    mixer_entry = noise_mixed.banks[1]
     assert mixer_entry.bank_type == "mixer"
     assert mixer_entry.bank_metadata["snr_db_range"] == [10.0, 25.0]
     assert mixer_entry.bank_metadata["bandpass_clean"] is True
@@ -232,22 +232,22 @@ def test_mix_classifier_bank_preserves_trace_count(
 ) -> None:
     """Mixing is per-trace 1:1 — no traces added or dropped."""
     n_clean = len(small_classifier_bank.traces)
-    hybrid = mix_classifier_bank(
+    noise_mixed = mix_classifier_bank(
         clean_bank=small_classifier_bank,
         noise_bank=small_noise_bank,
         config=MixerConfig(show_progress=False),
     )
-    assert len(hybrid.traces) == n_clean
+    assert len(noise_mixed.traces) == n_clean
 
 
 def test_mix_classifier_bank_preserves_labels(
     small_classifier_bank: ClassifierBank, small_noise_bank: NoiseBank
 ) -> None:
     """Per-trace label_truth survives mixing unchanged."""
-    hybrid = mix_classifier_bank(
+    noise_mixed = mix_classifier_bank(
         clean_bank=small_classifier_bank,
         noise_bank=small_noise_bank,
         config=MixerConfig(show_progress=False),
     )
-    for clean, mixed in zip(small_classifier_bank.traces, hybrid.traces, strict=True):
+    for clean, mixed in zip(small_classifier_bank.traces, noise_mixed.traces, strict=True):
         assert clean.label_truth == mixed.label_truth

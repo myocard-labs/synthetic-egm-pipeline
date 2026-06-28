@@ -11,7 +11,7 @@ across the producer pipeline:
   :class:`DatasetResult` → in-memory Pydantic :class:`SyntheticBank`.
   Pre-mixer values: ``snr_db = NaN``, ``noise_record = ""``,
   ``noise_channel = ""``.
-- :func:`build_synthetic_bank_from_classifier` — hybrid (post-mixer)
+- :func:`build_synthetic_bank_from_classifier` — noise-mixed (post-mixer)
   :class:`ClassifierBank` → in-memory Pydantic :class:`SyntheticBank`.
   Reads the mixer audit fields from each trace's ``trace_metadata``
   and the "mixer" provenance entry on ``bank.banks``.
@@ -40,6 +40,7 @@ from myocard_egm_contracts._generated.python.synthetic_bank import (
     SyntheticBank,
     Traces,
 )
+from myocard_egm_contracts.schema_info import current_version
 from myocard_egm_data.banks import (
     ClassifierBank,
     ClassifierBankMetaData,
@@ -48,6 +49,7 @@ from myocard_egm_data.banks import (
 
 from myocard_synthetic_egm_pipeline import __version__
 from myocard_synthetic_egm_pipeline.constants import BANK_SOURCE
+from myocard_synthetic_egm_pipeline.ids import derive_synthetic_bank_id, validate_artifact_id
 from myocard_synthetic_egm_pipeline.simulate.dataset import DatasetConfig, DatasetResult
 
 # Amplitude convention for ClassifierBank.amp_type. The Phase-1
@@ -148,6 +150,7 @@ def build_classifier_bank_from_dataset(
     config: DatasetConfig,
     bank_path: Path | str,
     description: str = "",
+    bank_id: str | None = None,
 ) -> ClassifierBank:
     """Build an in-memory ClassifierBank from a DatasetResult.
 
@@ -162,8 +165,18 @@ def build_classifier_bank_from_dataset(
     disk.
     """
     bank_path = Path(bank_path)
+    first_backend_meta: dict[str, Any] = {}
+    if dataset_result.results:
+        first_backend_meta = dict(
+            dataset_result.results[0].run_metadata.get("backend_metadata", {})
+        )
+    resolved_bank_id = (
+        validate_artifact_id(bank_id)
+        if bank_id is not None
+        else derive_synthetic_bank_id(_cell_model_from_backend_meta(first_backend_meta))
+    )
     bank_meta = ClassifierBankMetaData(
-        bank_id=0,
+        bank_id=resolved_bank_id,
         bank_type=BANK_SOURCE,
         bank_path=str(bank_path),
         bank_metadata=build_bank_metadata_for_classifier_bank(
@@ -197,7 +210,7 @@ def build_classifier_bank_from_dataset(
             )
             traces.append(
                 ClassifierTrace(
-                    bank_id=0,
+                    bank_id=resolved_bank_id,
                     signal=result.bipolar_traces[pair_idx],
                     freq_hz=result.fs_hz,
                     amp_type=AMP_TYPE,
@@ -210,6 +223,7 @@ def build_classifier_bank_from_dataset(
             flat_idx += 1
 
     return ClassifierBank(
+        id=resolved_bank_id,
         banks=[bank_meta],
         traces=traces,
         labels=dict(dataset_result.labels_dict),
@@ -226,6 +240,7 @@ def build_synthetic_bank_from_dataset(
     dataset_result: DatasetResult,
     config: DatasetConfig,
     description: str = "",
+    bank_id: str | None = None,
 ) -> SyntheticBank:
     """Build an in-memory Pydantic SyntheticBank from a DatasetResult.
 
@@ -235,9 +250,9 @@ def build_synthetic_bank_from_dataset(
     - ``noise_record = ""`` per trace.
     - ``noise_channel = ""`` per trace.
 
-    For hybrid (post-mixer) SyntheticBanks, use
+    For noise-mixed (post-mixer) SyntheticBanks, use
     :func:`build_synthetic_bank_from_classifier` instead — that path
-    reads the mixer audit fields from a hybrid ClassifierBank's
+    reads the mixer audit fields from a noise-mixed ClassifierBank's
     ``trace_metadata``.
 
     No I/O — pair with
@@ -310,8 +325,15 @@ def build_synthetic_bank_from_dataset(
     first_result = dataset_result.results[0] if dataset_result.results else None
     first_run_meta = first_result.run_metadata if first_result is not None else {}
 
+    resolved_bank_id = (
+        validate_artifact_id(bank_id)
+        if bank_id is not None
+        else derive_synthetic_bank_id(_cell_model_from_backend_meta(backend_meta_first))
+    )
+
     return SyntheticBank(
-        schema_version=SchemaVersion.field_1_0,
+        schema_version=SchemaVersion(current_version("synthetic_bank")),
+        bank_id=resolved_bank_id,
         created_utc=datetime.now(timezone.utc),
         description=description or None,
         fs_hz=float(
@@ -353,16 +375,17 @@ def build_synthetic_bank_from_dataset(
 
 
 # ---------------------------------------------------------------------------
-# SyntheticBank from hybrid ClassifierBank (post-mixer)
+# SyntheticBank from noise-mixed ClassifierBank (post-mixer)
 # ---------------------------------------------------------------------------
 
 
 def build_synthetic_bank_from_classifier(
     *,
-    hybrid_bank: ClassifierBank,
+    noise_mixed_bank: ClassifierBank,
     description: str = "",
+    bank_id: str | None = None,
 ) -> SyntheticBank:
-    """Build an in-memory Pydantic SyntheticBank from a hybrid ClassifierBank.
+    """Build an in-memory Pydantic SyntheticBank from a noise-mixed ClassifierBank.
 
     The bank must have been produced by
     :func:`~myocard_synthetic_egm_pipeline.mixer.mixing.mix_classifier_bank`
@@ -374,16 +397,16 @@ def build_synthetic_bank_from_classifier(
     No I/O — pair with
     :func:`myocard_egm_data.banks.write_synthetic_bank` to write.
     """
-    if not hybrid_bank.traces:
-        raise ValueError("Hybrid bank has no traces.")
+    if not noise_mixed_bank.traces:
+        raise ValueError("Noise-mixed bank has no traces.")
 
-    mixer_entry = _find_bank_entry(hybrid_bank, "mixer")
-    clean_entry = _find_bank_entry(hybrid_bank, BANK_SOURCE)
+    mixer_entry = _find_bank_entry(noise_mixed_bank, "mixer")
+    clean_entry = _find_bank_entry(noise_mixed_bank, BANK_SOURCE)
     clean_meta = clean_entry.bank_metadata if clean_entry is not None else {}
     mixer_meta = mixer_entry.bank_metadata if mixer_entry is not None else {}
 
-    fs_hz = float(hybrid_bank.traces[0].freq_hz)
-    n_samples = int(hybrid_bank.traces[0].signal.shape[0])
+    fs_hz = float(noise_mixed_bank.traces[0].freq_hz)
+    n_samples = int(noise_mixed_bank.traces[0].signal.shape[0])
     trace_duration_ms = float(n_samples / fs_hz * 1000.0)
 
     signal_rows: list[list[float]] = []
@@ -399,7 +422,7 @@ def build_synthetic_bank_from_classifier(
     noise_record: list[str] = []
     noise_channel: list[str] = []
 
-    for trace_idx, trace in enumerate(hybrid_bank.traces):
+    for trace_idx, trace in enumerate(noise_mixed_bank.traces):
         md = trace.trace_metadata
         edge_val = md.get("stim_edge")
         if edge_val not in {"top", "bottom", "left", "right"}:
@@ -436,8 +459,18 @@ def build_synthetic_bank_from_classifier(
         noise_channel=noise_channel,
     )
 
+    if bank_id is not None:
+        resolved_bank_id = validate_artifact_id(bank_id)
+    elif noise_mixed_bank.id is not None:
+        resolved_bank_id = validate_artifact_id(str(noise_mixed_bank.id))
+    else:
+        resolved_bank_id = derive_synthetic_bank_id(
+            str(clean_meta.get("cell_model") or "unknown"), noise_mixed=True
+        )
+
     return SyntheticBank(
-        schema_version=SchemaVersion.field_1_0,
+        schema_version=SchemaVersion(current_version("synthetic_bank")),
+        bank_id=resolved_bank_id,
         created_utc=datetime.now(timezone.utc),
         description=description or None,
         fs_hz=fs_hz,

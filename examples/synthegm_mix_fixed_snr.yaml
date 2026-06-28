@@ -8,21 +8,21 @@
 #
 # All other parameters identical to ``synthegm_mix.yaml``; the only
 # changes are ``snr_db_range`` and the output filename so each fixed
-# point gets its own hybrid bank.
+# point gets its own noise-mixed bank.
 #
 # Run several copies of this config with different snr_db_range
 # values (e.g. ``[5.0, 5.0]``, ``[10.0, 10.0]``, ...) to build the
 # sweep. Bump master_seed per run to make the noise selection
 # independent across operating points.
 #
-# Output: ../banks/synthegm_v1_hybrid_snr15.classifier.h5
+# Output: ../banks/synthegm_v1_noise_mixed_snr15.classifier.h5
 
 input:
   classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
   noise_bank:      ../banks/iafdb_noise_v1.h5
 
 output:
-  classifier_bank: ../banks/synthegm_v1_hybrid_snr15.classifier.h5
+  classifier_bank: ../banks/synthegm_v1_noise_mixed_snr15.classifier.h5
   also_emit_synthetic_bank: false
   synthetic_bank: null
 

@@ -269,13 +269,13 @@ def test_mix_config_minimum_required_fields(tmp_path: Path) -> None:
           classifier_bank: ./clean.h5
           noise_bank: ./noise.h5
         output:
-          classifier_bank: ./hybrid.h5
+          classifier_bank: ./noise_mixed.h5
         """,
     )
     cfg = build_mix_config(load_yaml(path))
     assert cfg.input_classifier_bank == (tmp_path / "clean.h5").resolve()
     assert cfg.noise_bank_path == (tmp_path / "noise.h5").resolve()
-    assert cfg.output_classifier_bank == (tmp_path / "hybrid.h5").resolve()
+    assert cfg.output_classifier_bank == (tmp_path / "noise_mixed.h5").resolve()
     # Mixer defaults reproduce the project's Phase 1 values.
     assert cfg.mixer_config.snr_db_range == (10.0, 25.0)
     assert cfg.mixer_config.bandpass_clean is True
@@ -286,7 +286,7 @@ def test_mix_config_rejects_missing_input(tmp_path: Path) -> None:
         tmp_path,
         """
         output:
-          classifier_bank: ./hybrid.h5
+          classifier_bank: ./noise_mixed.h5
         """,
     )
     with pytest.raises(ConfigError, match=r"input"):
@@ -302,7 +302,7 @@ def test_mix_config_rejects_inverted_snr_range(tmp_path: Path) -> None:
           classifier_bank: ./clean.h5
           noise_bank: ./noise.h5
         output:
-          classifier_bank: ./hybrid.h5
+          classifier_bank: ./noise_mixed.h5
         mixer:
           snr_db_range: [25.0, 10.0]
         """,

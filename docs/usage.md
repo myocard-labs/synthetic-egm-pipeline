@@ -14,7 +14,7 @@ electrode grid, and writes two on-disk artifacts:
 
 The mixer overlays low-amplitude IAFDB noise segments (from
 [`myocard-iafdb-pipeline`](https://github.com/myocard-labs/iafdb-pipeline))
-onto a clean ClassifierBank to produce a hybrid bank that the
+onto a clean ClassifierBank to produce a noise-mixed bank that the
 classifier trains on.
 
 Every output validates against a schema in
@@ -69,7 +69,7 @@ with per-sim sampled parameters (fibrosis density, activation edge,
 electrode height), labels each bipolar pair via the configured
 `LabelPolicy`, and writes a `ClassifierBank.h5`. If a `mix:` block is
 present, the mixer runs inline against the just-generated clean bank
-and writes the hybrid output as the primary artifact.
+and writes the noise-mixed output as the primary artifact.
 
 ```bash
 synthegm-generate-dataset CONFIG.yaml [--overwrite] [--no-progress]
@@ -79,7 +79,7 @@ The shipped examples cover the three common scenarios:
 
 - `examples/synthegm_v1_baseline.yaml` — Phase 1 default: 100-sim
   clean corpus, `LocalDensityLabel(r=2 mm, t=0.1)`, no mixer.
-- `examples/synthegm_v1_hybrid.yaml` — Same scope, with inline IAFDB
+- `examples/synthegm_v1_noise_mixed.yaml` — Same scope, with inline IAFDB
   noise overlay. Persists the clean intermediate too for ablation
   studies.
 - `examples/synthegm_calibration.yaml` — 4-sim deterministic run
@@ -100,8 +100,8 @@ the noise bank that was overlaid.
 
 Standalone mixer. Reads an existing clean `ClassifierBank.h5` and an
 IAFDB `noise_bank.h5`, overlays noise per trace at the configured SNR
-distribution, and writes a hybrid `ClassifierBank.h5`. Use this when
-you want clean + hybrid outputs from one simulator run (run
+distribution, and writes a noise-mixed `ClassifierBank.h5`. Use this when
+you want clean + noise-mixed outputs from one simulator run (run
 `synthegm-generate-dataset` once, then `synthegm-mix` once or many
 times against different noise banks or SNR ranges).
 
@@ -171,10 +171,12 @@ output:
   also_emit_synthetic_bank: false          # default; set true to write SyntheticBank sibling
   synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
   description: ""                          # default; stamped into bank_metadata
+  # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted
 
 # Optional inline mixer block — omit (or set null) for clean-only output.
 mix:
   noise_bank: ../banks/iafdb_noise_v1.h5   # required when mix block present
+  # noise_bank_id: nbank_iafdb_2026-06-15  # optional; default reads it from the noise run-record sidecar
   snr_db_range: [10.0, 25.0]               # default
   bandpass_clean: true                     # default; filter clean to bipolar band before mixing
   band_hz: [30.0, 300.0]                   # default
@@ -217,7 +219,9 @@ Per-field reference:
 | `output.also_emit_synthetic_bank` | bool | false | Write SyntheticBank sibling. |
 | `output.synthetic_bank` | path/null | null | Override sibling path (default `<classifier_bank>.synthetic.h5`). |
 | `output.description` | str | `""` | Stamped into the bank's metadata. |
+| `output.bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_<date>` | Optional explicit id for the primary bank (the noise-mixed bank in the mix path). See [Stable bank IDs](#stable-bank-ids). |
 | `mix.noise_bank` | path | (required if block present) | iafdb-pipeline noise_bank.h5. |
+| `mix.noise_bank_id` | str (ArtifactId) | auto: read from the noise sidecar | Optional override for the mixed noise bank's id (the mixer's provenance entry). |
 | `mix.snr_db_range` | `[lo, hi]` | `[10.0, 25.0]` | Per-trace SNR sampled uniformly. |
 | `mix.bandpass_clean` | bool | true | Filter clean to bipolar band before mixing. |
 | `mix.band_hz` | `[lo, hi]` | `[30.0, 300.0]` | Bandpass band. |
@@ -229,11 +233,13 @@ Per-field reference:
 input:
   classifier_bank: ../banks/synthegm_v1_clean.classifier.h5   # required
   noise_bank:      ../banks/iafdb_noise_v1.h5                 # required
+  # noise_bank_id: nbank_iafdb_2026-06-15                     # optional; default reads the noise sidecar
 
 output:
-  classifier_bank: ../banks/synthegm_v1_hybrid.classifier.h5  # required
+  classifier_bank: ../banks/synthegm_v1_noise_mixed.classifier.h5  # required
   also_emit_synthetic_bank: false                             # default
   synthetic_bank: null                                        # default sibling
+  # bank_id: tbank_synthetic_aliev_panfilov_noise_mixed_2026-06-27 # optional; auto-derived (_noise_mixed) when omitted
 
 mixer:
   snr_db_range: [10.0, 25.0]               # default
@@ -250,13 +256,25 @@ Per-field reference:
 |---|---|---|---|
 | `input.classifier_bank` | path | (required) | Clean ClassifierBank to overlay noise on. |
 | `input.noise_bank` | path | (required) | iafdb-pipeline noise_bank.h5. |
-| `output.classifier_bank` | path | (required) | Hybrid output path. |
-| `output.also_emit_synthetic_bank` | bool | false | Write hybrid SyntheticBank sibling. |
+| `input.noise_bank_id` | str (ArtifactId) | auto: read from the noise sidecar | Optional override for the noise bank's id (the mixer's provenance entry). |
+| `output.classifier_bank` | path | (required) | Noise-mixed output path. |
+| `output.also_emit_synthetic_bank` | bool | false | Write noise-mixed SyntheticBank sibling. |
 | `output.synthetic_bank` | path/null | null | Override sibling path. |
+| `output.bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_noise_mixed_<date>` | Optional explicit id for the noise-mixed bank. See [Stable bank IDs](#stable-bank-ids). |
 | `mixer.snr_db_range` | `[lo, hi]` | `[10.0, 25.0]` | Per-trace target SNR. |
 | `mixer.bandpass_clean` | bool | true | Filter clean to bipolar band before mixing. |
 | `mixer.band_hz` | `[lo, hi]` | `[30.0, 300.0]` | Bandpass band. |
 | `mixer.master_seed` | int | 0 | Mixer RNG seed. |
+
+## Stable bank IDs
+
+Every bank the producer writes carries a stable cross-artifact ID — an egm-contracts `ArtifactId` (added in egm-contracts v0.5.0 for the cross-artifact-linkage system). The intracardiac-platform phase manifests and the provenance graph key on it.
+
+**Clean path.** The default ClassifierBank (and the optional SyntheticBank sibling) get an ID **derived from the cell model**: `tbank_synthetic_<cell_model>_<date>` — e.g. `tbank_synthetic_aliev_panfilov_2026-06-27` (`<date>` is the write-time UTC date). The ID is stamped on the bank's own `id`, on its source-bank entry, and on every trace. Synthetic banks are always labeled training banks, so the role prefix is always `tbank_`.
+
+**Noise-mixed (mixer) path.** The noise-mixed ClassifierBank gets a `_noise_mixed` variant (`tbank_synthetic_<cell_model>_noise_mixed_<date>`). Its mixed traces keep the **clean** source bank's ID — the noise is additive, so the clean synthetic is the primary source. The mixer also appends a "noise source" provenance entry whose ID is the **noise bank's own** stable ID: it reads that from the iafdb noise run-record sidecar (`<noise_bank>_run_record.json`), falling back to a derived `nbank_iafdb_<date>` if the sidecar is absent.
+
+**Overrides.** Set `output.bank_id` (the primary bank's ID) or `mix.noise_bank_id` / `input.noise_bank_id` (the noise reference) in the config — or pass `bank_id=` / `noise_bank_id=` / `noise-mixed_bank_id=` to the orchestrators. An explicit ID is validated against the ArtifactId pattern (`^[a-z]+_[a-z0-9_]+_\d{4}-\d{2}-\d{2}(_v\d+)?$`) and rejected up front if malformed.
 
 ## End-to-end walkthroughs
 
@@ -271,29 +289,29 @@ The bank lands at `../banks/synthegm_v1_baseline.classifier.h5`
 it directly via `load_classifier_bank`; the patient-aware split
 treats each `sim_id` as one patient.
 
-### Producing a hybrid dataset in one step (simulate + mix)
+### Producing a noise-mixed dataset in one step (simulate + mix)
 
 ```bash
-synthegm-generate-dataset examples/synthegm_v1_hybrid.yaml
+synthegm-generate-dataset examples/synthegm_v1_noise_mixed.yaml
 ```
 
 Two files come out:
 
-- `../banks/synthegm_v1_hybrid.classifier.h5` — the primary
-  artifact (post-mixer hybrid ClassifierBank).
+- `../banks/synthegm_v1_noise_mixed.classifier.h5` — the primary
+  artifact (post-mixer noise-mixed ClassifierBank).
 - `../banks/synthegm_v1_clean.classifier.h5` — the pre-mix clean
   intermediate (preserved because the example config sets
   `output.clean_intermediate`). Useful for ablation studies comparing
-  clean-only vs hybrid training without re-running the simulator.
+  clean-only vs noise-mixed training without re-running the simulator.
 
-### Producing a hybrid dataset in two steps (decoupled mix)
+### Producing a noise-mixed dataset in two steps (decoupled mix)
 
 ```bash
 synthegm-generate-dataset examples/synthegm_v1_baseline.yaml
 synthegm-mix              examples/synthegm_mix.yaml
 ```
 
-Equivalent output to the one-step hybrid path. Useful when you want
+Equivalent output to the one-step noise-mixed path. Useful when you want
 to overlay several different noise banks (or several different SNR
 ranges) on the same clean simulation run.
 
@@ -311,7 +329,7 @@ for snr in 5 10 15 20 25; do
 done
 ```
 
-egm-classifier can then evaluate against each hybrid bank
+egm-classifier can then evaluate against each noise-mixed bank
 independently and you'll have one AUROC per operating point.
 
 ## Programmatic use
@@ -372,12 +390,12 @@ from myocard_synthetic_egm_pipeline.mixer import MixerConfig, mix_classifier_ban
 
 clean = load_classifier_bank("out/synthegm_dev.classifier.h5")
 noise = read_noise_bank_hdf5("banks/iafdb_noise_v1.h5")
-hybrid = mix_classifier_bank(
+noise-mixed = mix_classifier_bank(
     clean_bank=clean,
     noise_bank=noise,
     config=MixerConfig(snr_db_range=(10.0, 25.0)),
 )
-write_classifier_bank(hybrid, "out/synthegm_dev_hybrid.classifier.h5", overwrite=True)
+write_classifier_bank(noise-mixed, "out/synthegm_dev_noise_mixed.classifier.h5", overwrite=True)
 ```
 
 Strategy specs are pure-data dataclasses; new substrate / activation /

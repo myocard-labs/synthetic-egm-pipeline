@@ -105,7 +105,7 @@ windows from real recordings that `iafdb-pipeline`'s threshold
 strategy flagged as low-amplitude (under Sanders 2003's
 "electrically silent" tier or a per-record percentile cutoff). Each
 window carries a (`source_record`, `source_channel`) tag — when you
-look at a hybrid trace later, you can trace its noise component back
+look at a noise-mixed trace later, you can trace its noise component back
 to the specific IAFDB record + bipolar channel it came from.
 
 For each clean trace we want a noise segment of the same length so
@@ -126,7 +126,7 @@ time the lengths match. The tile/crop logic handles the edge cases:
 **What this does to the signal.** Produces a `(T_samples,)` noise
 array ready to be added to the clean trace. The accompanying
 `(source_record, source_channel)` audit fields propagate to the
-hybrid trace's `trace_metadata`.
+noise-mixed trace's `trace_metadata`.
 
 **Code:** `mixer/mixing.py::sample_noise_for_length` — handles the
 three branches (match / crop / tile) and returns the audit fields
@@ -217,7 +217,7 @@ filter mismatch or unmodelled IR. Neither matches the dominant
 real-world failure mode for atrial bipolar EGM, which is additive
 ambient + electrode contact noise.
 
-**What this does to the signal.** Produces the final hybrid bipolar
+**What this does to the signal.** Produces the final noise-mixed bipolar
 trace — same shape as the clean trace, same units, with noise added
 at the configured SNR. This is what the classifier trains on.
 
@@ -276,7 +276,7 @@ configured via `MixerConfig.snr_db_range`.
 
 ## Step 6 — Provenance and audit trail
 
-**What the code does.** For each hybrid trace, stamp three audit
+**What the code does.** For each noise-mixed trace, stamp three audit
 fields into `trace_metadata`:
 
 - `snr_db` — the realised per-trace target SNR (dB).
@@ -299,7 +299,7 @@ classifier prediction can be traced back to:
 3. The trace_metadata → which noise record + channel + SNR went
    into *this* trace specifically.
 
-That's enough information to recreate the exact hybrid trace from
+That's enough information to recreate the exact noise-mixed trace from
 the source banks if needed (modulo the random seed for noise
 selection — saved on the mixer entry's `master_seed` field).
 
@@ -316,13 +316,13 @@ source record, etc.).
 - Bank-level mixer entry: `mixer/mixing.py::mix_classifier_bank`,
   the `mixer_entry = ClassifierBankMetaData(...)` construction.
 - Optional Pydantic SyntheticBank sibling:
-  `mixer/storage.py::write_hybrid_synthetic_bank_from_classifier` —
+  `mixer/storage.py::write_noise_mixed_synthetic_bank_from_classifier` —
   for offline analysis tools that prefer the SyntheticBank schema's
   columnar layout to ClassifierBank's per-trace dicts.
 
 ## What the classifier sees after mixing
 
-After the six steps, each hybrid training example looks like:
+After the six steps, each noise-mixed training example looks like:
 
 | Field | Type | Origin |
 |---|---|---|

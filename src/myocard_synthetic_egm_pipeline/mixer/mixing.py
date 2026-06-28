@@ -44,6 +44,12 @@ from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ, bandpass
 from tqdm import tqdm
 
 from myocard_synthetic_egm_pipeline import __version__
+from myocard_synthetic_egm_pipeline.constants import BANK_SOURCE
+from myocard_synthetic_egm_pipeline.ids import (
+    derive_synthetic_bank_id,
+    resolve_noise_bank_id,
+    validate_artifact_id,
+)
 
 DEFAULT_SNR_DB_RANGE: tuple[float, float] = (10.0, 25.0)
 """Per-trace target SNR range (dB). Defaults match Sánchez 2021's
@@ -166,12 +172,30 @@ def sample_noise_for_length(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_noise_mixed_id(override: str | None, clean_bank: ClassifierBank) -> str:
+    """Resolve the noise-mixed bank's own stable id.
+
+    Override -> a ``_noise_mixed`` id derived from the clean source bank's cell
+    model (read off the clean ``ClassifierBankMetaData`` entry).
+    """
+    if override is not None:
+        return validate_artifact_id(override)
+    cell_model = "unknown"
+    for entry in clean_bank.banks:
+        if entry.bank_type == BANK_SOURCE:
+            cell_model = str(entry.bank_metadata.get("cell_model") or "unknown")
+            break
+    return derive_synthetic_bank_id(cell_model, noise_mixed=True)
+
+
 def mix_classifier_bank(
     *,
     clean_bank: ClassifierBank,
     noise_bank: NoiseBank,
     config: MixerConfig | None = None,
     noise_bank_path: str = "",
+    noise_bank_id: str | None = None,
+    noise_mixed_bank_id: str | None = None,
 ) -> ClassifierBank:
     """Return a new ClassifierBank with each trace mixed against sampled noise.
 
@@ -242,9 +266,9 @@ def mix_classifier_bank(
     # Extend the bank provenance with a mixer entry. The clean source
     # banks are preserved verbatim so a downstream consumer can still
     # see where the underlying signal came from.
-    mixer_bank_id = len(clean_bank.banks)
+    resolved_noise_id = resolve_noise_bank_id(noise_bank_path or None, override=noise_bank_id)
     mixer_entry = ClassifierBankMetaData(
-        bank_id=mixer_bank_id,
+        bank_id=resolved_noise_id,
         bank_type="mixer",
         bank_path=str(noise_bank_path or ""),
         bank_metadata={
@@ -260,7 +284,9 @@ def mix_classifier_bank(
         },
     )
 
+    resolved_noise_mixed_id = _resolve_noise_mixed_id(noise_mixed_bank_id, clean_bank)
     return ClassifierBank(
+        id=resolved_noise_mixed_id,
         banks=[*clean_bank.banks, mixer_entry],
         traces=new_traces,
         labels=dict(clean_bank.labels),
