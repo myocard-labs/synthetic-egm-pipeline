@@ -190,10 +190,10 @@ def test_synthetic_bank_premixer_rejects_bad_stim_edge(
 # ---------------------------------------------------------------------------
 
 
-def test_hybrid_synthetic_bank_reads_mixer_audit_fields(
+def test_noise_mixed_synthetic_bank_reads_mixer_audit_fields(
     small_classifier_bank: ClassifierBank,
 ) -> None:
-    """A hybrid ClassifierBank (with mixer audit fields stamped) converts
+    """A noise_mixed ClassifierBank (with mixer audit fields stamped) converts
     cleanly to a SyntheticBank with the audit columns populated."""
     # Simulate the mixer's audit-field stamping.
     for i, trace in enumerate(small_classifier_bank.traces):
@@ -205,7 +205,7 @@ def test_hybrid_synthetic_bank_reads_mixer_audit_fields(
 
     small_classifier_bank.banks.append(
         ClassifierBankMetaData(
-            bank_id=1,
+            bank_id="nbank_iafdb_2026-06-27",
             bank_type="mixer",
             bank_path="<test>",
             bank_metadata={
@@ -217,7 +217,7 @@ def test_hybrid_synthetic_bank_reads_mixer_audit_fields(
             },
         )
     )
-    bank = build_synthetic_bank_from_classifier(hybrid_bank=small_classifier_bank)
+    bank = build_synthetic_bank_from_classifier(noise_mixed_bank=small_classifier_bank)
     assert bank.traces.snr_db == [12.0, 13.0, 14.0, 15.0]
     assert bank.traces.noise_record == ["iaf1_afw", "iaf2_afw", "iaf3_afw", "iaf4_afw"]
     assert bank.traces.noise_channel == ["CS12"] * 4
@@ -226,17 +226,17 @@ def test_hybrid_synthetic_bank_reads_mixer_audit_fields(
     assert bank.mixer_config["snr_db_range"] == [10.0, 25.0]
 
 
-def test_hybrid_synthetic_bank_rejects_empty_bank() -> None:
+def test_noise_mixed_synthetic_bank_rejects_empty_bank() -> None:
     """An empty ClassifierBank has nothing to convert; surface a clear error."""
     empty = ClassifierBank(banks=[], traces=[], labels={})
     with pytest.raises(ValueError, match="no traces"):
-        build_synthetic_bank_from_classifier(hybrid_bank=empty)
+        build_synthetic_bank_from_classifier(noise_mixed_bank=empty)
 
 
-def test_hybrid_synthetic_bank_rejects_invalid_stim_edge(
+def test_noise_mixed_synthetic_bank_rejects_invalid_stim_edge(
     small_classifier_bank: ClassifierBank,
 ) -> None:
     """A non-enum stim_edge in trace_metadata is caught."""
     small_classifier_bank.traces[0].trace_metadata["stim_edge"] = "diagonal"
     with pytest.raises(ValueError, match="stim_edge"):
-        build_synthetic_bank_from_classifier(hybrid_bank=small_classifier_bank)
+        build_synthetic_bank_from_classifier(noise_mixed_bank=small_classifier_bank)
