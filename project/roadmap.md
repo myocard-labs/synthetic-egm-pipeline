@@ -106,7 +106,15 @@ Scope (recap, see `architecture.md` for the design rationale):
 
 ## v0.3.0+ — concrete next steps
 
-### Compatibility validator for strategy combinations
+Items scheduled into cross-cutting Phase work in the meta repo's
+`project_plan.md` carry a `→ tracked at intracardiac-platform Phase X`
+annotation. Note: this repo's previous internal "Phase 2 — Courtemanche"
+and "Phase 5 — 3D atrial geometry" subsection numbering has been
+retired in favor of cross-references to project_plan phase numbers,
+to stop the two phase number-planes from drifting apart. Same scope,
+new framing.
+
+### Compatibility validator for strategy combinations — Phase 7
 
 A strategy combo can be incompatible in subtle ways:
 ``PlanarEdgeStimulus`` requires a geometry with well-defined edges
@@ -142,9 +150,11 @@ The CLI calls this once after YAML load, before
 ``generate_dataset``. Each strategy can register declared
 "compatibility constraints" against the others — likely a small table
 keyed on the four `type` discriminators. Triggered when the second
-geometry type lands (3D arrives in Phase 5).
+geometry type lands.
 
-### Paper visualization data + opt-in mesh export
+> → Tracked at `intracardiac-platform/project/project_plan.md` Phase 7 (3D substrate geometry). That's the "second geometry type lands" moment.
+
+### Paper visualization data + opt-in mesh export — Refactor Step 7
 
 `SimulationResult` already carries everything a Sánchez-style
 substrate-with-electrodes-overlay visualization needs:
@@ -181,7 +191,9 @@ Cross-cutting work item — track at the meta repo level in
 ``project_plan.md`` so it sits alongside the egm-viewer +
 egm-classifier figure needs.
 
-### Additional substrate strategies
+> → Tracked at `intracardiac-platform/project/refactor_checklist.md` Phase 7 (intracardiac-papers, plural). The figure-rendering CLI (`egm-figures`) ships inside egm-studio (Refactor Step 6); the recipe definitions + per-paper figure scripts live in intracardiac-papers; the producer-side bit (opt-in `SimulationResult` pickling) lives here.
+
+### Additional substrate strategies — Phase 3
 
 - ``InterstitialFibrosis`` — banded patterns between myocyte bundles.
 - ``PatchyFibrosis`` — discrete fibrotic islands of configurable size.
@@ -194,13 +206,23 @@ Each is a new concrete in `simulate/specs.py` + a new
 Protocol changes; no schema changes; no LabelPolicy changes (because
 labels read the realized mask, not the strategy type).
 
-### Additional activation sources
+> → Tracked at `intracardiac-platform/project/project_plan.md` Phase 3 (pattern classification). The four substrate types ARE the pattern classes the classifier learns to distinguish.
+
+### Additional activation sources — split across Phase 1.5 and Phase 4
 
 - ``PointStimulus(position_mm)`` — focal source for spiral-wave studies.
-- ``PacingTrain(period_ms, n_beats)`` — for steady-state pacing
-  protocols (the Phase-2 multi-beat work).
+  → Phase 1.5 (synthetic realism).
+- ``PacingTrain(period_ms, n_beats)`` — for steady-state pacing protocols.
+  → Phase 4 (multi-beat sequence classification).
 - ``S1S2Protocol(s1_interval_ms, s2_interval_ms)`` — for re-entry
   inducibility studies.
+  → Phase 1.5 (synthetic realism).
+- Multi-edge stimulation — Sanchez 2021 stimulates from three different
+  sides (left border, bottom border, top-right corner) to capture
+  propagation-direction sensitivity; v1's `PlanarEdgeStimulus` only
+  stimulates from a single edge. Added 2026-06-23 by the multi-beat
+  research pass.
+  → Phase 1.5 (synthetic realism). See [[reference-multi-beat-consensus]].
 
 These need a richer ``stim_edge`` schema in
 ``synthetic_bank`` (the migration note in the current schema points
@@ -210,7 +232,9 @@ the second activation source lands. Coordinated bump:
 egm-contracts v0.3.0 + egm-data v0.3.0 + synthetic-egm-pipeline
 v0.3.0 in one release.
 
-### Pluggable noise-selection strategy (mixer-side)
+> → Cross-cutting schema bump tracked at `intracardiac-platform/project/project_plan.md` Phase 2 (since the coordinated release is a natural Phase 2 milestone — Phase 2 is the "first big publish" inflection per [[project-publishing-timing]] and bundling the schema bump there avoids fragmenting the polymorphic-stimulation work across multiple releases).
+
+### Pluggable noise-selection strategy (mixer-side) — Phase 1.5
 
 Today's mixer samples noise segments uniformly at random across the
 full noise bank — see ``mixer/mixing.py::sample_noise_for_length``.
@@ -271,20 +295,27 @@ this in v0.2.0; deferred because the v1 per-trace classifier doesn't
 consume cross-pair signal so the cost outweighs the benefit until
 the classifier architecture changes.
 
-### Additional label policies
+> → Pulled forward 2026-06-23 to Phase 1.5 at `intracardiac-platform/project/project_plan.md`. Reasoning: even with the v1 per-trace classifier, real recordings have within-patient noise correlation that the current uniform-random selection breaks. Strict synthetic-realism upgrade.
+
+### Additional label policies — split across Phase 2 / Phase 3 / component-internal
 
 - ``FibroticTypeLabel`` — multi-class. Requires the multi-type
   ``HeterogeneousMix`` substrate to be meaningful.
+  → Phase 2 (multi-class severity).
 - ``NeighborhoodCompositionLabel`` — fractional composition per
   fibrosis type in the bipolar pair's neighborhood, then thresholded.
+  → Phase 3 (pattern classification — needs the four substrate types from Phase 3 anyway).
 - ``DistanceToNearestFibroticLabel`` — minimum distance from the
   pair's midpoint to a fibrotic node; useful as a continuous
   regression target.
+  → Component-internal. Different model arch (regression head, not classification) so not on any phase critical path.
 
 Each is a new class in `simulate/label_policy.py`. No Protocol
 changes; no schema changes (labels are still int + a labels_dict).
 
-### Phase 2 — Courtemanche
+### Courtemanche cell model — Phase 1.5
+
+> Section previously titled "Phase 2 — Courtemanche" using this repo's local phase numbering; renamed 2026-06-23 to drop the local numbering in favor of the cross-reference below.
 
 Swap the cell model from Aliev-Panfilov to Courtemanche 1998 (human
 atrial ionic model). Lands as a new model class inside
@@ -295,7 +326,11 @@ helpers (currently `_configure_anisotropy_2d` reading
 `_configure_anisotropy_2d_courtemanche` sibling or a small dispatch
 on a new `cell_model` knob in `RunConfig`.
 
-### Phase 5 — 3D atrial geometry
+> → Tracked at `intracardiac-platform/project/project_plan.md` Phase 1.5 (synthetic-data complexity + realism). Human-specific ionic model is a strict realism upgrade over the generic excitable-medium Aliev-Panfilov; same one Sanchez 2021 uses.
+
+### 3D atrial geometry — Phase 7
+
+> Section previously titled "Phase 5 — 3D atrial geometry" using this repo's local phase numbering; renamed 2026-06-23 to drop the local numbering in favor of the cross-reference below.
 
 The most likely trigger for the Option A → Option B migration in
 `architecture.md`. New concretes:
@@ -310,6 +345,8 @@ grids; 3D unstructured meshes are TorchCor's wheelhouse. Add a
 `backends/torchcor/` subdirectory then; the strategy Protocols stay
 identical (Guardrail 2 holds), the backend interface stays one
 method (Option A still in force).
+
+> → Tracked at `intracardiac-platform/project/project_plan.md` Phase 7 (3D substrate geometry). Phase 8 (3D catheter modeling for realistic electrode placement in the 3D substrate) extends `EndocardialSurface3D` into explicit catheter geometry — same repo, follow-on work.
 
 ## v1.0 — what graduating Phase 1 means
 
