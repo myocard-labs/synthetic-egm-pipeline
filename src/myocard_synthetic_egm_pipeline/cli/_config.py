@@ -206,13 +206,14 @@ class InlineMixConfig:
     """Inline mixer block inside a generate-dataset config.
 
     The mixer runs against the just-generated clean ClassifierBank
-    in memory, then the dataset CLI writes the hybrid bank to
+    in memory, then the dataset CLI writes the noise-mixed bank to
     ``output.classifier_bank``. Set ``output.clean_intermediate``
     to write the pre-mix clean bank as a sibling artifact.
     """
 
     noise_bank_path: Path
     mixer_config: MixerConfig
+    noise_bank_id: str | None
 
 
 @dataclass(frozen=True)
@@ -253,6 +254,7 @@ class GenerateDatasetCLIConfig:
     also_emit_synthetic_bank: bool
     synthetic_bank_output: Path | None
     description: str
+    bank_id: str | None
 
     # Optional inline mixing
     mix: InlineMixConfig | None
@@ -352,6 +354,9 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         doc["_config_dir"],
     )
     description = str(_optional(doc, "output", "description", default=""))
+    # Optional explicit stable id for the primary output bank; None -> derived.
+    bank_id_raw = _optional(doc, "output", "bank_id", default=None)
+    bank_id = str(bank_id_raw) if bank_id_raw is not None else None
 
     # --- optional mix block --------------------------------------------
     mix: InlineMixConfig | None = None
@@ -379,6 +384,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         also_emit_synthetic_bank=also_emit_synthetic_bank,
         synthetic_bank_output=synthetic_bank_output,
         description=description,
+        bank_id=bank_id,
         mix=mix,
     )
 
@@ -398,6 +404,8 @@ class MixCLIConfig:
     also_emit_synthetic_bank: bool
     output_synthetic_bank: Path | None
     mixer_config: MixerConfig
+    noise_bank_id: str | None
+    bank_id: str | None
 
 
 def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
@@ -418,6 +426,11 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
     mixer_block = _optional(doc, "mixer", default={}) or {}
     mixer_config = _build_mixer_config(mixer_block)
 
+    # Optional explicit ids: the noise reference (overrides the sidecar
+    # read) and the noise-mixed output bank's own id.
+    noise_bank_id_raw = _optional(doc, "input", "noise_bank_id", default=None)
+    bank_id_raw = _optional(doc, "output", "bank_id", default=None)
+
     return MixCLIConfig(
         input_classifier_bank=input_classifier_bank,
         noise_bank_path=noise_bank_path,
@@ -425,6 +438,8 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
         also_emit_synthetic_bank=also_emit_synthetic_bank,
         output_synthetic_bank=output_synthetic_bank,
         mixer_config=mixer_config,
+        noise_bank_id=str(noise_bank_id_raw) if noise_bank_id_raw is not None else None,
+        bank_id=str(bank_id_raw) if bank_id_raw is not None else None,
     )
 
 
@@ -464,7 +479,9 @@ def _build_inline_mix(block: dict[str, Any], config_dir: Path) -> InlineMixConfi
     noise_bank_path = _resolve_path(str(noise_raw) if noise_raw is not None else "", config_dir)
     if noise_bank_path is None:
         raise ConfigError("mix.noise_bank must be set when the 'mix:' block is present.")
+    noise_bank_id_raw = _optional(block, "noise_bank_id", default=None)
     return InlineMixConfig(
         noise_bank_path=noise_bank_path,
         mixer_config=_build_mixer_config(block),
+        noise_bank_id=str(noise_bank_id_raw) if noise_bank_id_raw is not None else None,
     )

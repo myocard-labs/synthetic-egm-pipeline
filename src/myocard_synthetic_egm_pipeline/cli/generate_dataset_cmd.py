@@ -19,7 +19,7 @@ Examples
     synthegm-generate-dataset examples/synthegm_v1_baseline.yaml
 
     # Same scope, with inline mixing against an iafdb-pipeline noise bank.
-    synthegm-generate-dataset examples/synthegm_v1_hybrid.yaml
+    synthegm-generate-dataset examples/synthegm_v1_noise_mixed.yaml
 
     # Calibration run with deterministic edge / fixed density.
     synthegm-generate-dataset examples/synthegm_calibration.yaml
@@ -47,7 +47,7 @@ from myocard_synthetic_egm_pipeline.cli._config import (
 )
 from myocard_synthetic_egm_pipeline.mixer import mix_classifier_bank
 from myocard_synthetic_egm_pipeline.mixer.storage import (
-    write_hybrid_synthetic_bank_from_classifier,
+    write_noise_mixed_synthetic_bank_from_classifier,
 )
 from myocard_synthetic_egm_pipeline.simulate import (
     DatasetConfig,
@@ -167,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_path=cfg.classifier_bank_output,
                 description=cfg.description,
                 overwrite=args.overwrite,
+                bank_id=cfg.bank_id,
             )
             synthetic_path: Path | None = None
             if cfg.also_emit_synthetic_bank:
@@ -177,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                     or _sibling_path(cfg.classifier_bank_output, ".synthetic.h5"),
                     description=cfg.description,
                     overwrite=args.overwrite,
+                    bank_id=cfg.bank_id,
                 )
             print(
                 _format_result(
@@ -192,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # Inline-mixer path. Build clean bank in memory, optionally
         # write the clean intermediate to disk, mix, then write the
-        # hybrid bank as the primary output.
+        # noise-mixed bank as the primary output.
         clean_bank = build_classifier_bank_from_dataset(
             dataset_result=dataset_result,
             config=dataset_cfg,
@@ -207,23 +209,26 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         noise_bank = read_noise_bank_hdf5(cfg.mix.noise_bank_path)
-        hybrid_bank = mix_classifier_bank(
+        noise_mixed_bank = mix_classifier_bank(
             clean_bank=clean_bank,
             noise_bank=noise_bank,
             config=cfg.mix.mixer_config,
             noise_bank_path=str(cfg.mix.noise_bank_path),
+            noise_bank_id=cfg.mix.noise_bank_id,
+            noise_mixed_bank_id=cfg.bank_id,
         )
         classifier_path = write_classifier_bank(
-            hybrid_bank, cfg.classifier_bank_output, overwrite=args.overwrite
+            noise_mixed_bank, cfg.classifier_bank_output, overwrite=args.overwrite
         )
         synthetic_path = None
         if cfg.also_emit_synthetic_bank:
-            synthetic_path = write_hybrid_synthetic_bank_from_classifier(
-                hybrid_bank=hybrid_bank,
+            synthetic_path = write_noise_mixed_synthetic_bank_from_classifier(
+                noise_mixed_bank=noise_mixed_bank,
                 output_path=cfg.synthetic_bank_output
                 or _sibling_path(cfg.classifier_bank_output, ".synthetic.h5"),
                 description=cfg.description,
                 overwrite=args.overwrite,
+                bank_id=cfg.bank_id,
             )
         print(
             _format_result(

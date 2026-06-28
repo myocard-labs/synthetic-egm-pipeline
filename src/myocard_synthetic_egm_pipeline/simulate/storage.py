@@ -9,7 +9,7 @@ Two thin write helpers around the pure-in-memory builders in
   :class:`DatasetResult` → SyntheticBank.h5 on disk (optional sibling
   output for offline analysis tools that prefer the columnar format).
 
-The hybrid (post-mixer) write wrappers live in
+The noise-mixed (post-mixer) write wrappers live in
 :mod:`~myocard_synthetic_egm_pipeline.mixer.storage`; the build logic
 they share with this module is in
 :mod:`~myocard_synthetic_egm_pipeline.simulate.builders`.
@@ -37,6 +37,7 @@ def write_classifier_bank_from_dataset(
     output_path: Path | str,
     description: str = "",
     overwrite: bool = False,
+    bank_id: str | None = None,
 ) -> Path:
     """Build + write a ClassifierBank for a finished DatasetResult.
 
@@ -51,6 +52,7 @@ def write_classifier_bank_from_dataset(
         config=config,
         bank_path=output_path,
         description=description,
+        bank_id=bank_id,
     )
     return write_classifier_bank(bank, output_path, overwrite=overwrite)
 
@@ -62,6 +64,7 @@ def write_synthetic_bank_from_dataset(
     output_path: Path | str,
     description: str = "",
     overwrite: bool = False,
+    bank_id: str | None = None,
 ) -> Path:
     """Build + write a Pydantic SyntheticBank for a finished DatasetResult.
 
@@ -76,6 +79,7 @@ def write_synthetic_bank_from_dataset(
         dataset_result=dataset_result,
         config=config,
         description=description,
+        bank_id=bank_id,
     )
     return write_synthetic_bank(bank, output_path, overwrite=overwrite)
 

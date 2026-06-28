@@ -42,7 +42,7 @@ from myocard_synthetic_egm_pipeline.cli._config import (
 )
 from myocard_synthetic_egm_pipeline.mixer import mix_classifier_bank
 from myocard_synthetic_egm_pipeline.mixer.storage import (
-    write_hybrid_synthetic_bank_from_classifier,
+    write_noise_mixed_synthetic_bank_from_classifier,
 )
 
 
@@ -54,9 +54,9 @@ def _format_result(
     synthetic_path: Path | None,
 ) -> str:
     lines: list[str] = []
-    lines.append(f"Wrote hybrid classifier bank: {classifier_path}")
+    lines.append(f"Wrote noise-mixed classifier bank: {classifier_path}")
     if synthetic_path is not None:
-        lines.append(f"Wrote hybrid synthetic bank:  {synthetic_path}")
+        lines.append(f"Wrote noise-mixed synthetic bank:  {synthetic_path}")
     lines.append(f"  N traces:                   {n_traces}")
     lines.append(f"  Noise bank:                 {cfg.noise_bank_path}")
     lo, hi = cfg.mixer_config.snr_db_range
@@ -110,11 +110,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        hybrid_bank = mix_classifier_bank(
+        noise_mixed_bank = mix_classifier_bank(
             clean_bank=clean_bank,
             noise_bank=noise_bank,
             config=mixer_config,
             noise_bank_path=str(cfg.noise_bank_path),
+            noise_bank_id=cfg.noise_bank_id,
+            noise_mixed_bank_id=cfg.bank_id,
         )
     except Exception as exc:
         print(f"ERROR during mixing: {exc}", file=sys.stderr)
@@ -122,18 +124,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         classifier_path = write_classifier_bank(
-            hybrid_bank, cfg.output_classifier_bank, overwrite=args.overwrite
+            noise_mixed_bank, cfg.output_classifier_bank, overwrite=args.overwrite
         )
         synthetic_path: Path | None = None
         if cfg.also_emit_synthetic_bank:
             output_path = cfg.output_synthetic_bank or _sibling_synthetic(
                 cfg.output_classifier_bank
             )
-            synthetic_path = write_hybrid_synthetic_bank_from_classifier(
-                hybrid_bank=hybrid_bank,
+            synthetic_path = write_noise_mixed_synthetic_bank_from_classifier(
+                noise_mixed_bank=noise_mixed_bank,
                 output_path=output_path,
                 description=mixer_config.description,
                 overwrite=args.overwrite,
+                bank_id=cfg.bank_id,
             )
     except FileExistsError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -143,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         _format_result(
             cfg=cfg,
-            n_traces=len(hybrid_bank.traces),
+            n_traces=len(noise_mixed_bank.traces),
             classifier_path=classifier_path,
             synthetic_path=synthetic_path,
         )
