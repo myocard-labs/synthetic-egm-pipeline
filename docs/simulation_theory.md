@@ -610,9 +610,9 @@ validate the file on read.
   `simulate/storage.py::write_synthetic_bank_from_dataset` (builds
   the Pydantic model with all 12 per-trace columns and the top-level
   provenance fields, hands to `myocard_egm_data.banks.write_synthetic_bank`).
-- For the hybrid (post-mixer) case, the equivalent
+- For the noise-mixed (post-mixer) case, the equivalent
   SyntheticBank writer is
-  `mixer/storage.py::write_hybrid_synthetic_bank_from_classifier`
+  `mixer/storage.py::write_noise_mixed_synthetic_bank_from_classifier`
   — it reads mixer audit fields from `trace_metadata` instead of
   emitting `NaN`/`""`.
 

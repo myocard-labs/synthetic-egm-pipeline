@@ -51,7 +51,7 @@ Scope (recap, see `architecture.md` for the design rationale):
   `sample_noise_for_length`, `mix_classifier_bank`. Additive
   bandpass-domain overlay; per-trace SNR sampled from the configured
   range; the bandpass primitive comes from `myocard-egm-signal`.
-- `mixer/storage.py`: thin write wrapper for the hybrid
+- `mixer/storage.py`: thin write wrapper for the noise-mixed
   Pydantic SyntheticBank sibling output.
 - Provenance trail: per-trace `snr_db` / `noise_record` /
   `noise_channel` stamped into `trace_metadata`, plus a "mixer"
@@ -74,7 +74,7 @@ Scope (recap, see `architecture.md` for the design rationale):
 
 - `examples/synthegm_v1_baseline.yaml` (Phase 1 default clean
   corpus).
-- `examples/synthegm_v1_hybrid.yaml` (same scope + inline mixer).
+- `examples/synthegm_v1_noise_mixed.yaml` (same scope + inline mixer).
 - `examples/synthegm_calibration.yaml` (4-sim deterministic
   calibration).
 - `examples/synthegm_mix.yaml` (standalone mixer at default SNR
@@ -104,7 +104,33 @@ Scope (recap, see `architecture.md` for the design rationale):
 - `project/roadmap.md` — this file.
 - Top-level `README.md` — pitch, install, quick-start, citation.
 
-## v0.3.0+ — concrete next steps
+## v0.3.0 — stable cross-artifact IDs (current release)
+
+Adds stable cross-artifact ID stamping for the cross-artifact-linkage
+system (egm-contracts v0.5.0 / egm-data v0.4.0):
+
+- Every bank carries an egm-contracts `ArtifactId`. The clean
+  ClassifierBank + optional SyntheticBank derive
+  `tbank_synthetic_<cell_model>_<date>` from the cell model; the noise-mixed
+  bank gets a `_noise_mixed` variant. Derivation + validation live in `ids.py`.
+- The mixer's "noise source" provenance entry carries the noise bank's
+  real id, read from the iafdb noise run-record sidecar (derived
+  `nbank_iafdb_<date>` fallback). Mixed traces keep the clean source id.
+- Forced fixes from the re-pin: the two `bank_id=0` integers + the
+  mixer's `len(banks)` integer became stable strings, and
+  `SchemaVersion.field_1_0` became `current_version("synthetic_bank")`
+  (synthetic_bank schema 1.0 → 1.1).
+- Overridable via `output.bank_id` / `mix.noise_bank_id` config keys.
+
+Re-pinned dependencies:
+
+```
+myocard-egm-contracts @ git+...@v0.5.1
+myocard-egm-data       @ git+...@v0.4.0
+myocard-egm-signal     @ git+...@v0.1.0
+```
+
+## v0.4.0+ — concrete next steps
 
 Items scheduled into cross-cutting Phase work in the meta repo's
 `project_plan.md` carry a `→ tracked at intracardiac-platform Phase X`
@@ -228,9 +254,12 @@ These need a richer ``stim_edge`` schema in
 ``synthetic_bank`` (the migration note in the current schema points
 at this). The plan: replace ``stim_edge`` with a polymorphic
 ``stimulation`` object (type discriminator + per-type params) when
-the second activation source lands. Coordinated bump:
-egm-contracts v0.3.0 + egm-data v0.3.0 + synthetic-egm-pipeline
-v0.3.0 in one release.
+the second activation source lands. Coordinated bump — note the v0.3.0
+numbers originally planned here are all consumed (egm-contracts is at
+v0.5.1, egm-data at v0.4.0, and synthetic-egm-pipeline v0.3.0 shipped the
+bank-id work), so the polymorphic-stimulation schema lands as a *future*
+coordinated release: egm-contracts v0.6.0+ + egm-data v0.5.0+ +
+synthetic-egm-pipeline v0.4.0+ in one release.
 
 > → Cross-cutting schema bump tracked at `intracardiac-platform/project/project_plan.md` Phase 2 (since the coordinated release is a natural Phase 2 milestone — Phase 2 is the "first big publish" inflection per [[project-publishing-timing]] and bundling the schema bump there avoids fragmenting the polymorphic-stimulation work across multiple releases).
 

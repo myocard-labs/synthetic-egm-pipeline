@@ -4,7 +4,7 @@
 # simulations × 20 bipolar pairs = 2,000 traces, fibrosis density
 # sampled uniformly over [0, 0.5], local-density labelling at 2 mm /
 # 0.1 threshold, no inline noise mixing. Pair with
-# ``synthegm_v1_hybrid.yaml`` to add the IAFDB noise overlay in one
+# ``synthegm_v1_noise_mixed.yaml`` to add the IAFDB noise overlay in one
 # run, or run ``synthegm-mix`` separately against the clean output.
 #
 # Output: ../banks/synthegm_v1_baseline.classifier.h5
@@ -60,6 +60,7 @@ output:
   clean_intermediate: null
   also_emit_synthetic_bank: false          # set true to also write a Pydantic SyntheticBank sibling
   synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
+  # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted
   description: >
     Phase 1 baseline synthetic corpus — 100 sims, LocalDensityLabel(r=2mm, t=0.1),
     uniform density sweep with 30% forced-healthy. No noise overlay.

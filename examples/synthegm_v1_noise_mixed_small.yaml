@@ -1,4 +1,4 @@
-# synthegm-generate-dataset — v1 hybrid (clean + inline mixer).
+# synthegm-generate-dataset — v1 noise-mixed (clean + inline mixer).
 #
 # Same scope as ``synthegm_v1_baseline.yaml`` with the IAFDB noise
 # overlay added inline. The pipeline:
@@ -7,9 +7,9 @@
 #      writes it to disk via output.clean_intermediate)
 #   3. samples noise per trace from the iafdb noise bank at the
 #      configured SNR distribution
-#   4. writes the *hybrid* ClassifierBank as the primary output
+#   4. writes the *noise-mixed* ClassifierBank as the primary output
 #
-# Output: ../banks/synthegm_v1_hybrid.classifier.h5
+# Output: ../banks/synthegm_v1_noise_mixed.classifier.h5
 
 dataset:
   n_simulations: 50
@@ -56,18 +56,18 @@ run:
   capture_oversample: 4
 
 output:
-  classifier_bank: ../banks/synthegm_v1_hybrid_small.classifier.h5
+  classifier_bank: ../banks/synthegm_v1_noise_mixed_small.classifier.h5
   # Persist the pre-mix clean bank too — useful for ablation studies
-  # that compare clean-only vs hybrid training without re-running the
+  # that compare clean-only vs noise-mixed training without re-running the
   # simulator. Set to null to skip.
   clean_intermediate: ../banks/synthegm_v1_clean_small.classifier.h5
   also_emit_synthetic_bank: false
   synthetic_bank: null
   description: >
-    Phase 1 hybrid synthetic corpus — same clean dataset as baseline,
+    Phase 1 noise-mixed synthetic corpus — same clean dataset as baseline,
     overlaid with iafdb_noise_v1 at 10-25 dB per-trace SNR.
 
-# Inline mixer block. Triggers the hybrid output path.
+# Inline mixer block. Triggers the noise-mixed output path.
 mix:
   # Noise bank produced by iafdb-pipeline; ships from the IAFDB noise-
   # extraction CLI. Resolve relative to this config file's directory.
@@ -78,4 +78,4 @@ mix:
   master_seed: 0                           # mixer's own RNG seed (independent of simulator's)
   show_progress: true                      # tqdm bar over the mixer loop
   description: >
-    Hybrid mix vs iafdb_noise_v1 at 10-25 dB SNR.
+    Noise-mixed bank vs iafdb_noise_v1 at 10-25 dB SNR.

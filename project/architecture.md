@@ -74,6 +74,7 @@ schema versions from `egm-contracts`.
 src/myocard_synthetic_egm_pipeline/
 ├── __init__.py
 ├── constants.py                  ← Phase-1 numeric defaults
+├── ids.py                        ← stable cross-artifact id derive/validate/resolve
 ├── simulate/
 │   ├── __init__.py               ← re-exports public API
 │   ├── specs.py                  ← 4 strategy Protocols + concretes (pure data)
@@ -257,9 +258,43 @@ labels dict land in the ClassifierBank directly.
 **Optional SyntheticBank:** the CLI takes an optional
 `also_emit_synthetic_bank: true` config flag. When set, the producer
 writes both a ClassifierBank and a SyntheticBank. The SyntheticBank
-schema is preserved at its current `v0.2.0` version — no growth, no
-migration — and remains useful for offline analysis notebooks and the
-egm-viewer Inspection tab.
+schema stays minimal — its only growth in the cross-artifact-linkage
+wave was the optional `bank_id` stable-id field (schema 1.0 → 1.1,
+egm-contracts v0.5.0); no per-label-policy columns, no migration — and it
+remains useful for offline analysis notebooks and the egm-viewer
+Inspection tab.
+
+## Stable cross-artifact IDs
+
+Since v0.3.0 (egm-contracts v0.5.0 / egm-data v0.4.0) every bank the
+producer writes carries a stable cross-artifact ID — an egm-contracts
+`ArtifactId` the intracardiac-platform phase manifests + future
+provenance graph key on. `ids.py` owns the derive / validate / resolve
+logic; it imports no backend code (Guardrail 1).
+
+- **Clean path.** `build_classifier_bank_from_dataset` (and the
+  SyntheticBank builder) derive `tbank_synthetic_<cell_model>_<date>`
+  from the run's cell model and stamp it on the ClassifierBank's own
+  `id`, its source entry, and every trace. Synthetic banks are always
+  labeled training banks, so the role prefix is always `tbank_`.
+- **Noise-mixed path.** `mix_classifier_bank` gives the noise-mixed bank a
+  `_noise_mixed` variant id. The mixed traces keep the **clean** source id
+  (additive noise → the clean synthetic is the primary source). The
+  appended "noise source" provenance entry carries the **noise bank's
+  own** id, which the mixer reads from the iafdb noise run-record sidecar
+  (`<noise>_run_record.json`) — full provenance fidelity, with a derived
+  `nbank_iafdb_<date>` fallback. This is the one place the producer
+  reaches across a repo boundary to resolve another producer's id, and it
+  does so by file convention, not by importing iafdb-pipeline.
+- **Single-sourced pattern + override.** The id *pattern* lives once in
+  egm-contracts (`common.ArtifactId`); `ids.py` only composes + validates
+  strings (the validation idiom mirrors egm-data's ClassifierBank-id
+  check). Every id is overridable via the CLI config (`output.bank_id`,
+  `mix.noise_bank_id`) or an orchestrator kwarg.
+
+This is pure provenance plumbing — it does not touch the four strategy
+Protocols, the `SimulationResult` type, or the Backend boundary, so none
+of the three guardrails are affected.
 
 ## The Backend boundary
 
@@ -538,8 +573,8 @@ Pure in-memory bank assembly. Three public builders:
   → `ClassifierBank` (in-memory).
 - `build_synthetic_bank_from_dataset(dataset_result, config, description)`
   → Pydantic `SyntheticBank` (in-memory).
-- `build_synthetic_bank_from_classifier(hybrid_bank, description)`
-  → Pydantic `SyntheticBank` (for the hybrid post-mixer case; reads
+- `build_synthetic_bank_from_classifier(noise-mixed_bank, description)`
+  → Pydantic `SyntheticBank` (for the noise-mixed post-mixer case; reads
   mixer audit fields from `trace_metadata`).
 
 Plus the shared per-trace metadata helper (`build_clean_trace_metadata`)
@@ -550,7 +585,7 @@ No I/O — pair each builder with the matching `myocard-egm-data` writer
 to land the result on disk. The storage layer (below) is thin wrappers
 around build + write; the CLI's inline-mixer path calls
 `build_classifier_bank_from_dataset` directly to get a bank in memory,
-runs `mix_classifier_bank`, and writes the hybrid bank as the primary
+runs `mix_classifier_bank`, and writes the noise-mixed bank as the primary
 output.
 
 ### `simulate/storage.py`
@@ -591,7 +626,7 @@ the public surface of this subpackage is `FinitewaveBackend` only.
 
 Reads a noise_bank.h5 produced by iafdb-pipeline, samples noise per
 trace at a target SNR, adds it to a clean ClassifierBank's signal
-column, emits a hybrid ClassifierBank. Uses egm-signal's `bandpass`
+column, emits a noise-mixed ClassifierBank. Uses egm-signal's `bandpass`
 for the band-pass-domain mixing step.
 
 The mixer is its own orchestrator path — it can run standalone against

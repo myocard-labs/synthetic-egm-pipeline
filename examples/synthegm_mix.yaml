@@ -4,7 +4,7 @@
 # without a ``mix:`` block, or by any other producer emitting the
 # ClassifierBank format) and an iafdb-pipeline noise bank. Overlays
 # noise per trace at the configured SNR distribution and writes a
-# hybrid ClassifierBank.
+# noise-mixed ClassifierBank.
 #
 # Pair this with ``synthegm_v1_baseline.yaml`` for the two-step
 # clean-then-mix workflow:
@@ -12,18 +12,20 @@
 #   synthegm-generate-dataset examples/synthegm_v1_baseline.yaml
 #   synthegm-mix              examples/synthegm_mix.yaml
 #
-# Equivalent in one step: ``synthegm_v1_hybrid.yaml``.
+# Equivalent in one step: ``synthegm_v1_noise_mixed.yaml``.
 #
-# Output: ../banks/synthegm_v1_hybrid.classifier.h5
+# Output: ../banks/synthegm_v1_noise_mixed.classifier.h5
 
 input:
   classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
   noise_bank:      ../banks/iafdb_noise_v1.h5
+  # noise_bank_id: nbank_iafdb_2026-06-15  # optional; default reads the noise run-record sidecar
 
 output:
-  classifier_bank: ../banks/synthegm_v1_hybrid.classifier.h5
+  classifier_bank: ../banks/synthegm_v1_noise_mixed.classifier.h5
   also_emit_synthetic_bank: false          # set true to additionally write a Pydantic SyntheticBank sibling
   synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
+  # bank_id: tbank_synthetic_aliev_panfilov_noise_mixed_2026-06-27  # optional; auto-derived (_noise_mixed) when omitted
 
 mixer:
   snr_db_range: [10.0, 25.0]               # uniform per-trace SNR; matches Sánchez 2021
@@ -32,4 +34,4 @@ mixer:
   master_seed: 0                           # mixer's RNG seed
   show_progress: true                      # tqdm bar; override with --no-progress
   description: >
-    Hybrid mix vs iafdb_noise_v1 at 10-25 dB SNR.
+    Noise-mixed bank vs iafdb_noise_v1 at 10-25 dB SNR.

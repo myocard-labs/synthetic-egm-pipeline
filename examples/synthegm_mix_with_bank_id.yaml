@@ -1,0 +1,24 @@
+# synthegm-mix — explicit stable IDs for the noise-mixed + noise reference.
+#
+# The mixer normally reads the noise bank's stable ID from its run-record
+# sidecar (<noise_bank>_run_record.json) and derives a _noise_mixed ID for the
+# output bank. Override either when the sidecar is absent or you want
+# hand-curated IDs:
+#   - input.noise_bank_id  → the noise-source provenance entry's ID
+#   - output.bank_id       → the noise-mixed bank's own ID
+#
+# Output: ../banks/synthegm_v1_noise_mixed_run7.classifier.h5
+
+input:
+  classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
+  noise_bank:      ../banks/iafdb_noise_v1.h5
+  noise_bank_id:   nbank_iafdb_quiet_p20_2026-06-15          # explicit noise reference
+
+output:
+  classifier_bank: ../banks/synthegm_v1_noise_mixed_run7.classifier.h5
+  bank_id:         tbank_synthetic_aliev_panfilov_noise_mixed_run7_2026-06-27   # explicit noise-mixed id
+
+mixer:
+  snr_db_range: [15.0, 15.0]               # fixed SNR
+  description: >
+    Noise-mixed bank with hand-curated stable IDs.

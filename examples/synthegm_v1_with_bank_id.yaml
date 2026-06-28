@@ -1,0 +1,25 @@
+# synthegm-generate-dataset — explicit stable bank ID.
+#
+# Most configs let the producer auto-derive the bank's cross-artifact ID
+# from the cell model (tbank_synthetic_<cell_model>_<today>). When you
+# want a descriptive, reproducible ID — e.g. to reference the bank from a
+# phase manifest, or because you generate more than one bank of the same
+# cell model on the same day — set `output.bank_id` explicitly. It is
+# validated against the egm-contracts ArtifactId pattern and stamped onto
+# the ClassifierBank's id, its source entry, and every trace.
+#
+# Output: ../banks/synthegm_v1_run7.classifier.h5
+
+dataset:
+  n_simulations: 100
+
+label_policy:
+  type: local_density
+  radius_mm: 2.0
+  threshold: 0.1
+
+output:
+  classifier_bank: ../banks/synthegm_v1_run7.classifier.h5
+  bank_id: tbank_synthetic_aliev_panfilov_run7_2026-06-27   # explicit override
+  description: >
+    Phase 1 synthetic corpus with a hand-curated stable bank ID.
