@@ -140,6 +140,22 @@ retired in favor of cross-references to project_plan phase numbers,
 to stop the two phase number-planes from drifting apart. Same scope,
 new framing.
 
+### Validate config `bank_id` override before simulation — Refactor Step 8 (cleanup)
+
+> → Surfaced 2026-06-30 from bank-id testing. Cross-tracked in `intracardiac-platform/project/refactor_checklist.md` Step 8; the same fail-fast fix applies to iafdb-pipeline + egm-classifier overrides.
+
+The same "correct but late" problem as the compatibility validator below, but
+for the `bank_id` config override: its id-validity check currently runs at the
+**write** step, so an invalid hand-set id only surfaces *after* a full
+simulation run — the most expensive failure point in this repo. Move the
+override validation to config-load time so a bad id fails in the first second,
+not the last.
+
+Pairs with the egm-contracts "drop the mandatory date suffix" relaxation (the
+override that triggered this was rejected only for missing a date); the two
+together make manual `bank_id`s painless. Workaround until then: the id is still
+checked, just late — set a pattern-valid id (with a date) up front.
+
 ### Compatibility validator for strategy combinations — Phase 7
 
 A strategy combo can be incompatible in subtle ways:
@@ -217,7 +233,7 @@ Cross-cutting work item — track at the meta repo level in
 ``project_plan.md`` so it sits alongside the egm-viewer +
 egm-classifier figure needs.
 
-> → Tracked at `intracardiac-platform/project/refactor_checklist.md` Phase 7 (intracardiac-papers, plural). The figure-rendering CLI (`egm-figures`) ships inside egm-studio (Refactor Step 6); the recipe definitions + per-paper figure scripts live in intracardiac-papers; the producer-side bit (opt-in `SimulationResult` pickling) lives here.
+> → Tracked at `intracardiac-platform/project/refactor_checklist.md` Phase 7 (intracardiac-papers, plural). The figure-rendering CLI (`egm-studio-render`) ships inside egm-studio (Refactor Step 6); the recipe definitions + per-paper figure scripts live in intracardiac-papers; the producer-side bit (opt-in `SimulationResult` pickling) lives here.
 
 ### Additional substrate strategies — Phase 3
 
