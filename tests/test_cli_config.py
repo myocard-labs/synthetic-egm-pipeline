@@ -256,6 +256,39 @@ def test_generate_dataset_mix_requires_noise_bank(tmp_path: Path) -> None:
         build_generate_dataset_config(load_yaml(path))
 
 
+def test_generate_dataset_rejects_malformed_bank_id(tmp_path: Path) -> None:
+    """A malformed output.bank_id override fails at config-load (fail-fast),
+    not after the N-simulation run (S8-3)."""
+    path = _write_yaml(
+        tmp_path,
+        """
+        dataset:
+          n_simulations: 5
+        output:
+          classifier_bank: ./out.h5
+          bank_id: NOT-a-valid-id
+        """,
+    )
+    with pytest.raises(ConfigError, match=r"output.bank_id"):
+        build_generate_dataset_config(load_yaml(path))
+
+
+def test_generate_dataset_accepts_valid_bank_id(tmp_path: Path) -> None:
+    """A well-formed stable id passes config-load and reaches the typed config."""
+    path = _write_yaml(
+        tmp_path,
+        """
+        dataset:
+          n_simulations: 5
+        output:
+          classifier_bank: ./out.h5
+          bank_id: tbank_synthetic_aliev_panfilov_2026-06-27
+        """,
+    )
+    cfg = build_generate_dataset_config(load_yaml(path))
+    assert cfg.bank_id == "tbank_synthetic_aliev_panfilov_2026-06-27"
+
+
 # ---------------------------------------------------------------------------
 # build_mix_config — standalone mixer
 # ---------------------------------------------------------------------------
@@ -308,4 +341,21 @@ def test_mix_config_rejects_inverted_snr_range(tmp_path: Path) -> None:
         """,
     )
     with pytest.raises(ValueError, match="snr_db_range"):
+        build_mix_config(load_yaml(path))
+
+
+def test_mix_config_rejects_malformed_bank_id(tmp_path: Path) -> None:
+    """A malformed output.bank_id override on a mix config fails at load."""
+    path = _write_yaml(
+        tmp_path,
+        """
+        input:
+          classifier_bank: ./clean.h5
+          noise_bank: ./noise.h5
+        output:
+          classifier_bank: ./noise_mixed.h5
+          bank_id: NOT-a-valid-id
+        """,
+    )
+    with pytest.raises(ConfigError, match=r"output.bank_id"):
         build_mix_config(load_yaml(path))

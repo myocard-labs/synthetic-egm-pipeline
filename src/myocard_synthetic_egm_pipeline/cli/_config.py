@@ -43,6 +43,7 @@ from myocard_synthetic_egm_pipeline.constants import (
     DEFAULT_PATCH_SIZE_MM,
     DEFAULT_TRACE_DURATION_MS,
 )
+from myocard_synthetic_egm_pipeline.ids import validate_artifact_id
 from myocard_synthetic_egm_pipeline.mixer import DEFAULT_SNR_DB_RANGE, MixerConfig
 from myocard_synthetic_egm_pipeline.simulate import (
     EDGES,
@@ -132,6 +133,22 @@ def _expect_range(value: Any, *, field_path: str) -> tuple[float, float]:
     if not (isinstance(value, list | tuple) and len(value) == 2):
         raise ConfigError(f"{field_path} must be a two-element list [lo, hi]; got {value!r}.")
     return float(value[0]), float(value[1])
+
+
+def _validated_id(value: Any, *, field_path: str) -> str | None:
+    """Validate an optional config-supplied ArtifactId override at load time.
+
+    Returns the id string unchanged (``None`` passes through). Raises
+    :class:`ConfigError` with the field path on a malformed id, so a bad
+    override fails fast at config-load — before an expensive simulation or
+    mix run rather than at the bank write at the very end.
+    """
+    if value is None:
+        return None
+    try:
+        return validate_artifact_id(str(value))
+    except ValueError as exc:
+        raise ConfigError(f"{field_path}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +372,10 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     )
     description = str(_optional(doc, "output", "description", default=""))
     # Optional explicit stable id for the primary output bank; None -> derived.
-    bank_id_raw = _optional(doc, "output", "bank_id", default=None)
-    bank_id = str(bank_id_raw) if bank_id_raw is not None else None
+    # Validated at load so a malformed override fails before the N-sim run.
+    bank_id = _validated_id(
+        _optional(doc, "output", "bank_id", default=None), field_path="output.bank_id"
+    )
 
     # --- optional mix block --------------------------------------------
     mix: InlineMixConfig | None = None
@@ -428,8 +447,13 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
 
     # Optional explicit ids: the noise reference (overrides the sidecar
     # read) and the noise-mixed output bank's own id.
-    noise_bank_id_raw = _optional(doc, "input", "noise_bank_id", default=None)
-    bank_id_raw = _optional(doc, "output", "bank_id", default=None)
+    # Validated at load so a malformed override fails before the mix run.
+    noise_bank_id = _validated_id(
+        _optional(doc, "input", "noise_bank_id", default=None), field_path="input.noise_bank_id"
+    )
+    bank_id = _validated_id(
+        _optional(doc, "output", "bank_id", default=None), field_path="output.bank_id"
+    )
 
     return MixCLIConfig(
         input_classifier_bank=input_classifier_bank,
@@ -438,8 +462,8 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
         also_emit_synthetic_bank=also_emit_synthetic_bank,
         output_synthetic_bank=output_synthetic_bank,
         mixer_config=mixer_config,
-        noise_bank_id=str(noise_bank_id_raw) if noise_bank_id_raw is not None else None,
-        bank_id=str(bank_id_raw) if bank_id_raw is not None else None,
+        noise_bank_id=noise_bank_id,
+        bank_id=bank_id,
     )
 
 
@@ -479,9 +503,11 @@ def _build_inline_mix(block: dict[str, Any], config_dir: Path) -> InlineMixConfi
     noise_bank_path = _resolve_path(str(noise_raw) if noise_raw is not None else "", config_dir)
     if noise_bank_path is None:
         raise ConfigError("mix.noise_bank must be set when the 'mix:' block is present.")
-    noise_bank_id_raw = _optional(block, "noise_bank_id", default=None)
+    noise_bank_id = _validated_id(
+        _optional(block, "noise_bank_id", default=None), field_path="mix.noise_bank_id"
+    )
     return InlineMixConfig(
         noise_bank_path=noise_bank_path,
         mixer_config=_build_mixer_config(block),
-        noise_bank_id=str(noise_bank_id_raw) if noise_bank_id_raw is not None else None,
+        noise_bank_id=noise_bank_id,
     )
