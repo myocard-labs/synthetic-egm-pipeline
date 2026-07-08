@@ -573,7 +573,7 @@ Pure in-memory bank assembly. Three public builders:
   → `ClassifierBank` (in-memory).
 - `build_synthetic_bank_from_dataset(dataset_result, config, description)`
   → Pydantic `SyntheticBank` (in-memory).
-- `build_synthetic_bank_from_classifier(noise-mixed_bank, description)`
+- `build_synthetic_bank_from_classifier(noise_mixed_bank, description)`
   → Pydantic `SyntheticBank` (for the noise-mixed post-mixer case; reads
   mixer audit fields from `trace_metadata`).
 

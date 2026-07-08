@@ -274,7 +274,7 @@ Every bank the producer writes carries a stable cross-artifact ID — an egm-con
 
 **Noise-mixed (mixer) path.** The noise-mixed ClassifierBank gets a `_noise_mixed` variant (`tbank_synthetic_<cell_model>_noise_mixed_<date>`). Its mixed traces keep the **clean** source bank's ID — the noise is additive, so the clean synthetic is the primary source. The mixer also appends a "noise source" provenance entry whose ID is the **noise bank's own** stable ID: it reads that from the iafdb noise run-record sidecar (`<noise_bank>_run_record.json`), falling back to a derived `nbank_iafdb_<date>` if the sidecar is absent.
 
-**Overrides.** Set `output.bank_id` (the primary bank's ID) or `mix.noise_bank_id` / `input.noise_bank_id` (the noise reference) in the config — or pass `bank_id=` / `noise_bank_id=` / `noise-mixed_bank_id=` to the orchestrators. An explicit ID is validated against the ArtifactId pattern (`^[a-z]+_[a-z0-9_]+_\d{4}-\d{2}-\d{2}(_v\d+)?$`) and rejected up front if malformed.
+**Overrides.** Set `output.bank_id` (the primary bank's ID) or `mix.noise_bank_id` / `input.noise_bank_id` (the noise reference) in the config — or pass `bank_id=` / `noise_bank_id=` / `noise_mixed_bank_id=` to the orchestrators. An explicit ID is validated against the ArtifactId pattern (`^[a-z]+_[a-z0-9_]+_\d{4}-\d{2}-\d{2}(_v\d+)?$`) and rejected up front if malformed.
 
 ## End-to-end walkthroughs
 
@@ -390,12 +390,12 @@ from myocard_synthetic_egm_pipeline.mixer import MixerConfig, mix_classifier_ban
 
 clean = load_classifier_bank("out/synthegm_dev.classifier.h5")
 noise = read_noise_bank_hdf5("banks/iafdb_noise_v1.h5")
-noise-mixed = mix_classifier_bank(
+noise_mixed = mix_classifier_bank(
     clean_bank=clean,
     noise_bank=noise,
     config=MixerConfig(snr_db_range=(10.0, 25.0)),
 )
-write_classifier_bank(noise-mixed, "out/synthegm_dev_noise_mixed.classifier.h5", overwrite=True)
+write_classifier_bank(noise_mixed, "out/synthegm_dev_noise_mixed.classifier.h5", overwrite=True)
 ```
 
 Strategy specs are pure-data dataclasses; new substrate / activation /
