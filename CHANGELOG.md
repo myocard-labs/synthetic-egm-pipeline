@@ -4,6 +4,16 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project aims to follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Re-pin `egm-signal v0.1.0 → v0.2.0` — align on the current egm-signal (v0.2.0 is purely
+  additive; surfaced by the S8-7 integration smoke test, which installs one consistent
+  egm-signal across the whole constellation).
+- Fix a stale `hybrid` reference in the `pyproject.toml` header comment (the noise-mixed
+  output was still described as `<name>.hybrid.h5`).
+
 ## [0.3.0] — 2026-06-28
 
 ### Added
