@@ -69,14 +69,26 @@ coverage.xml
 *.ckpt
 *.safetensors
 
-data/
-banks/
-checkpoints/
-runs/
-logs/
-mlruns/
-wandb/
-artifacts/
+# Root-anchored (leading /) on purpose: an unanchored `data/` swallowed a
+# same-named source package in egm-classifier — local stayed green, CI failed
+# with ModuleNotFoundError. Anchoring keeps the ignore to the real artifact
+# directory and leaves `src/**/data/`, `src/**/configs/`, etc. trackable.
+/data/
+/banks/
+/checkpoints/
+/runs/
+/logs/
+/mlruns/
+/wandb/
+/artifacts/
+
+# --------------------------------------------------------------------
+# Per-phase working configs
+# Generation configs Daniel iterates on during a phase are scratch, not
+# deliverables — they change constantly and would churn the history.
+# Configs meant to be shared live in examples/ and are tracked there.
+# --------------------------------------------------------------------
+/configs/
 
 # Allow tiny fixtures committed under tests/fixtures/ if needed:
 !tests/fixtures/**

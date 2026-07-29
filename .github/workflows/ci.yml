@@ -25,7 +25,10 @@ jobs:
           cache: pip
 
       - name: Install ruff
-        run: pip install "ruff>=0.6.0"
+        # Pinned to match .pre-commit-config.yaml so local == CI. Unpinned, CI
+        # resolved ruff 0.16, which formats Markdown code blocks and failed docs
+        # that pre-commit had passed. Bump both together.
+        run: pip install "ruff==0.15.17"
 
       - name: ruff check
         run: ruff check .
