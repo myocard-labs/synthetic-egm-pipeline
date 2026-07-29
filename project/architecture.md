@@ -235,34 +235,65 @@ Future policies (`FibroticTypeLabel`, `NeighborhoodCompositionLabel`,
 etc.) drop into `simulate/label_policy.py` without orchestrator
 changes.
 
-## Default output: ClassifierBank
+## Two outputs, different purposes, joined by `simulation_id`
 
-The default producer pipeline writes a `ClassifierBank.h5`
-(egm-contracts schema, egm-data's `write_classifier_bank`). The
-`LabelPolicy` runs at write time; the resulting integer labels +
-labels dict land in the ClassifierBank directly.
+> **Phase 1.5 / v0.4.0.** Through v0.3.0 the SyntheticBank was an
+> optional sibling behind an `also_emit_synthetic_bank` flag that
+> defaulted off. The `synthetic_bank` v2.0 restructure changes what the
+> artifact *is*, and with it the decision. Recorded here as the settled
+> design; the flag retires when SEP12 lands.
 
-**Why not SyntheticBank by default:**
+A synthetic generation run writes **both** banks. They are not a
+primary and an optional extra — they are two artifacts with different
+jobs, keyed to each other by `simulation_id`:
 
-- The schemas already shared across subprojects are complex; growing
-  the SyntheticBank schema with per-radius local density, per-bipolar
-  pair midpoints, substrate-type composition, etc. for *every possible
-  downstream label policy* would explode complexity.
-- The LabelPolicy runs inside the producer with full in-memory access
-  to the simulation state. A label is far more compact than the
-  metadata that would be required to recompute it downstream.
-- Doing the policy inline means *future* label policies (locality at
-  arbitrary radii, multi-type classification) don't require schema
-  bumps — they just require new `LabelPolicy` classes.
+- **`ClassifierBank`** — the **ML artifact**, deliberately
+  *source-agnostic*: signal, label, and the `simulation_id` key.
+  Nothing about *how* the signal was generated. That is what lets
+  egm-classifier consume synthetic and IAFDB banks through one code
+  path, and it is why θ does **not** go here.
+- **`synthetic_bank`** — the **θ / provenance artifact**: the per-simulation
+  typed per-function config (geometry · cell_model · substrate ·
+  activation · electrodes · backend · label_policy) plus the bank-scoped
+  `generation_params` θ-spec. This is what egm-studio's STU1 / STU4 /
+  STU5 read to recover θ.
 
-**Optional SyntheticBank:** the CLI takes an optional
-`also_emit_synthetic_bank: true` config flag. When set, the producer
-writes both a ClassifierBank and a SyntheticBank. The SyntheticBank
-schema stays minimal — its only growth in the cross-artifact-linkage
-wave was the optional `bank_id` stable-id field (schema 1.0 → 1.1,
-egm-contracts v0.5.0); no per-label-policy columns, no migration — and it
-remains useful for offline analysis notebooks and the egm-viewer
-Inspection tab.
+Crucially the synthetic bank is **not the ClassifierBank's source
+bank** — it is a parallel record of the same run, not an upstream
+artifact it was derived from. Consumers join the two on
+`simulation_id`.
+
+**Why the label still runs inside the producer.** Unchanged from
+Phase 1, and still the reason the ClassifierBank can stay this thin:
+the `LabelPolicy` runs at write time with full in-memory access to the
+simulation state, so a compact integer label crosses the boundary
+instead of the metadata a downstream re-computation would need. Future
+label policies (locality at arbitrary radii, multi-type
+classification) drop in as new `LabelPolicy` classes without a schema
+bump on either bank.
+
+**Accepted cost: the trace signal is stored twice.** Both banks carry
+the same waveforms. This was weighed and accepted — the banks are
+small and gitignored, and de-duplicating them would mean making one
+bank reference the other's storage, which reintroduces exactly the
+source-relationship the split exists to avoid. Tracked as **FB-11** in
+`intracardiac-platform/project/feature_backlog.md`; de-dup deferred.
+
+**Flag mechanics (this repo's call).** `output.also_emit_synthetic_bank`
+is **retired** rather than defaulted to true. A flag that can turn the
+θ artifact off is a flag that can silently break the T4 thread — and,
+in a project whose whole narrative is per-component change control,
+"generate a bank with no recoverable generation provenance" is not an
+option worth offering. A config still carrying the key raises a
+`ConfigError` naming the change rather than being silently ignored.
+`output.synthetic_bank` may be omitted; it then derives as a sibling of
+`output.classifier_bank`.
+
+**Standalone `synthegm-mix` is the one exception.** Run against a bare
+ClassifierBank on disk it has no access to the generation config, so it
+cannot write a v2.0 synthetic bank and does not try — it is a
+post-process on an existing bank, not a synthetic *run*. Asking it for
+one is a config error, not a degraded output.
 
 ## Stable cross-artifact IDs
 

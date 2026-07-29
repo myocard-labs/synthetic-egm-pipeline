@@ -4,51 +4,75 @@ Future work only — shipped history lives in [`CHANGELOG.md`](../CHANGELOG.md).
 doc; public users read the README + `docs/usage.md`.
 
 Work lands here as it's identified, sits in the **Backlog** until a phase-planning session
-promotes it into a **Phase** cluster, then moves to the CHANGELOG once shipped. Phase
+promotes it into a **Phase** cluster, then moves to the CHANGELOG once shipped. While a phase is
+**in flight** its cluster here stays an *index*: the ephemeral `phase_<N>_plan.md` holds the step
+breakdown, estimates, and fine-grained progress, and is deleted at Phase Cleanup once its shipped
+work is summarized into the CHANGELOG. Phase
 clusters mirror the science Project Phases in
 `intracardiac-platform/project/project_plan.md` (this repo's old local "Phase 2 /
 Phase 5" subsection numbering was retired to stop the two phase-number planes from
 drifting). Items scheduled into cross-cutting Phase work carry a
 `→ tracked at intracardiac-platform Phase X` annotation; the rest are component-internal.
 
-## Phase 1.5 — sim-realism
+## Phase 1.5 — sim-realism *(in flight)*
 
-### Courtemanche cell model
+Ten core issues (`SEP*`) plus two backlog items. **Step-level detail, complexity scores, and
+estimates live in [`phase_1_5_plan.md`](phase_1_5_plan.md)** — while the phase runs, that plan is
+authoritative and this section is the index. Phase-wide context:
+`intracardiac-platform/phases/phase_1_5/design.md` §3; sequencing in its §7.
 
-Swap Aliev-Panfilov → Courtemanche 1998 (human atrial ionic model) as a new model class in
-`backends/finitewave/backend.py`. The strategy specs + `RawSimulationResult` shape stay the
-same; only the AP-specific anisotropy helper needs a Courtemanche-aware variant (a
-`_configure_anisotropy_2d_courtemanche` sibling or dispatch on a `cell_model` knob in
-`RunConfig`). Strict realism upgrade — the model Sánchez 2021 uses.
+### Wave 1 — schema migration (gating)
 
-### Additional activation sources (realism subset)
+- **SEP12 — write `synthetic_bank` v2.0.** Generation config reorganizes **per-simulation** into
+  typed polymorphic per-function objects (geometry · cell_model · substrate · activation ·
+  electrodes · backend · label_policy); `traces/` collapses to signal + FKs + an **int** label;
+  `generation_params` becomes a θ-spec. Ships **reading/writing today's behavior first** (Daniel's
+  de-risking rule) before any new generation feature. Gated on egm-contracts v0.6.0 + egm-data
+  v0.5.x. **Subsumes the polymorphic `stimulation` schema** formerly listed under Phase 2 — it is
+  now the `activation` facet of this restructure.
+- Both banks are emitted from here on: the ClassifierBank stays the source-agnostic ML artifact,
+  the `synthetic_bank` carries θ + per-sim provenance, joined on `simulation_id`.
+  `output.also_emit_synthetic_bank` retires. Rationale in
+  [`architecture.md`](architecture.md#two-outputs-different-purposes-joined-by-simulation_id).
 
-`PointStimulus(position_mm)` (focal source for spiral-wave studies), `S1S2Protocol(...)`
-(re-entry inducibility), and **multi-edge stimulation** (Sánchez stimulates from three
-sides; v1's `PlanarEdgeStimulus` uses a single edge). These need the polymorphic
-`stimulation` schema (Phase 2, below). See [[reference-multi-beat-consensus]].
+### Wave 2 — features
 
-### Pluggable noise-selection strategy (mixer-side)
-
-Today the mixer samples noise segments uniformly at random across the full noise bank
-(`mixer/mixing.py::sample_noise_for_length`), breaking the within-patient noise-correlation
-structure of real recordings. Add a fifth strategy Protocol (`NoiseSelectionStrategy`)
-parallel to the four simulation ones, with `UniformRandomNoiseSelection` as the
-current-behaviour default plus `PerSimPatientNoiseSelection` (each sim draws one IAFDB
-patient; highest leverage) and `PerSimRecordNoiseSelection`. Config via a
-`noise_selection.type` block inside `mix:`.
+- **SEP5 — Courtemanche cell model.** Aliev–Panfilov → Courtemanche 1998 (human atrial ionic
+  model), the model Sánchez 2021 uses. Lands as a **fifth strategy spec** (`CellModelSpec`), not a
+  `RunConfig` knob — see the resolved architectural question below.
+- **SEP6 / SEP7 — additional activation sources.** Multi-edge `planar_edge` (Sánchez stimulates
+  three sides; v1 uses one), `PointStimulus(position_mm)` for focal / spiral-wave studies, and
+  `S1S2Protocol(...)` for re-entry inducibility. See [[reference-multi-beat-consensus]].
+- **SEP8 — pluggable noise-selection strategy (mixer-side).** Today the mixer samples noise
+  uniformly at random across the whole bank (`mixer/mixing.py::sample_noise_for_length`), destroying
+  the within-patient noise-correlation structure of real recordings. Adds a `NoiseSelectionStrategy`
+  Protocol with `UniformRandomNoiseSelection` (current behavior) plus `PerSimPatientNoiseSelection`
+  (highest leverage) and `PerSimRecordNoiseSelection`, configured under `mix:`.
+- **SEP3 — absolute noise floor in the mixer.** Today's SNR is purely relative, so noise scales down
+  without limit as the clean trace weakens. Full height-coupled SNR stays deferred (SR1).
+- **SEP1 — band-pass → general post-processing stage.** Band-passing currently lives inside the
+  mixer (`MixerConfig.bandpass_clean`), so a clean bank can never be band-passed on its own. Promote
+  it to an independently-runnable stage, with a guard against double-filtering.
+- **SEP2 / SEP10 — controlled-position crop.** Place each activation at a fractional position
+  `p ∼ 𝒫` in the trace, sizing the simulation to the widest `p` so no zero-padding is ever needed;
+  SEP10 is the opt-in flag selecting a fixed `p` versus the range. Depends on **SIG1** in egm-signal.
+  Shared method spec: `intracardiac-platform/project/investigations/activation_splitting_method.md`.
+- **SEP11 — θ-sweep harness + θ-spec writer.** A pluggable sampler (OAT first, then LHS / grid) over
+  the tuned-knob list, writing `{regime, knobs:[TunedParam]}`. One capability run twice: the OAT run
+  feeds egm-studio's screening (STU7), whose result sets θ membership for the design run that feeds
+  the parameter estimator (STU4).
+- **B12 — resource / CPU cap on a generation run.** QoL; matters most once Courtemanche lands.
+- **B13 — custom bank id for the clean bank** in noise-mix runs (today only the noise-mixed bank
+  takes a custom id).
 
 > → Tracked at `intracardiac-platform/project/project_plan.md` Phase 1.5.
 
 ## Phase 2 — multiclass severity
 
-### Polymorphic `stimulation` schema (replace `stim_edge`)
-
-The additional activation sources need a richer schema: replace `stim_edge` with a
-polymorphic `stimulation` object (type discriminator + per-type params). A **coordinated
-release** — egm-contracts v0.6.0+ + egm-data v0.5.x + synthetic-egm-pipeline v0.4.0+ —
-bundled at the Phase 2 inflection (the "first big publish" per
-[[project-publishing-timing]]; bundling avoids fragmenting the work across releases).
+> The **polymorphic `stimulation` schema** that used to head this section was pulled forward to
+> Phase 1.5 (2026-07-23) and then absorbed into the `synthetic_bank` v2.0 restructure (2026-07-26)
+> as its `activation` facet. It now ships under **SEP12** above, in the coordinated egm-contracts
+> v0.6.0 + egm-data v0.5.x bump.
 
 ### `FibroticTypeLabel` — multi-class label policy
 
@@ -78,8 +102,9 @@ needs the four Phase-3 substrate types.
 
 ### `PacingTrain(period_ms, n_beats)` activation source
 
-Steady-state pacing protocol for multi-beat sequence classification. Also needs the
-polymorphic `stimulation` schema (Phase 2).
+Steady-state pacing protocol for multi-beat sequence classification. Drops in as another
+`activation` variant on the Phase-1.5 `synthetic_bank` v2.0 schema (SEP12), so no schema work
+is left for it.
 
 > → Tracked at `intracardiac-platform/project/project_plan.md` Phase 4.
 
@@ -139,8 +164,12 @@ None open.
 - **Should the producer ship its own visualization helpers (`viz.py`)?** Today notebooks
   plot from `SimulationResult` ad-hoc. If the paper figures become producer-emitted
   reproducibility artifacts, a `viz/` subpackage may be worth it.
-- **Should `RunConfig` grow a `cell_model` discriminator?** One backend dispatching on
-  `RunConfig` vs. separate backends per model. Decide when Phase 2 (Courtemanche) starts.
+*(Resolved 2026-07-28, Phase-1.5 planning — **cell model becomes a fifth strategy spec**
+(`CellModelSpec`), not a `RunConfig` discriminator: the `synthetic_bank` v2.0 schema treats
+`cell_model` as one of the stable per-function objects, and model-specific parameters — the
+Courtemanche conductance scalings SEP11 sweeps by `path` — have nowhere to live on `RunConfig`.
+`SimulationBackend.simulate()` gains a `cell_model` parameter, which is the Guardrail-3 sanctioned
+move. Full rationale lands in [`architecture.md`](architecture.md) at SEP5.1.)*
 
 ## v1.0 — what graduating Phase 1 means
 
