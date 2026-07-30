@@ -2,8 +2,8 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** planning · **Progress:** 0/42 steps done
-**Repo estimate:** **71–129 h** active (35 complexity points; cold-start ranges — the
+**Status:** planning · **Progress:** 0/44 steps done
+**Repo estimate:** **74–135 h** active (37 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
 
@@ -11,7 +11,7 @@ anchors, not `points × measured rate`)
 
 ## Scope — what this plan covers
 
-Ten §3 core issues plus the two single-repo §4 backlog items assigned to this repo. Wave numbers
+Eleven §3 core issues plus the two single-repo §4 backlog items assigned to this repo. Wave numbers
 are from design §7: Wave 1 is the schema migration (no new behavior), Wave 2 is features.
 
 | Phase item | Wave | What it needs from this repo | Cx | Estimate | Steps |
@@ -23,6 +23,7 @@ are from design §7: Wave 1 is the schema migration (no new behavior), Wave 2 is
 | SEP3 | 2 | Absolute noise floor in the mixer (today's SNR is purely relative) | S (2) | 3–6 h | SEP3.1–.2 |
 | SEP2 | 2 | Controlled-position crop — activation at fractional `p ∼ 𝒫`, sim sized to the widest `p`, no padding | M (3) | 7–12 h | SEP2.1–.5 |
 | SEP10 | 2 | Anchoring opt-in flag — fixed `p` vs the `𝒫` range | XS (1) | 1–2 h | SEP10.1 |
+| SEP13 | 2 | Positional-sensitivity probe bank — one sim, crop offset swept on a grid, morphology/seed held constant | S (2) | 3–6 h | SEP13.1–.2 |
 | SEP6 | 2 | Multi-edge `planar_edge` activation variant | S (2) | 3–6 h | SEP6.1–.2 |
 | SEP7 | 2 | `point` + `s1s2` activation variants | M (3) | 6–12 h | SEP7.1–.3 |
 | SEP11 | 2 | θ-sweep harness + `generation_params` writer + pluggable sampler (OAT first, then LHS/grid) — one capability, run twice per §8.2 | L (5) | 12–21 h | SEP11.1–.5 |
@@ -37,8 +38,8 @@ Everything else is unblocked once SEP12 is in.
 
 ## Design notes
 
-Five decisions this repo has to make before or during the work. The first three are repo-internal
-(mine); the last two are **escalations to the project-lead** and are not decided here.
+Six decisions. D1, D2, D3 and D6 are repo-internal (mine); D4 was escalated and is now settled by
+the project-lead; D5 is external input, half of it still pending.
 
 ### D1 — `SimulationResult` must carry the realized per-sim specs *(repo-internal)*
 
@@ -111,6 +112,19 @@ omitted. Standalone `synthegm-mix` is the one exception and cannot emit a synthe
 Rewritten into `project/architecture.md` ("Two outputs, different purposes, joined by
 `simulation_id`", replacing "Why not SyntheticBank by default").
 
+### D6 — the probe sweeps by exact shift, not by re-detection *(repo-internal)*
+
+SEP13 is not "call SEP2's crop N times." SEP2 places the activation by running SIG1's detector and
+cropping to the sampled `p`, which carries detector jitter — fine when `p` is a training-augmentation
+draw, wrong for a probe. STU8 plots model output **against** activation offset; if the offset axis is
+itself noisy, the jitter blurs the curve the study exists to measure, and the anchored-vs-varied
+difference gets harder to see for a reason that has nothing to do with the models.
+
+So the probe detects **once** on the source trace and then places the activation by exact integer
+shift per grid point. Realized position equals requested position by construction, the x-axis is
+exact, and it is cheaper (one detection, not N). The verification is correspondingly stricter: assert
+the emitted `activation_position` column *reproduces the grid*, not that it approximates it.
+
 ### D5 — `T` is now fixed at **192 ms**; `𝒫` still comes from study §8.1 *(external input)*
 
 **`T` settled (CL-024 §4, 2026-07-28): 192 ms at 1 kHz.** The constraint is `T ≡ 0 (mod 64 samples)`
@@ -127,6 +141,18 @@ through the project-lead.
 trade-off. The plan builds the structure — `𝒫` as a `[0,1]` fraction range with the "collapsed to a
 point = fixed" idiom from A4 — and takes the number when the study lands. No code waits on it; only
 the shipped config values do.
+
+**`𝒫_synth ⊇ 𝒫_iafdb` is deliberate and was re-affirmed — don't "fix" it.** CL-066/CL-067 asked
+whether the ranges should be matched now that both corpora store the position, and research said no:
+`activation_position` is an **augmentation axis, not a realism axis**, so it is excluded from the STU4
+objective and the STU5 distance rather than having the ranges constrained. The inequality exists for
+T1's positional-shortcut augmentation. **SEP2 is unchanged by that whole exchange** — recorded here
+because the range looks like an inconsistency to a later reader and it is not.
+
+**Watch item: `T` could still move to 256 ms.** CL-072's §8.1 review adds a feasibility go/no-go — if
+the longest fractionated `W_act` approaches 192 ms, the feasible `p` range collapses and multi-beat
+drop rates spike, which triggers widening `T`. SEP2.2's sizing derives from `T`, so it should read the
+value from config rather than assume 192.
 
 ---
 
@@ -385,8 +411,9 @@ are the ones that build on the migrated schema.
 - **Change:** `activation_position:` config block; populate the per-trace **`activation_position`**
   column (float `[0,1]`, same name + convention as `iafdb_bank`'s) with the *realized* fraction, so
   STU5 compares stored-vs-stored and the §8.9 A/B is checkable. The column itself ships nullable in
-  Wave 1 (SEP12.3); this fills it. **Pending the CON1 field addition — raised as CL-060; if the
-  project-lead declines the field, drop this stamp rather than write nowhere.**
+  Wave 1 (SEP12.3); this fills it. **Field approved (CL-062)** — egm-contracts defines it once in
+  `common` and both banks `$ref` it (CL-064); egm-data carries it on the typed reader and keeps it
+  *off* the ClassifierBank via the converter, with a negative test (CL-063). No longer conditional.
 - **Verify:** config tests; the realized fractions of a range run span `𝒫`; a Wave-1 bank still reads
   with the column absent.
 - **Depends on:** SEP2.3 · the CL-060 field decision.
@@ -396,6 +423,25 @@ are the ones that build on the migrated schema.
   back overhangs; cross-reference `activation_splitting_method.md` for the shared math; CHANGELOG.
 - **Verify:** pr_checklist passes.
 - **Depends on:** SEP2.4.
+
+#### SEP13.1 — Probe-mode generator: one sim, `p` swept on a grid ☐ (2–4 h)
+- **Change:** a probe generation mode — run **one** simulation, then emit one trace per grid point by
+  cropping that same simulation output at each offset, morphology and seed held constant. Reuses
+  SEP2.2's sizing rule (the sim must reach the widest grid point) and SEP12's writer; **no schema
+  change** — the grid value lands in the existing `activation_position` column.
+- **Crop exactly, don't re-detect (see D6):** detect the activation **once** on the source trace, then
+  place it by exact integer shift per grid point, so the realized position equals the requested one.
+- **Verify:** a probe bank's `activation_position` column reproduces the requested grid exactly (not
+  approximately); every trace in one sweep has identical `simulation_id` + `seed`; the signal at two
+  grid points is the same waveform at different offsets (assert by cross-correlation peak, not eyeball).
+- **Depends on:** SEP2.4 · SEP10.1.
+
+#### SEP13.2 — Probe config + docs ☐ (1–2 h)
+- **Change:** a `probe:` config block (grid bounds, n points, which pairs) + CLI wiring; `docs/usage.md`
+  gains a probe section explaining what the bank is *for* (it is not training data); CHANGELOG.
+- **Verify:** example probe config runs end-to-end and yields a bank STU8 can read; config tests cover
+  a grid that would exceed the sim's sizing (must error, not silently clip).
+- **Depends on:** SEP13.1.
 
 #### SEP10.1 — Anchoring opt-in flag ☐ (1–2 h)
 - **Change:** the fixed-vs-range flag on SEP2's position config. Note-level per design §3 — the
@@ -550,13 +596,14 @@ are the ones that build on the migrated schema.
 | SEP3 | pipeline (math) | 2 | 3–6 h | | | |
 | SEP2 | pipeline (algorithm) | 3 | 7–12 h | | | |
 | SEP10 | pipeline | 1 | 1–2 h | | | |
+| SEP13 | pipeline | 2 | 3–6 h | | | |
 | SEP6 | pipeline | 2 | 3–6 h | | | |
 | SEP7 | pipeline | 3 | 6–12 h | | | |
 | SEP11 | pipeline | 5 | 12–21 h | | | |
 | B12 | pipeline | 2 | 2–4 h | | | |
 | B13 | pipeline | 1 | 1–2 h | | | |
 | *(phase exit)* | docs | — | 2–3 h | | | |
-| **Repo total** | | **35** | **71–129 h** | | | |
+| **Repo total** | | **37** | **74–135 h** | | | |
 
 **Estimate basis.** The ledger is empty, so these are reference-class-by-analogy, not
 `points × measured rate`. Anchors used: SEP12 is *the* rubric's L anchor; SEP5 is sized equal to it
@@ -590,6 +637,23 @@ with. First cleanup replaces all of this with measured rates.
   **Latent risk, not acted on:** the repo is written entirely against the deprecated alias names. If
   a future finitewave drops them, every `fw.*2D` call site breaks at once. Cheap hedge — move to the
   bare names as part of SEP5.1, since that step already touches the backend's model construction.
+- 2026-07-30 — **CL-075: new issue SEP13** (positional-sensitivity probe bank), from the §8.9 code
+  audit — research promoted the probe from optional to **core** because the anchored-vs-varied A/B
+  alone can't separate "positional shortcut" from "generic augmentation" (CL-071). Scored **S (2),
+  3-6 h, 2 steps**; repo total 35 -> **37 pts, 74-135 h**. Added design note **D6**: the probe sweeps
+  by *exact shift* off a single detection, not by re-running SEP2's detector per grid point --
+  otherwise detector jitter blurs the very axis STU8 plots against. Reuses `synthetic_bank` +
+  `activation_position`; no schema change. **STU8 depends on it, so it must not be scheduled last in
+  Wave 2.**
+- 2026-07-30 — **`activation_position` field approved (CL-062)** — SEP2.4 is no longer conditional.
+  egm-contracts defines it once in `common` with both banks `$ref`ing it (CL-064); egm-data carries
+  it on the typed reader and keeps it off the ClassifierBank with a negative test (CL-063).
+- 2026-07-30 — **SEP2 unchanged by the CL-065->CL-068 exchange.** `P_synth` superset of `P_iafdb` was
+  questioned and re-affirmed: `activation_position` is an augmentation axis, not a realism axis, so it
+  is excluded from the STU4 objective and STU5 distance rather than the ranges being matched
+  ("augmentation axes are not realism axes"). Recorded in D5 so the inequality isn't later mistaken
+  for an inconsistency. Also noted there: CL-072's §8.1 go/no-go could still widen `T` 192 -> 256, so
+  SEP2.2 must read `T` from config rather than hardcode it.
 - 2026-07-29 — **CL-059 answered (CL-060): the crop `p` has nowhere to be persisted.** Design §5
   assumed it "rides the per-sim config", which fails twice — v2.0's collapsed `traces/` has no
   position column, and the *realized* position is inherently per-trace (the wave sweeps the grid, so
