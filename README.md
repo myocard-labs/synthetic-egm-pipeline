@@ -66,13 +66,24 @@ Two console scripts are installed:
 
 Both are YAML-config-driven; the YAML schema and per-CLI walkthrough live in [`docs/usage.md`](docs/usage.md). Pre-written configs covering the Phase 1 baseline, the noise-mixed path, a calibration run, and a fixed-SNR ablation live under [`examples/`](examples/).
 
+**A generation run always writes two banks:** the `ClassifierBank` you train on and the `synthetic_bank` carrying θ plus the per-simulation generation config. They are parallel artifacts joined on `simulation_id`, and the ClassifierBank names its partner in its `banks` list — there is no flag to disable either. `synthegm-mix` is the exception: it post-processes an existing ClassifierBank and has no access to the generation config, so it writes only a ClassifierBank.
+
 The mixer consumes a `noise_bank.h5` produced by [`myocard-iafdb-pipeline`](https://github.com/myocard-labs/iafdb-pipeline)'s `iafdb-export-noise-bank` CLI — install + produce a noise bank from that repo before running the noise-mixed path.
 
 ---
 
 ## Stable bank IDs
 
-Every bank the producer writes carries a stable cross-artifact ID (an egm-contracts `ArtifactId`) so the intracardiac-platform phase manifests and provenance tracking can refer to it. The clean ClassifierBank and the optional SyntheticBank get an ID derived from the cell model — `tbank_synthetic_<cell_model>_<date>` (e.g. `tbank_synthetic_aliev_panfilov_2026-06-27`). The noise-mixed (post-mixer) bank gets a `_noise_mixed` variant, and its "noise source" provenance entry carries the noise bank's own ID, read from the iafdb noise run-record sidecar. Set `output.bank_id` in a config (or `bank_id=` on an orchestrator) to override. See [`docs/usage.md`](docs/usage.md) for the full reference.
+Every bank carries a stable cross-artifact ID (an egm-contracts `ArtifactId`) so the intracardiac-platform phase manifests and provenance tracking can refer to it.
+
+A run writes **two** banks, and they take **distinct** IDs from one base — the phase manifest keys on stable IDs, so two files sharing one would collide. The base is derived from the cell model; the ClassifierBank keeps it, the `synthetic_bank` gets a `theta` marker, and a noise-mixed run inserts `noise_mixed`. All markers go **before** the date, so the result stays inside the `ArtifactId` grammar:
+
+| Run | ClassifierBank | `synthetic_bank` |
+|---|---|---|
+| clean | `tbank_synthetic_aliev_panfilov_2026-06-27` | `tbank_synthetic_aliev_panfilov_theta_2026-06-27` |
+| noise-mixed | `…_noise_mixed_2026-06-27` | `…_noise_mixed_theta_2026-06-27` |
+
+`output.bank_id` overrides the **base**, so one setting names the whole family and keeps it in step. The mixer's "noise source" provenance entry carries the noise bank's own ID, read from the iafdb noise run-record sidecar. See [`docs/usage.md`](docs/usage.md) for the full reference.
 
 ---
 
@@ -115,20 +126,30 @@ See [`docs/usage.md`](docs/usage.md) for the mixer orchestrator, the strategy sp
 ## Tests
 
 ```bash
-pytest                  # full suite (119 tests)
+pytest                  # default suite — MockBackend only, ~1 s
+pytest -m slow          # the real-Finitewave tests (deselected by default)
+pytest -m ""            # everything, both groups
 pytest --cov            # with coverage
 ruff check .            # lint
 ruff format --check .   # format check
-mypy                    # type check
+mypy                    # type check (src + tests)
 ```
 
-CI runs the same checks on Python 3.10, 3.11, and 3.12 — see `.github/workflows/ci.yml`. The test suite uses a `MockBackend` for the orchestrator tests so it runs in ~1 second without spinning up Finitewave.
+**Two groups.** The default run uses a `MockBackend` for the orchestrator tests, so it finishes in
+about a second without starting a solver — which is what makes it cheap enough to run on every save.
+A handful of tests marked `slow` spin up the **real Finitewave backend**; they are deselected by
+default (`addopts = ["-m", "not slow"]` in `pyproject.toml`) and you will see them reported as
+`deselected`. They are the ones that check the pipeline end to end rather than the plumbing — most
+notably the schema-migration equivalence check — so **run `pytest -m slow` before opening a PR**, not
+just the fast suite.
+
+CI runs the same checks on Python 3.10, 3.11, and 3.12 — see `.github/workflows/ci.yml`.
 
 ---
 
 ## Project status
 
-This package is part of the in-progress [myocard-labs](https://github.com/myocard-labs) refactor. Pre-1.0 — expect breaking changes across minor versions until the schemas + strategy Protocols stabilise. The current release is `v0.3.0`; `development` pins `egm-contracts v0.5.3`, `egm-data v0.5.0`, and `egm-signal v0.1.0`. See [`project/roadmap.md`](project/roadmap.md) for what's planned (NoiseSelectionStrategy, multi-substrate-type composition, compatibility validator) and [`project/architecture.md`](project/architecture.md) for the design.
+This package is part of the in-progress [myocard-labs](https://github.com/myocard-labs) refactor. Pre-1.0 — expect breaking changes across minor versions until the schemas + strategy Protocols stabilise. The current release is `v0.3.0`; `development` pins `egm-contracts v0.6.0`, `egm-data v0.6.0`, and `egm-signal v0.2.0`. See [`project/roadmap.md`](project/roadmap.md) for what's planned (NoiseSelectionStrategy, multi-substrate-type composition, compatibility validator) and [`project/architecture.md`](project/architecture.md) for the design.
 
 ---
 

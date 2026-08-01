@@ -48,16 +48,16 @@ explains the why.
                 └────────────────┬───────────────────────┘
                                  │
                                  ▼
-                         on-disk artifacts (default):
-                           <name>.classifier.h5    ← labeled, primary
-                         optional:
-                           <name>.synthetic.h5     ← rich per-trace metadata
+                         on-disk artifacts (both, every run):
+                           <name>.classifier.h5    ← labeled; source-agnostic ML
+                           <name>.synthetic.h5     ← theta + per-sim config
+                           (joined on simulation_id)
                                  │
                                  ▼
                  ┌─────────────────────────────────────┐
                  │   downstream consumers              │
                  │     - egm-classifier (training)     │
-                 │     - egm-viewer (Inspection tab)   │
+                 │     - egm-studio (realism / T4)     │
                  │     - notebook analysis             │
                  └─────────────────────────────────────┘
 ```
@@ -78,6 +78,7 @@ src/myocard_synthetic_egm_pipeline/
 ├── simulate/
 │   ├── __init__.py               ← re-exports public API
 │   ├── specs.py                  ← 4 strategy Protocols + concretes (pure data)
+│   ├── bank_config.py            ← specs → synthetic_bank 2.0 per-sim config
 │   ├── result.py                 ← RawSimulationResult, SimulationResult
 │   ├── pseudo_egm.py             ← Okenov 2024 forward + bipolar pairing
 │   ├── label_policy.py           ← LabelPolicy Protocol + concretes
@@ -295,6 +296,94 @@ cannot write a v2.0 synthetic bank and does not try — it is a
 post-process on an existing bank, not a synthetic *run*. Asking it for
 one is a config error, not a degraded output.
 
+## What goes on the ClassifierBank, and what doesn't
+
+The ClassifierBank is a **source-agnostic ML compression**: signal,
+label, and the keys needed to join back to where the trace came from.
+That purpose is what lets egm-classifier consume synthetic and IAFDB
+banks through one code path, and it decides the contents.
+
+**Generation parameters do not belong here.** θ and the per-simulation
+config are the raw material of the signal-realism / parameter-estimation
+work, which has nothing to do with classification; they live on the
+`synthetic_bank` and are reached through `simulation_id`
+(`synthetic_bank_source_of_truth.md` §12). The one legitimate
+generation-derived field is the **label** — it *is* the target — plus
+the **label-policy identity**, because that defines what the task is.
+The policy's thresholds are generation detail and stay on the source
+bank.
+
+What each trace carries: `simulation_id`, `pair_index`, `patient_id`
+(= the simulation, so the patient-aware split doesn't leak a substrate
+across folds), and — **only when the mixer ran** — `snr_db`,
+`noise_record`, `noise_channel`.
+
+What the origin entry's `bank_metadata` carries: `producer` /
+`producer_version` (reproducibility — which code wrote this; 2.0 has
+nowhere else to record it, so dropping it would lose the fact rather
+than de-duplicate it), `description`, `trace_duration_ms` (the
+classifier's input-length contract), and `label_policy` (identity only).
+
+**Why this was a real problem, not tidying.** Until Phase 1.5 the
+ClassifierBank also carried `fibrosis_density_requested` /
+`fibrosis_density_realized` / `electrode_row` / `electrode_height_mm` /
+`stim_edge` / `sim_seed` per trace, and ~14 further generation keys at
+bank level. Those are exactly the flat per-trace generation columns the
+`synthetic_bank` restructure removed — so the restructure had taken them
+out of one artifact and left the copy in the other. Two copies of one
+fact drift, and nothing would have caught it.
+
+**Noise fields are absent, not empty, on a clean bank.** A present
+`snr_db` of NaN reads as "this was mixed and the SNR is unknown", which
+is the opposite of the truth. Same rule as `activation_position`:
+absence means *did not happen*, never a fabricated value.
+
+## What a ClassifierBank's `banks` entry means
+
+`ClassifierBankMetaData.bank_path` is documented as "the path the source
+bank was loaded from" — which quietly assumes the traces came from
+somewhere else. A **producer originates** its traces; there is no source
+file. Filling the field in anyway is how it came to name a bank that is
+never written (a clean run pointed at its own not-yet-existent output)
+and, on a noise-mixed run, a clean bank whose traces are *not* the ones
+in the file.
+
+Phase 1.5 separates the three things an entry can mean, using only the
+fields that already exist:
+
+| Kind | `bank_path` | Meaning |
+|---|---|---|
+| **origin** | `<local>` | the traces are in **this** file; nothing external to point at |
+| **companion** | a path | another artifact that *describes* these traces — the noise bank they were mixed with, the `synthetic_bank` holding their θ — but is not where they came from |
+| **source** | a path | the traces were taken from that bank (concat / conversion). Not produced here today. |
+
+**Why `<local>` rather than an empty string.** `""` is
+indistinguishable from "nobody filled this in", so it cannot mean
+*deliberately local* and *missing* at the same time. Giving the normal
+case its own value reclaims the blank as a bug signal. Angle brackets
+specifically because `<` and `>` are **illegal in Windows filenames**, so
+the sentinel can never collide with a real path — including the bare
+relative filenames companion entries carry. Same convention as Python's
+`<stdin>` / `<string>`.
+
+**Companion paths are relative when — and only when — that buys
+something.** A companion inside the bank's own directory tree moves with
+it, so a relative path survives the directory being moved; one outside
+does not move with it, so `../..` is no more portable than absolute and
+merely harder to read. `ids.companion_path` implements exactly that
+split.
+
+**The θ link, and its Phase-1.5 limit.** The ClassifierBank now carries a
+`synthetic_generation_params` companion entry naming the
+`synthetic_bank` written by the same run, joined on `simulation_id`.
+Before this, which two files belonged together was a fact that existed
+only in someone's memory. It is unambiguous **only while a ClassifierBank
+holds one run's traces**: concatenate two and you get two origin entries
+and two companion entries with no way to pair them, because a trace
+references its origin entry alone. We do not concatenate in Phase 1.5.
+The general fix needs a real relationship field on the entry — a
+cross-repo change, deferred to Phase 2.
+
 ## Stable cross-artifact IDs
 
 Since v0.3.0 (egm-contracts v0.5.0 / egm-data v0.4.0) every bank the
@@ -438,7 +527,7 @@ boundary is that strategies stay the same when the backend changes.
 
 `SimulationResult` is a frozen dataclass with explicit named fields.
 It is NOT a Protocol. Backends produce it; the runner threads it
-through `LabelPolicy` and the writer; every consumer (egm-viewer,
+through `LabelPolicy` and the writer; every consumer (egm-studio,
 notebook analysis) reads it.
 
 The four strategy Protocols (`GeometrySpec`, `SubstrateStrategy`,
@@ -627,19 +716,22 @@ to the storage layer.
 
 ### `simulate/builders.py`
 
-Pure in-memory bank assembly. Three public builders:
+Pure in-memory bank assembly. Two public builders:
 
-- `build_classifier_bank_from_dataset(dataset_result, config, bank_path, description)`
-  → `ClassifierBank` (in-memory).
-- `build_synthetic_bank_from_dataset(dataset_result, config, description)`
-  → Pydantic `SyntheticBank` (in-memory).
-- `build_synthetic_bank_from_classifier(noise_mixed_bank, description)`
-  → Pydantic `SyntheticBank` (for the noise-mixed post-mixer case; reads
-  mixer audit fields from `trace_metadata`).
+- `build_classifier_bank_from_dataset(dataset_result, config, bank_path,
+  description, synthetic_bank_path)` → `ClassifierBank` (in-memory),
+  including the companion entry naming its `synthetic_bank`.
+- `build_synthetic_bank_from_dataset(dataset_result, config, ...)` →
+  Pydantic `SyntheticBank` (in-memory). The **same** builder serves the
+  noise-mixed case: the inline mixer path passes `mixed_signals` plus
+  the three per-trace noise columns. There is no
+  build-from-ClassifierBank route — schema 2.0's per-simulation config
+  is not recoverable from per-trace metadata.
 
-Plus the shared per-trace metadata helper (`build_clean_trace_metadata`)
-and the canonical bank-level provenance helper
-(`build_bank_metadata_for_classifier_bank`).
+Plus `build_theta_spec` and the two metadata helpers
+(`build_clean_trace_metadata`, `build_bank_metadata_for_classifier_bank`),
+both deliberately small — see
+[What goes on the ClassifierBank](#what-goes-on-the-classifierbank-and-what-doesnt).
 
 No I/O — pair each builder with the matching `myocard-egm-data` writer
 to land the result on disk. The storage layer (below) is thin wrappers

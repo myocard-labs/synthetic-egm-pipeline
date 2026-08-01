@@ -8,6 +8,93 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Changed
 
+- **BREAKING — `synthetic_bank` 2.0 migration** (Phase 1.5 Wave 1; egm-contracts
+  v0.6.0 + egm-data v0.6.0). Generation parameters move out of flat per-trace
+  columns into typed, `type`-discriminated objects stored **once per simulation**
+  (geometry / cell_model / substrate / activation / electrodes / backend /
+  label_policy), plus a bank-scoped θ-spec. `traces/` collapses to the signal,
+  the two foreign keys, an integer label and the noise provenance. **1.1 banks
+  are not readable** — regenerate; there is no migration path by design.
+- **Both banks are now written on every run**, joined on `simulation_id`: the
+  ClassifierBank stays a source-agnostic ML artifact (signal + label + key), and
+  the `synthetic_bank` carries θ and per-simulation provenance.
+  `output.also_emit_synthetic_bank` is **retired** — a config still setting it
+  raises a `ConfigError` rather than being silently ignored.
+  `output.synthetic_bank` is optional and defaults to a sibling path.
+- **The two banks now take distinct stable IDs derived from one base.** Both
+  previously received the *same* `ArtifactId` — harmless while the synthetic
+  bank was an optional sibling view, but a collision now that both are always
+  written and the phase manifest keys artifacts by ID. The ClassifierBank keeps
+  the base; the `synthetic_bank` gets a `theta` marker in the descriptive name
+  (before any date, so the ID stays inside the `ArtifactId` grammar).
+  `output.bank_id` sets the **base** for both, so one override keeps the pair in
+  step rather than letting them drift apart.
+- **Generation parameters removed from the ClassifierBank.** Per-trace
+  `fibrosis_density_requested`, `fibrosis_density_realized`, `electrode_row`,
+  `electrode_height_mm`, `stim_edge` and `sim_seed` are gone, along with ~14
+  bank-level generation keys (geometry, electrode grid, substrate ranges, cell
+  model, backend). All are recoverable per-simulation from the `synthetic_bank`
+  through `simulation_id`. They were the same flat per-trace columns the 2.0
+  restructure removed from the other artifact — keeping the copy here preserved
+  both the duplication and the drift risk. The bank now carries identity
+  (`simulation_id`, `pair_index`, `patient_id`), the label, and — **only when
+  the mixer ran** — `snr_db` / `noise_record` / `noise_channel`; a clean bank
+  omits them rather than writing NaN, which would read as "mixed, SNR unknown".
+  Bank-level metadata keeps `producer` / `producer_version` (reproducibility;
+  `synthetic_bank` 2.0 has nowhere to record them), `description`,
+  `trace_duration_ms`, and the `label_policy` **identity**.
+- **A ClassifierBank now names the `synthetic_bank` it belongs with.** Its
+  `banks` list gains a `synthetic_generation_params` companion entry carrying
+  the θ bank's id, its path, and `join_key = simulation_id`. Previously nothing
+  in either artifact recorded the pairing, so a consumer had to be told which
+  two files went together. **Unambiguous only for a single-run bank** —
+  concatenating two would give two origin and two companion entries with no way
+  to pair them; the general fix is Phase-2 work.
+- **`bank_path` stops claiming a source file that doesn't exist.** The entry
+  describing a bank's *own* traces now carries the sentinel `<local>` instead of
+  a path: the traces originate here, there is no source bank. This fixes two
+  wrong values — a clean run named its own not-yet-written output, and a
+  noise-mixed run named a clean bank whose traces differ from the file's.
+  `<local>` rather than `""` so a blank stays available as a bug signal, and
+  angle brackets specifically because they are illegal in Windows filenames and
+  so cannot collide with a real path. Companion paths (noise bank, θ bank) are
+  now **relative when the target sits inside the bank's own directory tree** and
+  absolute otherwise — relative only where it actually buys portability.
+- **The join key is `simulation_id` everywhere.** The producer's direct-write
+  path previously wrote `sim_id` into `ClassifierTrace.trace_metadata` while
+  egm-data's converter wrote `simulation_id`, so the same artifact type carried
+  a differently-named key depending on which code wrote it.
+- `SimulationResult` gained `specs` — the realized strategy specs a simulation
+  ran with. A widening of the concrete result type; the four strategy Protocols
+  are unchanged (see `project/architecture.md` → Guardrail 2).
+- Re-pinned `egm-contracts v0.5.3 → v0.6.0` and `egm-data v0.5.0 → v0.6.0`.
+
+### Removed
+
+- `build_synthetic_bank_from_classifier` and
+  `write_noise_mixed_synthetic_bank_from_classifier`. Schema 2.0's
+  per-simulation config cannot be reconstructed from a noise-mixed
+  ClassifierBank's per-trace metadata, so the inline mixer path now builds the
+  bank from the in-memory `DatasetResult`. **Standalone `synthegm-mix` no longer
+  emits a `synthetic_bank` at all** — it is a post-process over an existing
+  bank, not a synthetic run, and asking it for one is a configuration error
+  rather than a degraded output.
+
+### Fixed
+
+- The backend's reported version and solver timestep now land in the
+  `synthetic_bank`'s typed `version` / `dt_model_units` fields instead of being
+  dropped into the generic `params` bag.
+
+### Development
+
+- mypy type-checks `tests` as well as `src`, and CI pins `ruff==0.15.17` to match
+  the pre-commit hook.
+- Real-Finitewave tests are marked `slow` and deselected by default, so the
+  MockBackend suite still runs in about a second. Run them with `pytest -m slow`.
+
+### Previously unreleased
+
 - Re-pin `egm-signal v0.1.0 → v0.2.0` — align on the current egm-signal (v0.2.0 is purely
   additive; surfaced by the S8-7 integration smoke test, which installs one consistent
   egm-signal across the whole constellation).

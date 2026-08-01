@@ -2,8 +2,8 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 4/45 steps done
-**Repo estimate:** **74–136 h** active (37 complexity points; cold-start ranges — the
+**Status:** in progress · **Progress:** 12/48 steps done — **SEP12 complete**
+**Repo estimate:** **74–137 h** active (37 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
 
@@ -29,7 +29,7 @@ are from design §7: Wave 1 is the schema migration (no new behavior), Wave 2 is
 | SEP11 | 2 | θ-sweep harness + `generation_params` writer + pluggable sampler (OAT first, then LHS/grid) — one capability, run twice per §8.2 | L (5) | 12–21 h | SEP11.1–.5 |
 | B12 | 2 | Resource / CPU cap on a generation run | S (2) | 2–4 h | B12.1 |
 | B13 | 2 | Custom bank id for the clean bank in noise-mix runs | XS (1) | 1–2 h | B13.1 |
-| *(phase exit)* | — | Roadmap trim · CHANGELOG · architecture.md reconciliation | — | 2–3 h | X.1 |
+| *(phase exit)* | — | **examples/ config-set rework** · roadmap trim · CHANGELOG · architecture.md reconciliation | — | 2–4 h | X.1 |
 
 **Cross-repo prerequisites.** SEP12 cannot start until **egm-contracts v0.6.0** and **egm-data
 v0.5.x** are merged + tagged (design §7 Wave 1, re-pin cascade); we are pinned to contracts v0.5.3 /
@@ -222,7 +222,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   entries with the right FK join, and per-trace labels match `DatasetResult.labels` exactly.
 - **Depends on:** SEP12.2; **egm-data v0.5.x tagged**.
 
-#### SEP12.3b — Cross-check the two banks agree ☐ (0.5–1 h)
+#### SEP12.3b — Cross-check the two banks agree ✅ (0.5–1 h)
 - **Change:** a test asserting that the ClassifierBank and the `synthetic_bank` emitted from **one
   run** agree per trace on `label` and `simulation_id`. The producer builds the two independently
   (D7), so nothing structural forces them to match; this is the guard that replaces the
@@ -239,7 +239,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   standalone-mix error path asserted in `tests/test_cli_config.py`.
 - **Depends on:** SEP12.3.
 
-#### SEP12.5 — Always emit both banks; retire the flag (D4) ☐ (1–2 h)
+#### SEP12.5 — Always emit both banks; retire the flag (D4) ✅ (1–2 h)
 - **Change:** remove `output.also_emit_synthetic_bank` from `cli/_config.py` (both the
   generate-dataset and mix config builders); every synthetic run writes the ClassifierBank **and**
   the `synthetic_bank`. `output.synthetic_bank` becomes optional, deriving as a sibling of
@@ -250,14 +250,14 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   `configs/phase_1_5_*.yaml` also carry the key — flag them, they're untracked and his to edit.
 - **Depends on:** SEP12.4.
 
-#### SEP12.6 — Trivial θ-spec + bank-root fields ☐ (1–2 h)
+#### SEP12.6 — Trivial θ-spec + bank-root fields ✅ (1–2 h)
 - **Change:** write `generation_params_json` as `{regime: {…type discriminators…}, knobs: []}` — the
   regime populated from the run's fixed type discriminators, the knob list empty until SEP11.
 - **Verify:** a generated bank's θ-spec validates against the `TunedParam` schema with zero knobs;
   regime matches the config's declared types.
 - **Depends on:** SEP12.3.
 
-#### SEP12.7 — Wave-1 equivalence check ☐ (1–2 h)
+#### SEP12.7 — Wave-1 equivalence check ✅ (1–2 h)
 - **Change:** no source change — a regeneration + comparison. Run an existing example config on the
   pre-migration tag and on `development`, and diff traces + labels.
 - **Verify:** identical trace arrays (bitwise, same seed) and identical label vectors; full suite
@@ -265,7 +265,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   `backends/finitewave/`. This is the design §7 Wave-1 gate for this repo.
 - **Depends on:** SEP12.5, SEP12.6.
 
-#### SEP12.8 — Docs for the restructure ☐ (1–2 h)
+#### SEP12.8 — Docs for the restructure ✅ (1–2 h)
 - **Change:** `docs/usage.md` (the new bank layout, what moved, and the retired
   `also_emit_synthetic_bank` — it appears in the config table twice and in two config samples) and
   `docs/simulation_theory.md` (one stale `also_emit_synthetic_bank: true` reference);
@@ -581,8 +581,40 @@ are the ones that build on the migrated schema.
 
 ### Phase-exit
 
-#### X.1 — Docs + phase exit ☐ (2–3 h)
-- **Change:** trim `roadmap.md` of everything shipped (the Phase 1.5 cluster, the polymorphic
+#### SEP12.9 — Bank-reference semantics ✅ (2–3 h)
+- **Change:** `<local>` sentinel for the origin entry; `companion_path` for
+  relative-inside-the-tree / absolute-outside companion paths; a
+  `synthetic_generation_params` companion entry linking the ClassifierBank to its
+  `synthetic_bank` on `simulation_id`.
+- **Verify:** end-to-end clean + noise-mixed runs show no entry claiming to hold traces it doesn't;
+  companion resolves to a bare filename for siblings and absolute for distant targets.
+- **Depends on:** SEP12.8 (and on the id pairing — the companion entry needs a distinct θ id).
+
+#### SEP12.10 — De-duplicate the ClassifierBank's metadata ✅ (1–2 h)
+- **Change:** strip generation parameters from `trace_metadata` (6 keys) and `bank_metadata`
+  (~14 keys) now that the θ link makes them reachable per-simulation. Keep identity
+  (`simulation_id` / `pair_index` / `patient_id`), the label, `producer` / `producer_version`
+  (reproducibility — 2.0 has nowhere else for them), `description`, `trace_duration_ms`, and the
+  `label_policy` **identity**. Noise fields stay **absent** on a clean bank.
+- **Verify:** named-key tests assert each removed field is gone (so a re-add fails loudly); a real
+  Finitewave run shows every removed value still recoverable from the synthetic bank.
+- **Depends on:** SEP12.9.
+
+#### SEP12.11 — Fix four bank-reference defects found in review ✅ (1–2 h)
+- **Change:** derive the noise-mixed id from the clean bank's **id** (`noise_mixed_id_from`) instead
+  of re-deriving from `cell_model`; re-point the θ companion entry at the *mixed* run's θ bank when
+  mixing; relax the relative-path rule to "share a real common ancestor"; pass `output_bank_path`
+  from `synthegm-mix`.
+- **Verify:** real Finitewave run — companion id equals the θ bank's id on both the clean and mixed
+  paths, no `unknown` in any id, noise path renders `../noise/…` across sibling directories.
+- **Depends on:** SEP12.10.
+
+#### X.1 — Docs + phase exit ☐ (2–4 h)
+- **Change:** **rework the `examples/` config set** — it has drifted (Daniel, 2026-08-01: new configs
+  added ad hoc during the phase) and is no longer a good cross-section of the runs we actually want
+  to demonstrate. Decide the set deliberately — one clean baseline, one noise-mixed, one calibration,
+  one sweep (SEP11), one probe (SEP13) — rather than accreting one per experiment. Also trim
+  `roadmap.md` of everything shipped (the Phase 1.5 cluster, the polymorphic
   `stimulation` entry, and the `RunConfig.cell_model` open question closed by D2); finalize
   `CHANGELOG.md`; make sure `project/architecture.md` reflects the fifth spec, the `SimulationResult`
   widening, and the post-process stage.
@@ -628,8 +660,8 @@ are the ones that build on the migrated schema.
 | SEP11 | pipeline | 5 | 12–21 h | | | |
 | B12 | pipeline | 2 | 2–4 h | | | |
 | B13 | pipeline | 1 | 1–2 h | | | |
-| *(phase exit)* | docs | — | 2–3 h | | | |
-| **Repo total** | | **37** | **74–136 h** | | | |
+| *(phase exit)* | docs | — | 2–4 h | | | |
+| **Repo total** | | **37** | **74–137 h** | | | |
 
 **Estimate basis.** The ledger is empty, so these are reference-class-by-analogy, not
 `points × measured rate`. Anchors used: SEP12 is *the* rubric's L anchor; SEP5 is sized equal to it
@@ -663,6 +695,100 @@ with. First cleanup replaces all of this with measured rates.
   **Latent risk, not acted on:** the repo is written entirely against the deprecated alias names. If
   a future finitewave drops them, every `fw.*2D` call site breaks at once. Cheap hedge — move to the
   bare names as part of SEP5.1, since that step already touches the backend's model construction.
+- 2026-08-01 — **SEP12.11: four defects Daniel found reviewing a generated bank.** Three he
+  reported, plus one his first report exposed:
+  1. **The mixed ClassifierBank's id read `synthetic_unknown_noise_mixed`** — a **regression I
+     introduced in SEP12.10**. `_resolve_noise_mixed_id` re-derived the id from `cell_model` read out
+     of the clean bank's `bank_metadata`; cleaning generation params off the ClassifierBank an hour
+     earlier removed that key, so the lookup fell back to `"unknown"` and produced a
+     *wrong-but-valid* id. The tests missed it because they all pass explicit ids. Now derived from
+     the clean bank's **id**, so one string anchors the whole family; an id-less clean bank raises
+     instead of fabricating one (egm-data refuses to write such a bank anyway).
+  2. **The θ companion entry didn't name the θ bank written beside it** on the mixed path — the mixer
+     copied the clean bank's entries forward verbatim, so a mixed bank pointed at the *clean* run's θ
+     bank. The companion is not shared history; it is now re-pointed at the mixed run's own θ bank.
+  3. **Relative paths gave up too early.** My "any `..` → absolute" rule was over-conservative: banks
+     routinely sit in sibling directories under one project root that moves as a unit, so
+     `../noise/x.h5` is portable and useful. Rule is now "relative iff the two share a real
+     (non-root) common ancestor"; only genuinely unrelated trees go absolute.
+  4. **`synthegm-mix` still wrote an absolute noise path** — I wired `output_bank_path` into the
+     inline path at SEP12.9 and missed the standalone CLI.
+  **Pattern worth noting:** (1) is the second time this session a *removal* broke a silent
+  dependency at distance (cf. the `_config.py` key that stopped being read). Both were caught by
+  Daniel exercising the real artifact, not by the suite — the tests specify behaviour and the
+  fixtures avoid the defaults where these bugs live.
+- 2026-08-01 — **SEP12.10: ClassifierBank metadata de-duplicated** (Daniel spotted it; his rule —
+  "needed for training stays, otherwise if it's in the synthetic bank, clean it out" — is verbatim
+  `synthetic_bank_source_of_truth.md` §12). **Audit:** my direct writer emitted **23 bank keys + 9
+  trace keys**; egm-data's converter, which already implements §12, emits **6 + 6**. Every one of my
+  six extra trace keys was a generation parameter — i.e. the same flat per-trace columns the 2.0
+  restructure removed from the *synthetic* bank, still sitting in the *ClassifierBank*. The
+  restructure had moved them out of one artifact and left the copy in the other.
+  **Third instance this session of two writers of one artifact disagreeing** (after
+  `sim_id`/`simulation_id` and `amp_type`); the converter is the reference implementation and my
+  direct writer predated the decision.
+  **Safe to remove — checked first:** zero references to any of the six keys across egm-classifier /
+  egm-studio / egm-features `src/`; only `patient_id` is read (the patient-aware split). egm-studio
+  flattens `trace_metadata` generically, so columns vanish without breaking code — and per CL-102 it
+  now reads θ from the typed SyntheticBank, which is the point.
+  **Two Daniel calls:** keep `producer` / `producer_version` (reproducibility, and 2.0 has nowhere to
+  record them — dropping would *lose* the fact rather than de-duplicate it); and do **not** write
+  `snr_db` / `noise_record` / `noise_channel` on a clean bank, since a NaN reads as "mixed, SNR
+  unknown". That is a deliberate divergence from egm-data's converter, which always writes them.
+- 2026-08-01 — **SEP12.9 added + done: bank-reference semantics** (Daniel's review of a generated
+  bank). Three findings, all confirmed by audit: banks used **absolute** paths; a clean run's entry
+  named its own not-yet-written output; a noise-mixed run's entry named a clean bank whose traces
+  differ from the file's. Root cause is semantic — `bank_path` means "where the source bank was
+  *loaded from*", and a producer has no source file, so the field was filled with whatever was handy.
+  **Fix (agreed with Daniel):** three entry kinds — **origin** (`<local>`), **companion** (a path to
+  an artifact that describes these traces: noise bank, θ bank), **source** (a real upstream bank; not
+  produced here today). `<local>` over `""` because a blank must stay available as a *bug* signal;
+  angle brackets because `<`/`>` are illegal in Windows filenames, so the sentinel cannot collide with
+  a real path — including the bare relative filenames companions now carry. Companion paths are
+  relative **only when the target is inside the bank's directory tree** (the case where relative
+  actually buys portability), absolute otherwise; the first cut used a `..`-count threshold, which was
+  arbitrary — the tree test is the principled version.
+  **Audit results:** nothing reads `bank_path`, so none of this is breaking; **B14 does not cover it**
+  (that item is egm-classifier's `training_run_record`), so producer bank paths were a genuine gap;
+  and the θ companion entry needs no contracts/data change — `bank_type` is a free string, there is no
+  1:1 assumption between entries and traces, and it round-trips. It only works because the θ bank got
+  a **distinct id** earlier today; before that it would have collided with the origin entry under
+  `concat`'s dedup-by-id.
+- 2026-08-01 — **Bank-id collision found in review and fixed (Daniel).** Both banks were taking the
+  **identical** `ArtifactId`, derived *and* overridden — fine while the synthetic bank was an optional
+  sibling view of the same data, a real collision once D4 made them parallel artifacts, since the phase
+  manifest keys on stable ID. **Not covered by B13**, which is clean-vs-noise-mixed ClassifierBank ids.
+  Chosen shape (Daniel): **one base id + a known marker** — ClassifierBank keeps the base, the
+  `synthetic_bank` gets `theta` inserted *before* any trailing date so the result stays inside the
+  `ArtifactId` grammar. One override names both. Rejected two independent overrides because setting
+  only one silently leaves the other derived, producing a pair that looks unrelated with nothing to
+  detect it. Also dropped the redundant `clean_intermediate: null` lines for the same reason as
+  `synthetic_bank: null` — `null` and absent are identical to the loader.
+- 2026-08-01 — **Example-config cleanup (Daniel's review).** My flag removal left
+  `synthetic_bank: null` in six of eight examples with a three-line comment bolted on — but `null` and
+  *absent* are identical to the loader, so the line documented nothing and read as though it did
+  something. Deleted from all six; the field is instead **demonstrated once**, with a real custom path,
+  in `synthegm_calibration.yaml` where naming the file actually helps. An example should show a
+  feature being used, not hint that a key exists.
+  **The review also surfaced a bug I introduced:** `build_mix_config` stopped reading
+  `output.synthetic_bank` when I dropped the field, so a mix config setting it would have been
+  *silently ignored* — the same failure mode I had just argued against for the retired flag. Standalone
+  mix now rejects **both** synthetic-bank keys.
+- 2026-08-01 — **SEP12 complete (.3b/.5/.6/.7/.8).** Flag retired (error, not silent ignore —
+  rejected even when `false`, since accepting it implies the writer still honours it); both banks
+  always written with a derived sibling path; seven example configs updated. **143 tests green**
+  (+1 `slow`), ruff + bare mypy clean.
+  **SEP12.7 ran for real.** finitewave installs fine in the sandbox, so the equivalence gate is an
+  actual two-simulation Finitewave run, not an assertion about mocks: signals byte-identical to
+  simulator output in both banks, labels identical to the `DatasetResult`, and every value 1.1 stored
+  per-trace (density, edge, height, electrode row) recovered exactly from the 2.0 per-simulation
+  config. Kept as a `slow`-marked test (`pytest -m slow`) so the default MockBackend suite stays ~1 s.
+  **That real run earned its keep immediately:** it passed while the fast equivalent failed, which
+  exposed that the `SimulationSpecs` fixture I wrote at SEP12.1 was internally inconsistent — it
+  declared a 1×5 electrode grid while using bipolar pairs that need 8 electrodes, so the per-pair
+  `electrode_row` disagreed with what the runner computes. Production code was right; the mock was
+  wrong. Second time this session a too-convenient fixture nearly hid a real check (cf. the thin
+  `backend_metadata`).
 - 2026-08-01 — **SEP12.2 + .3 + .4 landed together — the split was artificial** (Daniel's review).
   SEP12.1 was scoped to avoid the tag so it could start early, but the whole point of the step is the
   migration, and re-pinning proves the split can't hold: `builders.py` imports `StimEdgeEnum`, which

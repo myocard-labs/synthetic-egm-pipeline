@@ -587,14 +587,18 @@ alongside the trace.
 ``SimulationResult`` instances + ``LabelPolicy.apply()`` outputs across
 the N simulations, builds a Pydantic ``ClassifierBank`` model from
 egm-contracts, and calls ``myocard_egm_data.banks.write_classifier_bank``.
-Optionally also writes a SyntheticBank if the config sets
-``also_emit_synthetic_bank: true``.
+It also always writes the ``synthetic_bank`` 2.0 sibling, which carries
+the per-simulation generation config and the theta-spec.
 
 **What this represents.** The producer's contract with downstream
-consumers. ClassifierBank is the unified, labelled, classifier-ready
-format that egm-classifier, egm-viewer, and any future consumer
-agree on. SyntheticBank is the older "rich per-trace metadata" format
-preserved for offline analysis.
+consumers, split by purpose. **ClassifierBank** is the unified,
+labelled, classifier-ready format egm-classifier and egm-studio agree
+on — deliberately *source-agnostic*, so it carries the signal, the
+label and the join keys, and nothing about how the signal was
+generated. **`synthetic_bank` 2.0** carries that generation config,
+per simulation, plus the theta-spec; egm-studio's realism and
+parameter-estimation views read it. The two are parallel artifacts
+joined on ``simulation_id``, not one derived from the other.
 
 **What this does to the signal.** Nothing material — float32 traces
 land in HDF5 alongside metadata. The schema-versioned writer makes the
@@ -606,15 +610,14 @@ validate the file on read.
   `simulate/storage.py::write_classifier_bank_from_dataset` (builds
   ClassifierBankMetaData + per-trace ClassifierTrace list, hands to
   `myocard_egm_data.banks.write_classifier_bank`).
-- Optional Pydantic SyntheticBank writer:
-  `simulate/storage.py::write_synthetic_bank_from_dataset` (builds
-  the Pydantic model with all 12 per-trace columns and the top-level
-  provenance fields, hands to `myocard_egm_data.banks.write_synthetic_bank`).
-- For the noise-mixed (post-mixer) case, the equivalent
-  SyntheticBank writer is
-  `mixer/storage.py::write_noise_mixed_synthetic_bank_from_classifier`
-  — it reads mixer audit fields from `trace_metadata` instead of
-  emitting `NaN`/`""`.
+- `synthetic_bank` 2.0 writer:
+  `simulate/storage.py::write_synthetic_bank_from_dataset` (builds the
+  per-simulation config group + the collapsed `traces/` group + the
+  theta-spec, hands to `myocard_egm_data.banks.write_synthetic_bank`).
+  The **same** writer serves the noise-mixed case: the inline mixer path
+  passes the mixed signals plus the three per-trace noise columns, since
+  2.0's per-simulation config cannot be rebuilt from a mixed
+  ClassifierBank.
 
 ## What the classifier eventually sees
 
@@ -624,12 +627,13 @@ After nine steps, a single training example looks like:
 |---|---|---|
 | ``signal`` | ``(T_samples,)`` float32 at 1 kHz | bipolar pair from one electrode row of one simulation |
 | ``label_truth`` | int (0 = healthy, 1 = fibrotic) | LabelPolicy.apply() |
-| ``trace_metadata.sim_id`` | int | which simulation produced this trace |
+| ``trace_metadata.simulation_id`` | int | which simulation produced this trace — and the join key into the ``synthetic_bank``'s per-simulation config |
 | ``trace_metadata.pair_index`` | int | which bipolar pair within that simulation |
-| ``trace_metadata.electrode_row`` | int | which mesh row of the 5×5 grid |
-| ``trace_metadata.fibrosis_density_realized`` | float | per-sim global density |
-| ``trace_metadata.electrode_height_mm`` | float | per-sim sampled height |
-| ``trace_metadata.stim_edge`` | str | per-sim edge |
+| ``trace_metadata.patient_id`` | str | ``= simulation_id``; one simulation is one "patient" for the split |
+
+The generation parameters that used to sit here — density, electrode
+row and height, stimulus edge — are on the ``synthetic_bank``, once per
+simulation, reachable through ``simulation_id``.
 
 With ~100 simulations × 20 bipolar pairs = ~2000 traces, sampled
 across density, edge, electrode height. The classifier sees the

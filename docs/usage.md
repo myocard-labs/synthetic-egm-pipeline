@@ -7,10 +7,19 @@ uniform-random fibrosis), captures bipolar EGMs through a 5×5
 electrode grid, and writes two on-disk artifacts:
 
 - `<name>.classifier.h5` — labelled `ClassifierBank` ready for
-  `myocard-egm-classifier` training. Default output.
-- `<name>.synthetic.h5` — Pydantic `SyntheticBank` sibling (optional
-  via config flag) for offline analysis tools that read the per-trace
-  columnar layout.
+  `myocard-egm-classifier` training. Deliberately **source-agnostic**:
+  signal, label, and the `simulation_id` key. Nothing about *how* the
+  signal was generated.
+- `<name>.synthetic.h5` — `synthetic_bank` 2.0 carrying the
+  **per-simulation generation config** (geometry, cell model, substrate,
+  activation, electrodes, backend, label policy) and the θ-spec.
+
+**Both are written on every run.** They are parallel artifacts joined on
+`simulation_id`, not one derived from the other: the ClassifierBank is
+what you train on, the `synthetic_bank` is what you read θ and
+provenance from. There is no flag to disable either — a switch that
+could turn the θ artifact off is a switch that could silently leave the
+analysis work with nothing to read.
 
 The mixer overlays low-amplitude IAFDB noise segments (from
 [`myocard-iafdb-pipeline`](https://github.com/myocard-labs/iafdb-pipeline))
@@ -168,8 +177,9 @@ run:
 output:
   classifier_bank: ../banks/synthegm_v1.classifier.h5   # required
   clean_intermediate: null                 # default: don't persist; only used with mix block
-  also_emit_synthetic_bank: false          # default; set true to write SyntheticBank sibling
-  synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
+  # synthetic_bank: ../banks/theta.synthetic.h5   # optional; omit for a
+  #   `<classifier_bank>.synthetic.h5` sibling. It sets WHERE the second
+  #   bank lands, not WHETHER — both banks are always written.
   description: ""                          # default; stamped into bank_metadata
   # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted
 
@@ -216,8 +226,7 @@ Per-field reference:
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
 | `output.classifier_bank` | path | (required) | Primary output path. |
 | `output.clean_intermediate` | path/null | null | Persist clean bank pre-mix; only meaningful with mix block. |
-| `output.also_emit_synthetic_bank` | bool | false | Write SyntheticBank sibling. |
-| `output.synthetic_bank` | path/null | null | Override sibling path (default `<classifier_bank>.synthetic.h5`). |
+| `output.synthetic_bank` | path | omit for the sibling default | Where the `synthetic_bank` lands. Sets the **path**, not whether it is written — both banks are written on every run. Default: `<classifier_bank>.synthetic.h5`. |
 | `output.description` | str | `""` | Stamped into the bank's metadata. |
 | `output.bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_<date>` | Optional explicit id for the primary bank (the noise-mixed bank in the mix path). See [Stable bank IDs](#stable-bank-ids). |
 | `mix.noise_bank` | path | (required if block present) | iafdb-pipeline noise_bank.h5. |
@@ -237,8 +246,9 @@ input:
 
 output:
   classifier_bank: ../banks/synthegm_v1_noise_mixed.classifier.h5  # required
-  also_emit_synthetic_bank: false                             # default
-  synthetic_bank: null                                        # default sibling
+  # No synthetic_bank key here: synthegm-mix writes only a ClassifierBank
+  #   (see below). Setting `synthetic_bank` or `also_emit_synthetic_bank`
+  #   in a mix config is an error, not a no-op.
   # bank_id: tbank_synthetic_aliev_panfilov_noise_mixed_2026-06-27 # optional; auto-derived (_noise_mixed) when omitted
 
 mixer:
@@ -258,8 +268,7 @@ Per-field reference:
 | `input.noise_bank` | path | (required) | iafdb-pipeline noise_bank.h5. |
 | `input.noise_bank_id` | str (ArtifactId) | auto: read from the noise sidecar | Optional override for the noise bank's id (the mixer's provenance entry). |
 | `output.classifier_bank` | path | (required) | Noise-mixed output path. |
-| `output.also_emit_synthetic_bank` | bool | false | Write noise-mixed SyntheticBank sibling. |
-| `output.synthetic_bank` | path/null | null | Override sibling path. |
+
 | `output.bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_noise_mixed_<date>` | Optional explicit id for the noise-mixed bank. See [Stable bank IDs](#stable-bank-ids). |
 | `mixer.snr_db_range` | `[lo, hi]` | `[10.0, 25.0]` | Per-trace target SNR. |
 | `mixer.bandpass_clean` | bool | true | Filter clean to bipolar band before mixing. |
@@ -270,7 +279,16 @@ Per-field reference:
 
 Every bank the producer writes carries a stable cross-artifact ID — an egm-contracts `ArtifactId` (added in egm-contracts v0.5.0 for the cross-artifact-linkage system). The intracardiac-platform phase manifests and the provenance graph key on it.
 
-**Clean path.** The default ClassifierBank (and the optional SyntheticBank sibling) get an ID **derived from the cell model**: `tbank_synthetic_<cell_model>_<date>` — e.g. `tbank_synthetic_aliev_panfilov_2026-06-27` (`<date>` is the write-time UTC date). The ID is stamped on the bank's own `id`, on its source-bank entry, and on every trace. Synthetic banks are always labeled training banks, so the role prefix is always `tbank_`.
+**Finding the two banks that belong together.** The ClassifierBank's `banks` list carries a `synthetic_generation_params` entry naming its `synthetic_bank` (`bank_metadata.join_key` = `simulation_id`), so a consumer can pair them from the file rather than being told. The entry describing the ClassifierBank's *own* traces has `bank_path` = `<local>` — the traces are in that file, there is no source bank. A path that *is* present points at a real companion (the noise bank, the θ bank), relative when it sits inside the same directory tree.
+
+**Clean path.** A run writes two banks, and they take **distinct IDs derived from one base** — the phase manifest keys artifacts by stable ID, so two files sharing one ID collide. The base is derived from the cell model: `tbank_synthetic_<cell_model>_<date>` — e.g. `tbank_synthetic_aliev_panfilov_2026-06-27` (`<date>` is the write-time UTC date). The **ClassifierBank keeps the base**; the **`synthetic_bank` gets a `theta` marker** in the descriptive name, before the date:
+
+| Artifact | ID |
+|---|---|
+| ClassifierBank | `tbank_synthetic_aliev_panfilov_2026-06-27` |
+| `synthetic_bank` | `tbank_synthetic_aliev_panfilov_theta_2026-06-27` |
+
+`output.bank_id` overrides the **base**, so one setting names both and keeps the pair in step — `bank_id: tbank_run7` gives `tbank_run7` and `tbank_run7_theta`. Sharing a stem is deliberate: the two are one run's output, and IDs that sort together make that visible. The ID is stamped on the bank's own `id`, on its source-bank entry, and on every trace. Synthetic banks are always labeled training banks, so the role prefix is always `tbank_`.
 
 **Noise-mixed (mixer) path.** The noise-mixed ClassifierBank gets a `_noise_mixed` variant (`tbank_synthetic_<cell_model>_noise_mixed_<date>`). Its mixed traces keep the **clean** source bank's ID — the noise is additive, so the clean synthetic is the primary source. The mixer also appends a "noise source" provenance entry whose ID is the **noise bank's own** stable ID: it reads that from the iafdb noise run-record sidecar (`<noise_bank>_run_record.json`), falling back to a derived `nbank_iafdb_<date>` if the sidecar is absent.
 
@@ -284,10 +302,16 @@ Every bank the producer writes carries a stable cross-artifact ID — an egm-con
 synthegm-generate-dataset examples/synthegm_v1_baseline.yaml
 ```
 
-The bank lands at `../banks/synthegm_v1_baseline.classifier.h5`
-(relative to the example config's directory). egm-classifier consumes
-it directly via `load_classifier_bank`; the patient-aware split
-treats each `sim_id` as one patient.
+Two files land beside each other (paths relative to the example
+config's directory):
+
+- `../banks/synthegm_v1_baseline.classifier.h5` — the ClassifierBank
+  egm-classifier consumes directly via `load_classifier_bank`. The
+  patient-aware split treats each `simulation_id` as one patient, since
+  traces from one simulation share a substrate.
+- `../banks/synthegm_v1_baseline.synthetic.h5` — the `synthetic_bank`
+  carrying θ and the per-simulation generation config, named by the
+  ClassifierBank's `synthetic_generation_params` entry.
 
 ### Producing a noise-mixed dataset in one step (simulate + mix)
 
@@ -295,14 +319,21 @@ treats each `sim_id` as one patient.
 synthegm-generate-dataset examples/synthegm_v1_noise_mixed.yaml
 ```
 
-Two files come out:
+Three files come out:
 
 - `../banks/synthegm_v1_noise_mixed.classifier.h5` — the primary
   artifact (post-mixer noise-mixed ClassifierBank).
+- `../banks/synthegm_v1_noise_mixed.synthetic.h5` — its `synthetic_bank`
+  partner, carrying the same per-simulation generation config with the
+  mixed signals and per-trace noise provenance.
 - `../banks/synthegm_v1_clean.classifier.h5` — the pre-mix clean
   intermediate (preserved because the example config sets
   `output.clean_intermediate`). Useful for ablation studies comparing
   clean-only vs noise-mixed training without re-running the simulator.
+
+The mixed pair takes `_noise_mixed` ids: the ClassifierBank
+`tbank_…_noise_mixed_<date>` and its partner
+`tbank_…_noise_mixed_theta_<date>`.
 
 ### Producing a noise-mixed dataset in two steps (decoupled mix)
 
@@ -310,6 +341,11 @@ Two files come out:
 synthegm-generate-dataset examples/synthegm_v1_baseline.yaml
 synthegm-mix              examples/synthegm_mix.yaml
 ```
+
+Note the two-step route produces **no `synthetic_bank` for the mixed
+output** — `synthegm-mix` post-processes a ClassifierBank on disk and
+has no access to the generation config. Use the one-step route above
+when the mixed bank needs a θ partner.
 
 Equivalent output to the one-step noise-mixed path. Useful when you want
 to overlay several different noise banks (or several different SNR

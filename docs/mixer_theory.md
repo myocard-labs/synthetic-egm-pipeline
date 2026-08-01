@@ -306,8 +306,9 @@ selection — saved on the mixer entry's `master_seed` field).
 **What this does to the signal.** Nothing — provenance is metadata,
 not modifications to the signal. They land in the ClassifierBank
 alongside the trace and are available to any downstream consumer
-(egm-viewer's Inspection tab, eval-time stratification by SNR or
-source record, etc.).
+(egm-studio, eval-time stratification by SNR or source record, etc.).
+They are present **only on a mixed bank** — a clean bank omits them
+rather than writing NaN, which would read as "mixed, SNR unknown".
 
 **Code:**
 - Per-trace audit fields:
@@ -315,10 +316,13 @@ source record, etc.).
   `mixed_metadata["snr_db"] = ...` block.
 - Bank-level mixer entry: `mixer/mixing.py::mix_classifier_bank`,
   the `mixer_entry = ClassifierBankMetaData(...)` construction.
-- Optional Pydantic SyntheticBank sibling:
-  `mixer/storage.py::write_noise_mixed_synthetic_bank_from_classifier` —
-  for offline analysis tools that prefer the SyntheticBank schema's
-  columnar layout to ClassifierBank's per-trace dicts.
+- Noise-mixed `synthetic_bank`: written by the **inline** path
+  (`synthegm-generate-dataset` with a `mix:` block) from the in-memory
+  `DatasetResult`, passing the mixed signals plus the three noise
+  columns. Schema 2.0's per-simulation generation config cannot be
+  reconstructed from a mixed ClassifierBank, so the previous
+  rebuild-from-ClassifierBank route is gone; standalone `synthegm-mix`
+  therefore writes only a ClassifierBank.
 
 ## What the classifier sees after mixing
 
@@ -328,12 +332,17 @@ After the six steps, each noise-mixed training example looks like:
 |---|---|---|
 | `signal` | `(T_samples,)` float32 at 1 kHz | bandpassed clean + α·noise |
 | `label_truth` | int (0 = healthy, 1 = fibrotic) | set during clean dataset gen by LabelPolicy |
-| `trace_metadata.sim_id` | int | from clean gen |
-| `trace_metadata.fibrosis_density_realized` | float | from clean gen |
+| `trace_metadata.simulation_id` | int | join key into the `synthetic_bank`'s per-sim config |
+| `trace_metadata.pair_index` | int | which bipolar pair of that simulation |
+| `trace_metadata.patient_id` | str | `= simulation_id`; the patient-aware split unit |
 | `trace_metadata.snr_db` | float | this mixer's SNR sample |
 | `trace_metadata.noise_record` | str | IAFDB source record |
 | `trace_metadata.noise_channel` | str | IAFDB source channel |
-| `trace_metadata.electrode_height_mm`, `stim_edge`, ... | various | from clean gen |
+
+Generation parameters — density, stimulus edge, electrode height — are
+**not** here. They live once per simulation on the `synthetic_bank` and
+are reached through `simulation_id`; carrying a copy per trace is the
+duplication schema 2.0 exists to remove.
 
 With ~100 simulations × 20 bipolar pairs = ~2000 traces, each at a
 different per-trace SNR sampled from the configured range, each
