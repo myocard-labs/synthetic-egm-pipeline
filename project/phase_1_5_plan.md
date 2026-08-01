@@ -2,8 +2,8 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** planning · **Progress:** 0/44 steps done
-**Repo estimate:** **74–135 h** active (37 complexity points; cold-start ranges — the
+**Status:** in progress · **Progress:** 4/45 steps done
+**Repo estimate:** **74–136 h** active (37 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
 
@@ -16,7 +16,7 @@ are from design §7: Wave 1 is the schema migration (no new behavior), Wave 2 is
 
 | Phase item | Wave | What it needs from this repo | Cx | Estimate | Steps |
 |---|---|---|---|---|---|
-| SEP12 | 1 | Write `synthetic_bank` v2.0 with today's behavior — per-sim typed per-function config, collapsed `traces/`, int label, trivial θ-spec, both banks always emitted | L (5) | 12–23 h | SEP12.1–.8 |
+| SEP12 | 1 | Write `synthetic_bank` v2.0 with today's behavior — per-sim typed per-function config, collapsed `traces/`, int label, trivial θ-spec, both banks always emitted | L (5) | 12–24 h | SEP12.1–.8 |
 | SEP5 | 2 | Courtemanche 1998 human-atrial cell model alongside Aliev–Panfilov | L (5) | 10–20 h | SEP5.1–.5 |
 | SEP1 | 2 | Band-pass out of the mixer into a general, independently-runnable post-processing stage | M (3) | 6–9 h | SEP1.1–.4 |
 | SEP8 | 2 | Pluggable `NoiseSelectionStrategy` (uniform default + per-sim patient / record) | M (3) | 6–9 h | SEP8.1–.4 |
@@ -38,8 +38,8 @@ Everything else is unblocked once SEP12 is in.
 
 ## Design notes
 
-Six decisions. D1, D2, D3 and D6 are repo-internal (mine); D4 was escalated and is now settled by
-the project-lead; D5 is external input, half of it still pending.
+Seven decisions. D1, D2, D3, D6 and D7 are repo-internal (mine); D4 was escalated and is now
+settled by the project-lead; D5 is external input, half of it still pending.
 
 ### D1 — `SimulationResult` must carry the realized per-sim specs *(repo-internal)*
 
@@ -112,6 +112,24 @@ omitted. Standalone `synthegm-mix` is the one exception and cannot emit a synthe
 Rewritten into `project/architecture.md` ("Two outputs, different purposes, joined by
 `simulation_id`", replacing "Why not SyntheticBank by default").
 
+### D7 — keep both builders; do **not** derive the ClassifierBank via egm-data's converter *(repo-internal, confirmed with Daniel 2026-08-01)*
+
+egm-data ships `synthetic_bank_to_classifier`, and deriving the ClassifierBank from the SyntheticBank
+would delete ~90 lines here and make D4's two artifacts agree by construction. I proposed exactly that
+in CL-103. **It is not worth it in 1.5**, for one concrete reason: the converter hardcodes
+`amp_type="mv"`, and synthetic traces are not in millivolts — the pseudo-EGM forward calc drops the
+`4π/σ_e` normalisation, which is why this repo stamps `"synthetic_au"`. `synthetic_bank` 2.0 records
+no amplitude convention at all, so the converter *cannot* do better without a schema change.
+
+Verified 2026-08-01 that this is a latent trap and not a live bug: nothing in any repo's `src/` calls
+the converter (the single caller is one egm-classifier test already being reworked). Adopting it is
+what would have created the exposure.
+
+**So: the producer keeps building both banks directly.** The proper fix — the bank stating its own
+amplitude convention, required on write, with the converter reading it — is **FB-17**, batched with
+FB-15 / FB-16 into the Phase-2 contracts bump. The cost of keeping two builders is drift risk, which
+**SEP12.3b** covers with a cross-check test.
+
 ### D6 — the probe sweeps by exact shift, not by re-detection *(repo-internal)*
 
 SEP13 is not "call SEP2's crop N times." SEP2 places the activation by running SIG1's detector and
@@ -167,7 +185,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
 > and yields the **same traces + labels** as before the restructure. No new generation behavior in
 > any of these steps.
 
-#### SEP12.1 — Per-sim specs on `SimulationResult` + rename the join key ☐ (2–4 h)
+#### SEP12.1 — Per-sim specs on `SimulationResult` + rename the join key ✅ (2–4 h)
 - **Change:** (a) add a frozen `SimulationSpecs` bundle (geometry · substrate · activation ·
   electrodes, plus `label_policy` at the dataset level) to `simulate/result.py`; populate it in
   `run_single`; keep `run_metadata`'s existing duck-typed scalars untouched so nothing downstream
@@ -183,7 +201,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   a writer check on the key name, so landing the rename first unblocks both rather than making them
   wait on the whole Wave-1 cascade.
 
-#### SEP12.2 — Spec → contracts per-function model mapping ☐ (2–4 h)
+#### SEP12.2 — Spec → contracts per-function model mapping ✅ (2–4 h)
 - **Change:** new `simulate/bank_config.py` — pure functions mapping each spec concrete to its typed
   egm-contracts model (`geometry`, `cell_model`, `substrate`, `activation`, `electrodes` incl. the
   realized `pairs` list, `backend`, `label_policy`, `label_names`, `substrate_summary`). No h5py, no
@@ -192,7 +210,7 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   and back to equal field values.
 - **Depends on:** SEP12.1; **egm-contracts v0.6.0 tagged**.
 
-#### SEP12.3 — Re-pin + rewrite the clean SyntheticBank builder ☐ (2–4 h)
+#### SEP12.3 — Re-pin + rewrite the clean SyntheticBank builder ✅ (2–4 h)
 - **Change:** re-pin `myocard-egm-contracts@v0.6.0` + `myocard-egm-data@v0.5.x` in `pyproject.toml`;
   rewrite `build_synthetic_bank_from_dataset` to emit the `simulations/` group + collapsed `traces/`
   (`signal`, `simulation_id`, `pair_index`, `label` as int, `snr_db`, `noise_record`,
@@ -204,7 +222,15 @@ and states its verification. ☐ todo · 🔨 wip · ✅ done.
   entries with the right FK join, and per-trace labels match `DatasetResult.labels` exactly.
 - **Depends on:** SEP12.2; **egm-data v0.5.x tagged**.
 
-#### SEP12.4 — Noise-mixed path onto v2.0 (D3) ☐ (2–3 h)
+#### SEP12.3b — Cross-check the two banks agree ☐ (0.5–1 h)
+- **Change:** a test asserting that the ClassifierBank and the `synthetic_bank` emitted from **one
+  run** agree per trace on `label` and `simulation_id`. The producer builds the two independently
+  (D7), so nothing structural forces them to match; this is the guard that replaces the
+  by-construction guarantee deriving one from the other would have given.
+- **Verify:** the test fails if either builder's ordering or labelling drifts.
+- **Depends on:** SEP12.3.
+
+#### SEP12.4 — Noise-mixed path onto v2.0 (D3) ✅ (2–3 h)
 - **Change:** inline-mix path builds the v2.0 bank from the in-memory `DatasetResult` + mixed
   signals; `build_synthetic_bank_from_classifier` is retired or reduced to the ClassifierBank-only
   case; standalone `synthegm-mix` raises a clear `ConfigError` if asked for a synthetic bank.
@@ -589,7 +615,7 @@ are the ones that build on the migrated schema.
 
 | Issue | Task-type | Cx | Estimate | Active | Elapsed | Sessions |
 |---|---|---|---|---|---|---|
-| SEP12 | schema-migration | 5 | 12–23 h | | | |
+| SEP12 | schema-migration | 5 | 12–24 h | | | |
 | SEP5 | pipeline (physics) | 5 | 10–20 h | | | |
 | SEP1 | pipeline (refactor) | 3 | 6–9 h | | | |
 | SEP8 | pipeline | 3 | 6–9 h | | | |
@@ -603,7 +629,7 @@ are the ones that build on the migrated schema.
 | B12 | pipeline | 2 | 2–4 h | | | |
 | B13 | pipeline | 1 | 1–2 h | | | |
 | *(phase exit)* | docs | — | 2–3 h | | | |
-| **Repo total** | | **37** | **74–135 h** | | | |
+| **Repo total** | | **37** | **74–136 h** | | | |
 
 **Estimate basis.** The ledger is empty, so these are reference-class-by-analogy, not
 `points × measured rate`. Anchors used: SEP12 is *the* rubric's L anchor; SEP5 is sized equal to it
@@ -637,6 +663,42 @@ with. First cleanup replaces all of this with measured rates.
   **Latent risk, not acted on:** the repo is written entirely against the deprecated alias names. If
   a future finitewave drops them, every `fw.*2D` call site breaks at once. Cheap hedge — move to the
   bare names as part of SEP5.1, since that step already touches the backend's model construction.
+- 2026-08-01 — **SEP12.2 + .3 + .4 landed together — the split was artificial** (Daniel's review).
+  SEP12.1 was scoped to avoid the tag so it could start early, but the whole point of the step is the
+  migration, and re-pinning proves the split can't hold: `builders.py` imports `StimEdgeEnum`, which
+  v0.6.0 removes, so the repo does not *import* between the re-pin and the builder rewrite. .4 came
+  along because the two CLIs call the retired reconstruction builder. Lesson recorded for the phase
+  retro: **a migration step is not divisible below "the repo imports again"** — wave planning should
+  size steps by that boundary, not by what can be made to look independent.
+  Landed: re-pin contracts+data **v0.6.0**; new `simulate/bank_config.py` (spec → typed per-function
+  models); `build_synthetic_bank_from_dataset` rewritten to 2.0 (per-sim `simulations/` group,
+  collapsed `traces/`, int label, θ-spec regime with empty knobs — the schema **requires**
+  `generation_params`, so SEP12.6's trivial writer folded in too);
+  `build_synthetic_bank_from_classifier` retired per D3 with the inline mix path now building from
+  the `DatasetResult`; standalone `synthegm-mix` raises a clear `ConfigError`. **132 tests green,
+  ruff + bare mypy clean**, including an end-to-end round-trip through egm-data's real writer/reader
+  and a check that the bank we emit is convertible by egm-data.
+  **mypy earned its keep again:** the generated models wrap constrained scalars in `RootModel`s
+  (`Threshold`, `PairIndexItem`, `LabelItem`, `ElectrodeIndice`, `PositionMm`) and `Edge` is an Enum,
+  not the producer's `Literal`. Pydantic coerces all of these at runtime, so the tests passed while
+  the static types were wrong — exactly the class of thing that silently rots.
+- 2026-08-01 — **CL-103 downgraded -> D7 + FB-17.** Verified no `src/` in any repo calls
+  `synthetic_bank_to_classifier`, so the `amp_type="mv"` hardcode is a latent trap, not a live bug —
+  adopting the converter (my own CL-103 suggestion) is what would have created the exposure.
+  Withdrawn. Producer keeps both builders; proper fix (bank states its amplitude convention,
+  required-on-write, converter reads it) backlogged as **FB-17** for the Phase-2 contracts bump with
+  FB-15/FB-16. Added **SEP12.3b** — cross-check that the two banks agree on label + `simulation_id`
+  per trace — to cover the drift risk two builders reintroduce.
+- 2026-08-01 — **SEP12.1 done.** `SimulationSpecs` added to `simulate/result.py` and populated in
+  `run_single`; `sim_id` -> `simulation_id` fleet-wide in this repo; architecture.md records the
+  Guardrail-2 widening. 125 tests green, ruff + bare `mypy` clean. Also landed **CL-100** here
+  (`[tool.mypy] files = ["src","tests"]`) since the step already touched tests — it surfaced exactly
+  the sloppiness CL-100 predicted: a `parametrize` widened `Edge` to `str`, and a test read
+  `size_mm` through the `GeometrySpec` Protocol, which by design exposes only `type`. Both fixed
+  properly (narrow with `isinstance`, parametrize over `EDGES`) rather than ignored.
+  **Sandbox note:** the local siblings are already v0.6.0, so verifying SEP12.1 against the *current*
+  v0.5.3/v0.5.0 pins needed `git archive` exports of those tags — editable siblings would have
+  silently tested the post-re-pin world (the insulation CL-102 mentions).
 - 2026-07-30 — **CL-075: new issue SEP13** (positional-sensitivity probe bank), from the §8.9 code
   audit — research promoted the probe from optional to **core** because the anchored-vs-varied A/B
   alone can't separate "positional shortcut" from "generic augmentation" (CL-071). Scored **S (2),

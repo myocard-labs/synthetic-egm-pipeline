@@ -452,6 +452,35 @@ changing, the migration to Option B requires rebuilding the public
 interfaces. Locking them now means Option B is a backend-internal
 refactor, not an API-breaking redesign.
 
+#### Widening: `SimulationResult.specs` (Phase 1.5, SEP12)
+
+`SimulationResult` gained one field — `specs: SimulationSpecs`, a frozen
+bundle of the four strategy specs the simulation actually ran with.
+
+This is a **widening**, in the same category as the `@property`
+Protocol change above, and in scope for Guardrail 2 for the same reason:
+the guardrail locks against *breaking* changes. Every existing reader of
+`SimulationResult` keeps working untouched, and the only producer of the
+type — `run_single` — is the only thing that changed. The four strategy
+Protocols were not modified at all.
+
+**Why it was needed.** `generate_dataset` samples a fibrosis density, an
+activation edge and an electrode height per simulation, builds
+`UniformRandomFibrosis` / `PlanarEdgeStimulus` / `CenteredGrid2D` from
+them, hands those to `run_single` — and then dropped them, keeping only
+a handful of duck-typed scalars in `run_metadata`
+(`fibrosis_density_requested`, `stim_edge`, `electrode_height_mm`, …).
+That was sufficient while `synthetic_bank` 1.1 stored generation
+parameters as flat per-trace columns. Schema 2.0 stores each generation
+*function* as a typed, `type`-discriminated object once per simulation,
+so the objects themselves have to survive the call. `run_metadata`'s
+scalars remain as a lossy view of the same facts for existing readers.
+
+Keeping the specs as objects rather than widening `run_metadata` further
+is the point: a dict of scalars cannot express a point stimulus's
+coordinate, an S1–S2 protocol's timings, or a cell model's conductance
+scalings, and those are exactly what Phase 1.5+ adds.
+
 ### Guardrail 3: backend-internal types stay backend-internal
 
 `fw.CardiacTissue2D`, `fw.AlievPanfilov2D`, `fw.ECG2DTracker`, etc.
