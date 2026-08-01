@@ -205,7 +205,8 @@ def downsample(
     t_target = np.arange(n_target, dtype=np.float64) / target_fs_hz
 
     if traces.ndim == 1:
-        return np.interp(t_target, t_source, traces).astype(traces.dtype, copy=False)
+        interpolated = np.asarray(np.interp(t_target, t_source, traces))
+        return interpolated.astype(traces.dtype, copy=False)
     out = np.empty((n_target, traces.shape[1]), dtype=traces.dtype)
     for c in range(traces.shape[1]):
         out[:, c] = np.interp(t_target, t_source, traces[:, c])

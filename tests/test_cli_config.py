@@ -18,6 +18,7 @@ from myocard_synthetic_egm_pipeline.cli._config import (
     build_mix_config,
     load_yaml,
 )
+from myocard_synthetic_egm_pipeline.simulate import Patch2DGeometry
 
 
 def _write_yaml(tmp_path: Path, body: str, name: str = "config.yaml") -> Path:
@@ -74,6 +75,10 @@ def test_generate_dataset_minimum_required_fields(tmp_path: Path) -> None:
     assert cfg.backend_type == "finitewave"
     # Geometry defaults to the project's Phase 1 patch.
     assert cfg.geometry.type == "patch_2d"
+    # cfg.geometry is typed as the GeometrySpec Protocol, which exposes only
+    # `type` by design (Guardrail 2). Narrow to the concrete before reading a
+    # concrete's field, rather than reaching through the Protocol.
+    assert isinstance(cfg.geometry, Patch2DGeometry)
     assert cfg.geometry.size_mm == 40.0
     # Output path resolves against the YAML's directory.
     assert cfg.classifier_bank_output == (tmp_path / "out.h5").resolve()

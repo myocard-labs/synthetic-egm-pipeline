@@ -8,7 +8,7 @@ patch so locality-aware tests have deterministic ground truth.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -22,13 +22,48 @@ from myocard_egm_data.banks import ClassifierBank, ClassifierBankMetaData, Class
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 from myocard_synthetic_egm_pipeline.simulate import (
+    CenteredGrid2D,
     DatasetConfig,
     DatasetResult,
     GlobalDensityLabel,
     Patch2DGeometry,
+    PlanarEdgeStimulus,
     RawSimulationResult,
     SimulationResult,
+    SimulationSpecs,
+    UniformRandomFibrosis,
 )
+from myocard_synthetic_egm_pipeline.simulate.specs import Edge
+
+# ---------------------------------------------------------------------------
+# Simulation specs
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def minimal_specs() -> SimulationSpecs:
+    """A throwaway :class:`SimulationSpecs` for tests that don't care about it.
+
+    ``SimulationResult.specs`` is required (it is what ``synthetic_bank``
+    2.0's per-simulation config serializes from), but a label-policy test
+    exercises the mask and the midpoints only. Deliberately has no default
+    on the dataclass itself: a result that silently omits its specs is
+    exactly the bug the field exists to prevent.
+    """
+    return SimulationSpecs(
+        geometry=Patch2DGeometry(size_mm=4.0, dr_mm=0.25),
+        substrate=UniformRandomFibrosis(density=0.0),
+        activation=PlanarEdgeStimulus(edge="top"),
+        electrodes=CenteredGrid2D(
+            n_rows=1,
+            n_cols=5,
+            spacing_mm=2.0,
+            height_mm=0.5,
+            positions_mm=np.zeros((8, 3), dtype=np.float64),
+            bipolar_pairs=tuple((i, i + 1) for i in range(4)),
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Small mesh + spatial fixtures
@@ -95,7 +130,7 @@ def _make_simulation_result(
     mask: npt.NDArray[np.int8],
     dr_mm: float,
     density_realized: float,
-    sim_id: int = 0,
+    simulation_id: int = 0,
     sim_seed: int = 42,
     stim_edge: str = "top",
     electrode_height_mm: float = 0.5,
@@ -108,6 +143,20 @@ def _make_simulation_result(
     # forwards them; populate with anything sensible.
     electrode_positions = np.zeros((n_pairs * 2, 3), dtype=np.float64)
     bipolar_pairs = tuple((i * 2, i * 2 + 1) for i in range(n_pairs))
+    geometry = Patch2DGeometry(size_mm=40.0, dr_mm=dr_mm)
+    specs = SimulationSpecs(
+        geometry=geometry,
+        substrate=UniformRandomFibrosis(density=fibrosis_density_requested),
+        activation=PlanarEdgeStimulus(edge=cast(Edge, stim_edge)),
+        electrodes=CenteredGrid2D(
+            n_rows=1,
+            n_cols=n_pairs + 1,
+            spacing_mm=2.0,
+            height_mm=electrode_height_mm,
+            positions_mm=electrode_positions,
+            bipolar_pairs=bipolar_pairs,
+        ),
+    )
     return SimulationResult(
         bipolar_traces=bipolar_traces,
         fs_hz=fs_hz,
@@ -117,9 +166,13 @@ def _make_simulation_result(
         substrate_mask_dr_mm=dr_mm,
         electrode_positions_mm=electrode_positions,
         bipolar_pairs=bipolar_pairs,
-        substrate_realization_metadata={"density_realized": density_realized},
+        specs=specs,
+        substrate_realization_metadata={
+            "density_realized": density_realized,
+            "n_fibrotic_nodes": int(density_realized * 1000),
+        },
         run_metadata={
-            "sim_id": sim_id,
+            "simulation_id": simulation_id,
             "sim_seed": sim_seed,
             "stim_edge": stim_edge,
             "electrode_height_mm": electrode_height_mm,
@@ -127,8 +180,10 @@ def _make_simulation_result(
             "electrode_row_per_pair": [0] * n_pairs,
             "backend_metadata": {
                 "backend_name": "mock",
-                "model_class": "AlievPanfilov2D",
+                "finitewave_version_pin": "0.9.3",
+                "ap_dt_model_units": 0.01,
                 "ap_time_unit_ms": 1.97,
+                "model_class": "AlievPanfilov2D",
             },
         },
     )
@@ -166,7 +221,7 @@ def small_dataset_result(
             mask=substrate_mask_with_patch,
             dr_mm=0.25,
             density_realized=0.05 * (i + 1),
-            sim_id=i,
+            simulation_id=i,
             sim_seed=42 + i,
             stim_edge=["top", "bottom", "left"][i],
             fibrosis_density_requested=0.05 * (i + 1),
@@ -180,14 +235,14 @@ def small_dataset_result(
         np.zeros(4, dtype=np.int64),
     ]
     labels = np.concatenate(labels_per_sim)
-    sim_ids = np.concatenate([np.full(4, i, dtype=np.int64) for i in range(3)])
+    simulation_ids = np.concatenate([np.full(4, i, dtype=np.int64) for i in range(3)])
     pair_indices = np.concatenate([np.arange(4, dtype=np.int64) for _ in range(3)])
     seeds = np.array([42, 43, 44], dtype=np.int64)
     return DatasetResult(
         results=results,
         labels=labels,
         labels_dict={0: "healthy", 1: "fibrotic"},
-        sim_ids=sim_ids,
+        simulation_ids=simulation_ids,
         pair_indices=pair_indices,
         seeds=seeds,
     )
@@ -228,9 +283,9 @@ def small_classifier_bank() -> ClassifierBank:
     rng = np.random.default_rng(0)
     traces = []
     for i in range(4):
-        sim_id = i // 2  # two pairs per sim
+        simulation_id = i // 2  # two pairs per sim
         pair_idx = i % 2
-        label = 0 if sim_id == 0 else 1
+        label = 0 if simulation_id == 0 else 1
         traces.append(
             ClassifierTrace(
                 bank_id=_FIXTURE_BANK_ID,
@@ -241,15 +296,15 @@ def small_classifier_bank() -> ClassifierBank:
                 label_truth=label,
                 prediction=None,
                 trace_metadata={
-                    "sim_id": sim_id,
+                    "simulation_id": simulation_id,
                     "pair_index": pair_idx,
                     "electrode_row": 0,
-                    "fibrosis_density_requested": 0.1 * sim_id,
-                    "fibrosis_density_realized": 0.1 * sim_id,
+                    "fibrosis_density_requested": 0.1 * simulation_id,
+                    "fibrosis_density_realized": 0.1 * simulation_id,
                     "electrode_height_mm": 0.5,
                     "stim_edge": "top",
-                    "sim_seed": 42 + sim_id,
-                    "patient_id": str(sim_id),
+                    "sim_seed": 42 + simulation_id,
+                    "patient_id": str(simulation_id),
                 },
             )
         )
@@ -303,7 +358,9 @@ def small_noise_bank() -> NoiseBank:
     from datetime import datetime, timezone
 
     return NoiseBank(
-        schema_version=NoiseSchemaVersion.field_1_0,
+        # noise_bank 1.1 (egm-contracts v0.6.0) added the root bank_id (B20).
+        schema_version=NoiseSchemaVersion.field_1_1,
+        bank_id="nbank_test_fixture",
         created_utc=datetime.now(timezone.utc),
         source="test fixture",
         fs_hz=1000.0,
@@ -356,10 +413,19 @@ class _MockBackend:
                 "n_fibrotic_nodes": 0,
                 "strategy_type": substrate.type,
             },
+            # Mirrors the key set FinitewaveBackend actually emits. A
+            # fixture thinner than the real backend lets a mapping gap
+            # pass tests — which is exactly how `version` and
+            # `dt_model_units` were silently left unset.
             backend_metadata={
                 "backend_name": self.name,
-                "model_class": "AlievPanfilov2D",
+                "finitewave_version_pin": "0.9.3",
+                "ap_dt_model_units": 0.01,
+                "ap_dr_model_units": 0.25,
                 "ap_time_unit_ms": float(config.ap_time_unit_ms),
+                "capture_step_integration": 4,
+                "fs_capture_hz": float(config.output_fs_hz * config.capture_oversample),
+                "model_class": "AlievPanfilov2D",
             },
         )
 

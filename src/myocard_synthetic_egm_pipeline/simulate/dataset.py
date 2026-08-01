@@ -146,7 +146,7 @@ class DatasetResult:
     ----------
     results
         One :class:`SimulationResult` per simulation, ordered by
-        ``sim_id``.
+        ``simulation_id``.
     labels
         ``(N_total,)`` int64 — flat labels aligned with the trace order
         in ``results`` (sim 0 traces, then sim 1 traces, ...). N_total
@@ -154,8 +154,8 @@ class DatasetResult:
     labels_dict
         Integer-to-name mapping shared across the dataset (every
         per-sim LabelPolicy.apply call must agree).
-    sim_ids
-        ``(N_total,)`` int64 — sim_id per trace.
+    simulation_ids
+        ``(N_total,)`` int64 — simulation_id per trace.
     pair_indices
         ``(N_total,)`` int64 — bipolar-pair index within the trace's
         own simulation (0 .. result.n_pairs - 1).
@@ -167,7 +167,7 @@ class DatasetResult:
     results: list[SimulationResult]
     labels: npt.NDArray[np.int64]
     labels_dict: dict[int, str]
-    sim_ids: npt.NDArray[np.int64]
+    simulation_ids: npt.NDArray[np.int64]
     pair_indices: npt.NDArray[np.int64]
     seeds: npt.NDArray[np.int64]
 
@@ -188,7 +188,7 @@ def generate_dataset(
 
     results: list[SimulationResult] = []
     label_chunks: list[npt.NDArray[np.int64]] = []
-    sim_id_chunks: list[npt.NDArray[np.int64]] = []
+    simulation_id_chunks: list[npt.NDArray[np.int64]] = []
     pair_idx_chunks: list[npt.NDArray[np.int64]] = []
     seeds_list: list[int] = []
     labels_dict: dict[int, str] | None = None
@@ -197,7 +197,7 @@ def generate_dataset(
     if config.show_progress:
         iterator = tqdm(iterator, desc="Simulating", unit="sim")
 
-    for sim_id in iterator:
+    for simulation_id in iterator:
         # Per-sim deterministic RNG.
         sim_seed = int(master_rng.integers(0, 2**31 - 1))
         sim_rng = np.random.default_rng(sim_seed)
@@ -247,10 +247,10 @@ def generate_dataset(
             rng=sim_rng,
         )
 
-        # Stamp sim_id into the result's run_metadata for downstream
+        # Stamp simulation_id into the result's run_metadata for downstream
         # provenance. The frozen dataclass means we mutate via dict
         # copy on the metadata field.
-        result.run_metadata["sim_id"] = sim_id
+        result.run_metadata["simulation_id"] = simulation_id
         result.run_metadata["sim_seed"] = sim_seed
 
         results.append(result)
@@ -262,35 +262,35 @@ def generate_dataset(
         elif labels_dict != sim_labels_dict:
             raise ValueError(
                 f"LabelPolicy returned disagreeing labels_dicts across simulations: "
-                f"sim {sim_id} returned {sim_labels_dict!r}; earlier sims returned "
+                f"sim {simulation_id} returned {sim_labels_dict!r}; earlier sims returned "
                 f"{labels_dict!r}."
             )
         if sim_labels.shape[0] != result.n_pairs:
             raise ValueError(
                 f"LabelPolicy.apply returned {sim_labels.shape[0]} labels "
-                f"for {result.n_pairs} pairs (sim {sim_id})."
+                f"for {result.n_pairs} pairs (sim {simulation_id})."
             )
 
         label_chunks.append(sim_labels.astype(np.int64, copy=False))
-        sim_id_chunks.append(np.full(result.n_pairs, sim_id, dtype=np.int64))
+        simulation_id_chunks.append(np.full(result.n_pairs, simulation_id, dtype=np.int64))
         pair_idx_chunks.append(np.arange(result.n_pairs, dtype=np.int64))
 
     if labels_dict is None:
         labels_dict = {}
     if label_chunks:
         labels = np.concatenate(label_chunks)
-        sim_ids = np.concatenate(sim_id_chunks)
+        simulation_ids = np.concatenate(simulation_id_chunks)
         pair_indices = np.concatenate(pair_idx_chunks)
     else:
         labels = np.zeros(0, dtype=np.int64)
-        sim_ids = np.zeros(0, dtype=np.int64)
+        simulation_ids = np.zeros(0, dtype=np.int64)
         pair_indices = np.zeros(0, dtype=np.int64)
 
     return DatasetResult(
         results=results,
         labels=labels,
         labels_dict=labels_dict,
-        sim_ids=sim_ids,
+        simulation_ids=simulation_ids,
         pair_indices=pair_indices,
         seeds=np.asarray(seeds_list, dtype=np.int64),
     )

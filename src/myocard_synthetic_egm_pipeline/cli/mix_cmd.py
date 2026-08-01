@@ -41,9 +41,6 @@ from myocard_synthetic_egm_pipeline.cli._config import (
     load_yaml,
 )
 from myocard_synthetic_egm_pipeline.mixer import mix_classifier_bank
-from myocard_synthetic_egm_pipeline.mixer.storage import (
-    write_noise_mixed_synthetic_bank_from_classifier,
-)
 
 
 def _format_result(
@@ -126,18 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         classifier_path = write_classifier_bank(
             noise_mixed_bank, cfg.output_classifier_bank, overwrite=args.overwrite
         )
+        # A synthetic_bank cannot be produced here. Standalone mixing is a
+        # post-process over a ClassifierBank on disk, and schema 2.0's
+        # per-simulation generation config is not recoverable from that
+        # bank's per-trace metadata. Emitting one anyway would mean writing
+        # a config that does not describe the simulations behind the
+        # traces. The inline path (synthegm-generate-dataset with a `mix:`
+        # block) still has the DatasetResult and writes it there.
         synthetic_path: Path | None = None
-        if cfg.also_emit_synthetic_bank:
-            output_path = cfg.output_synthetic_bank or _sibling_synthetic(
-                cfg.output_classifier_bank
-            )
-            synthetic_path = write_noise_mixed_synthetic_bank_from_classifier(
-                noise_mixed_bank=noise_mixed_bank,
-                output_path=output_path,
-                description=mixer_config.description,
-                overwrite=args.overwrite,
-                bank_id=cfg.bank_id,
-            )
     except FileExistsError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print("Hint: pass --overwrite to replace.", file=sys.stderr)

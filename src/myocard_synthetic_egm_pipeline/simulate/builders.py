@@ -11,10 +11,6 @@ across the producer pipeline:
   :class:`DatasetResult` → in-memory Pydantic :class:`SyntheticBank`.
   Pre-mixer values: ``snr_db = NaN``, ``noise_record = ""``,
   ``noise_channel = ""``.
-- :func:`build_synthetic_bank_from_classifier` — noise-mixed (post-mixer)
-  :class:`ClassifierBank` → in-memory Pydantic :class:`SyntheticBank`.
-  Reads the mixer audit fields from each trace's ``trace_metadata``
-  and the "mixer" provenance entry on ``bank.banks``.
 - :func:`build_clean_trace_metadata`,
   :func:`build_bank_metadata_for_classifier_bank` — small helpers the
   three larger builders share.
@@ -34,9 +30,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
 from myocard_egm_contracts._generated.python.synthetic_bank import (
+    GenerationParams,
+    LabelItem,
+    PairIndexItem,
     SchemaVersion,
-    StimEdgeEnum,
+    Simulations,
     SyntheticBank,
     Traces,
 )
@@ -50,6 +51,7 @@ from myocard_egm_data.banks import (
 from myocard_synthetic_egm_pipeline import __version__
 from myocard_synthetic_egm_pipeline.constants import BANK_SOURCE
 from myocard_synthetic_egm_pipeline.ids import derive_synthetic_bank_id, validate_artifact_id
+from myocard_synthetic_egm_pipeline.simulate.bank_config import build_simulation_columns
 from myocard_synthetic_egm_pipeline.simulate.dataset import DatasetConfig, DatasetResult
 
 # Amplitude convention for ClassifierBank.amp_type. The Phase-1
@@ -66,7 +68,7 @@ AMP_TYPE: str = "synthetic_au"
 
 def build_clean_trace_metadata(
     *,
-    sim_id: int | None,
+    simulation_id: int | None,
     pair_idx: int,
     electrode_row: int | None,
     fibrosis_density_requested: float | None,
@@ -83,11 +85,11 @@ def build_clean_trace_metadata(
     (``snr_db``, ``noise_record``, ``noise_channel``); see
     :func:`~myocard_synthetic_egm_pipeline.mixer.mixing.mix_classifier_bank`.
 
-    ``patient_id`` is set to ``str(sim_id)`` so the patient-aware split
+    ``patient_id`` is set to ``str(simulation_id)`` so the patient-aware split
     in egm-data treats each simulation as one patient.
     """
     return {
-        "sim_id": sim_id,
+        "simulation_id": simulation_id,
         "pair_index": int(pair_idx),
         "electrode_row": electrode_row,
         "fibrosis_density_requested": fibrosis_density_requested,
@@ -95,7 +97,7 @@ def build_clean_trace_metadata(
         "electrode_height_mm": electrode_height_mm,
         "stim_edge": stim_edge,
         "sim_seed": sim_seed,
-        "patient_id": str(sim_id) if sim_id is not None else "",
+        "patient_id": str(simulation_id) if simulation_id is not None else "",
     }
 
 
@@ -157,7 +159,7 @@ def build_classifier_bank_from_dataset(
     Each bipolar trace becomes one :class:`ClassifierTrace` with the
     integer label from ``dataset_result.labels`` and the per-sim
     sampled scalars in ``trace_metadata``. ``patient_id`` is set to
-    the trace's ``sim_id`` so the patient-aware split treats each
+    the trace's ``simulation_id`` so the patient-aware split treats each
     simulation as one patient.
 
     No I/O — pair with
@@ -192,14 +194,14 @@ def build_classifier_bank_from_dataset(
     for result in dataset_result.results:
         run_meta = result.run_metadata
         substrate_meta = result.substrate_realization_metadata
-        sim_id = run_meta.get("sim_id")
+        simulation_id = run_meta.get("simulation_id")
         sim_seed = run_meta.get("sim_seed")
         electrode_row_per_pair = run_meta.get("electrode_row_per_pair") or [None] * result.n_pairs
 
         for pair_idx in range(result.n_pairs):
             label_value = int(dataset_result.labels[flat_idx])
             trace_meta = build_clean_trace_metadata(
-                sim_id=sim_id,
+                simulation_id=simulation_id,
                 pair_idx=pair_idx,
                 electrode_row=electrode_row_per_pair[pair_idx],
                 fibrosis_density_requested=run_meta.get("fibrosis_density_requested"),
@@ -231,7 +233,7 @@ def build_classifier_bank_from_dataset(
 
 
 # ---------------------------------------------------------------------------
-# SyntheticBank from DatasetResult (clean / pre-mixer)
+# SyntheticBank 2.0 from DatasetResult
 # ---------------------------------------------------------------------------
 
 
@@ -241,271 +243,125 @@ def build_synthetic_bank_from_dataset(
     config: DatasetConfig,
     description: str = "",
     bank_id: str | None = None,
+    mixed_signals: list[npt.NDArray[np.float32]] | None = None,
+    snr_db: list[float] | None = None,
+    noise_record: list[str] | None = None,
+    noise_channel: list[str] | None = None,
+    noise_bank_source: str | None = None,
 ) -> SyntheticBank:
-    """Build an in-memory Pydantic SyntheticBank from a DatasetResult.
+    """Build an in-memory ``synthetic_bank`` 2.0 from a DatasetResult.
 
-    Pre-mixer values land in the noise + SNR columns:
+    The generation config is written **per simulation** as typed,
+    ``type``-discriminated objects (see
+    :mod:`~myocard_synthetic_egm_pipeline.simulate.bank_config`); the
+    ``traces/`` group collapses to the signal, the two foreign keys, the
+    integer label and the noise provenance.
 
-    - ``snr_db = NaN`` per trace.
-    - ``noise_record = ""`` per trace.
-    - ``noise_channel = ""`` per trace.
+    Noise columns
+    -------------
+    Clean banks leave the mixer arguments unset: ``snr_db`` is NaN and
+    the two noise strings are empty, matching the schema's "the mixer
+    was off" convention. The **inline mixer path** passes
+    ``mixed_signals`` plus the three per-trace noise columns, so a
+    noise-mixed bank is written from the same in-memory
+    :class:`DatasetResult` rather than reconstructed from a
+    ClassifierBank — the 1.1 round-trip that 2.0 makes impossible, since
+    the per-simulation config is not recoverable from per-trace
+    metadata (see ``project/architecture.md``).
 
-    For noise-mixed (post-mixer) SyntheticBanks, use
-    :func:`build_synthetic_bank_from_classifier` instead — that path
-    reads the mixer audit fields from a noise-mixed ClassifierBank's
-    ``trace_metadata``.
+    ``activation_position`` is left absent: Wave 1 applies no controlled
+    crop, and the schema is explicit that absence means *unknown*, never
+    0.0 (which is a legitimate position). SEP2 populates it.
 
-    No I/O — pair with
-    :func:`myocard_egm_data.banks.write_synthetic_bank` to write.
+    No I/O — pair with :func:`myocard_egm_data.banks.write_synthetic_bank`.
     """
+    results = dataset_result.results
+    if not results:
+        raise ValueError("DatasetResult has no simulations to write.")
+
+    first = results[0]
+    backend_meta_first = dict(first.run_metadata.get("backend_metadata", {}))
+
+    simulations = build_simulation_columns(
+        results=results,
+        label_policy=config.label_policy,
+        labels_dict=dataset_result.labels_dict,
+        master_seed=config.master_seed,
+        output_fs_hz=config.run_config.output_fs_hz,
+        capture_oversample=config.run_config.capture_oversample,
+    )
+
+    # Trace order is positional and must match dataset_result's flat
+    # simulation_id / pair_index / label arrays, which are built in the
+    # same nested order by generate_dataset.
     signal_rows: list[list[float]] = []
-    simulation_id: list[int] = []
-    pair_index: list[int] = []
-    electrode_row: list[int] = []
-    fibrosis_density: list[float] = []
-    fibrosis_density_realized: list[float] = []
-    electrode_height_mm: list[float] = []
-    seed_col: list[int] = []
-    snr_db: list[float] = []
-    stim_edge: list[StimEdgeEnum] = []
-    noise_record: list[str] = []
-    noise_channel: list[str] = []
-
-    backend_meta_first: dict[str, Any] = {}
-
-    for result in dataset_result.results:
-        run_meta = result.run_metadata
-        substrate_meta = result.substrate_realization_metadata
-        if not backend_meta_first:
-            backend_meta_first = dict(run_meta.get("backend_metadata", {}))
-
-        sim_id = int(run_meta.get("sim_id", 0))
-        sim_seed = int(run_meta.get("sim_seed", 0))
-        row_per_pair = run_meta.get("electrode_row_per_pair") or [0] * result.n_pairs
-        edge_val = run_meta.get("stim_edge", "top")
-        if edge_val not in {"top", "bottom", "left", "right"}:
-            raise ValueError(
-                f"SyntheticBank stim_edge enum only accepts top/bottom/left/right; "
-                f"got {edge_val!r}. Pre-mixer banks must use PlanarEdgeStimulus."
-            )
-        edge_enum = StimEdgeEnum(edge_val)
-        height = float(run_meta.get("electrode_height_mm") or 0.0)
-        density_req = float(run_meta.get("fibrosis_density_requested") or 0.0)
-        density_realized = float(substrate_meta.get("density_realized", 0.0))
-
+    for result in results:
         for pair_idx in range(result.n_pairs):
             signal_rows.append(result.bipolar_traces[pair_idx].astype(float).tolist())
-            simulation_id.append(sim_id)
-            pair_index.append(int(pair_idx))
-            electrode_row.append(int(row_per_pair[pair_idx] or 0))
-            fibrosis_density.append(density_req)
-            fibrosis_density_realized.append(density_realized)
-            electrode_height_mm.append(height)
-            seed_col.append(sim_seed)
-            snr_db.append(math.nan)
-            stim_edge.append(edge_enum)
-            noise_record.append("")
-            noise_channel.append("")
+
+    n_traces = len(signal_rows)
+    if mixed_signals is not None:
+        if len(mixed_signals) != n_traces:
+            raise ValueError(
+                f"mixed_signals has {len(mixed_signals)} entries for {n_traces} traces."
+            )
+        signal_rows = [sig.astype(float).tolist() for sig in mixed_signals]
 
     traces = Traces(
         signal=signal_rows,
-        simulation_id=simulation_id,
-        pair_index=pair_index,
-        electrode_row=electrode_row,
-        fibrosis_density=fibrosis_density,
-        fibrosis_density_realized=fibrosis_density_realized,
-        electrode_height_mm=electrode_height_mm,
-        seed=seed_col,
-        snr_db=snr_db,
-        stim_edge=stim_edge,
-        noise_record=noise_record,
-        noise_channel=noise_channel,
+        simulation_id=[int(x) for x in dataset_result.simulation_ids],
+        pair_index=[PairIndexItem(int(x)) for x in dataset_result.pair_indices],
+        label=[LabelItem(int(x)) for x in dataset_result.labels],
+        activation_position=None,
+        snr_db=list(snr_db) if snr_db is not None else [math.nan] * n_traces,
+        noise_record=list(noise_record) if noise_record is not None else [""] * n_traces,
+        noise_channel=(list(noise_channel) if noise_channel is not None else [""] * n_traces),
     )
-
-    first_result = dataset_result.results[0] if dataset_result.results else None
-    first_run_meta = first_result.run_metadata if first_result is not None else {}
 
     resolved_bank_id = (
         validate_artifact_id(bank_id)
         if bank_id is not None
-        else derive_synthetic_bank_id(_cell_model_from_backend_meta(backend_meta_first))
-    )
-
-    return SyntheticBank(
-        schema_version=SchemaVersion(current_version("synthetic_bank")),
-        bank_id=resolved_bank_id,
-        created_utc=datetime.now(timezone.utc),
-        description=description or None,
-        fs_hz=float(
-            first_result.fs_hz if first_result is not None else config.run_config.output_fs_hz
-        ),
-        trace_duration_ms=float(
-            first_result.trace_duration_ms
-            if first_result is not None
-            else config.run_config.trace_duration_ms
-        ),
-        simulator=str(backend_meta_first.get("backend_name") or "unknown"),
-        cell_model=_cell_model_from_backend_meta(backend_meta_first),
-        patch_size_mm=float(first_run_meta.get("patch_size_mm") or 0.0) or None,
-        patch_dr_mm=float(first_run_meta.get("patch_dr_mm") or 0.0) or None,
-        ap_time_unit_ms=float(backend_meta_first.get("ap_time_unit_ms") or 0.0) or None,
-        fibrosis_strategy_name=str(first_run_meta.get("substrate_type") or "unknown"),
-        fibrosis_params={
-            "density_range": list(config.fibrosis_density_range),
-            "fraction_healthy": config.fraction_healthy,
-        },
-        electrode_config={
-            "n_rows": config.electrode_n_rows,
-            "n_cols": config.electrode_n_cols,
-            "spacing_mm": config.electrode_spacing_mm,
-            "height_mm_range": list(config.electrode_height_mm_range),
-        },
-        mixer_config=None,
-        experiment_config={
-            "n_simulations": config.n_simulations,
-            "master_seed": config.master_seed,
-            "fixed_stim_edge": config.fixed_stim_edge,
-            "label_policy_name": config.label_policy.name,
-            "label_policy_type": config.label_policy.type,
-            "producer_version": __version__,
-        },
-        noise_bank_source=None,
-        traces=traces,
-    )
-
-
-# ---------------------------------------------------------------------------
-# SyntheticBank from noise-mixed ClassifierBank (post-mixer)
-# ---------------------------------------------------------------------------
-
-
-def build_synthetic_bank_from_classifier(
-    *,
-    noise_mixed_bank: ClassifierBank,
-    description: str = "",
-    bank_id: str | None = None,
-) -> SyntheticBank:
-    """Build an in-memory Pydantic SyntheticBank from a noise-mixed ClassifierBank.
-
-    The bank must have been produced by
-    :func:`~myocard_synthetic_egm_pipeline.mixer.mixing.mix_classifier_bank`
-    — this builder reads the mixer metadata from the bank's "mixer"
-    provenance entry and per-trace ``trace_metadata`` to populate the
-    SyntheticBank's mixer-aware columns (``snr_db``, ``noise_record``,
-    ``noise_channel``).
-
-    No I/O — pair with
-    :func:`myocard_egm_data.banks.write_synthetic_bank` to write.
-    """
-    if not noise_mixed_bank.traces:
-        raise ValueError("Noise-mixed bank has no traces.")
-
-    mixer_entry = _find_bank_entry(noise_mixed_bank, "mixer")
-    clean_entry = _find_bank_entry(noise_mixed_bank, BANK_SOURCE)
-    clean_meta = clean_entry.bank_metadata if clean_entry is not None else {}
-    mixer_meta = mixer_entry.bank_metadata if mixer_entry is not None else {}
-
-    fs_hz = float(noise_mixed_bank.traces[0].freq_hz)
-    n_samples = int(noise_mixed_bank.traces[0].signal.shape[0])
-    trace_duration_ms = float(n_samples / fs_hz * 1000.0)
-
-    signal_rows: list[list[float]] = []
-    simulation_id: list[int] = []
-    pair_index: list[int] = []
-    electrode_row: list[int] = []
-    fibrosis_density: list[float] = []
-    fibrosis_density_realized: list[float] = []
-    electrode_height_mm: list[float] = []
-    seed_col: list[int] = []
-    snr_db: list[float] = []
-    stim_edge: list[StimEdgeEnum] = []
-    noise_record: list[str] = []
-    noise_channel: list[str] = []
-
-    for trace_idx, trace in enumerate(noise_mixed_bank.traces):
-        md = trace.trace_metadata
-        edge_val = md.get("stim_edge")
-        if edge_val not in {"top", "bottom", "left", "right"}:
-            raise ValueError(
-                f"trace {trace_idx}: SyntheticBank stim_edge enum needs one of "
-                f"top/bottom/left/right; got {edge_val!r}."
-            )
-
-        signal_rows.append(trace.signal.astype(float).tolist())
-        simulation_id.append(int(md.get("sim_id") or 0))
-        pair_index.append(int(md.get("pair_index") or 0))
-        electrode_row.append(int(md.get("electrode_row") or 0))
-        fibrosis_density.append(float(md.get("fibrosis_density_requested") or 0.0))
-        fibrosis_density_realized.append(float(md.get("fibrosis_density_realized") or 0.0))
-        electrode_height_mm.append(float(md.get("electrode_height_mm") or 0.0))
-        seed_col.append(int(md.get("sim_seed") or 0))
-        snr_db.append(float(md.get("snr_db") or 0.0))
-        stim_edge.append(StimEdgeEnum(edge_val))
-        noise_record.append(str(md.get("noise_record") or ""))
-        noise_channel.append(str(md.get("noise_channel") or ""))
-
-    traces = Traces(
-        signal=signal_rows,
-        simulation_id=simulation_id,
-        pair_index=pair_index,
-        electrode_row=electrode_row,
-        fibrosis_density=fibrosis_density,
-        fibrosis_density_realized=fibrosis_density_realized,
-        electrode_height_mm=electrode_height_mm,
-        seed=seed_col,
-        snr_db=snr_db,
-        stim_edge=stim_edge,
-        noise_record=noise_record,
-        noise_channel=noise_channel,
-    )
-
-    if bank_id is not None:
-        resolved_bank_id = validate_artifact_id(bank_id)
-    elif noise_mixed_bank.id is not None:
-        resolved_bank_id = validate_artifact_id(str(noise_mixed_bank.id))
-    else:
-        resolved_bank_id = derive_synthetic_bank_id(
-            str(clean_meta.get("cell_model") or "unknown"), noise_mixed=True
+        else derive_synthetic_bank_id(
+            _cell_model_from_backend_meta(backend_meta_first),
+            noise_mixed=mixed_signals is not None,
         )
+    )
 
     return SyntheticBank(
         schema_version=SchemaVersion(current_version("synthetic_bank")),
         bank_id=resolved_bank_id,
         created_utc=datetime.now(timezone.utc),
         description=description or None,
-        fs_hz=fs_hz,
-        trace_duration_ms=trace_duration_ms,
-        simulator=str(clean_meta.get("backend") or "unknown"),
-        cell_model=str(clean_meta.get("cell_model") or "unknown"),
-        patch_size_mm=float(clean_meta.get("geometry_size_mm") or 0.0) or None,
-        patch_dr_mm=float(clean_meta.get("geometry_dr_mm") or 0.0) or None,
-        ap_time_unit_ms=float(clean_meta.get("ap_time_unit_ms") or 0.0) or None,
-        fibrosis_strategy_name=_fibrosis_strategy_name_from(clean_meta),
-        fibrosis_params={
-            "density_range": list(clean_meta.get("fibrosis_density_range") or []),
-            "fraction_healthy": clean_meta.get("fraction_healthy", 0.0),
-        },
-        electrode_config={
-            "n_rows": clean_meta.get("electrode_n_rows"),
-            "n_cols": clean_meta.get("electrode_n_cols"),
-            "spacing_mm": clean_meta.get("electrode_spacing_mm"),
-            "height_mm_range": list(clean_meta.get("electrode_height_mm_range") or []),
-        },
-        mixer_config={
-            "snr_db_range": list(mixer_meta.get("snr_db_range") or []),
-            "bandpass_clean": mixer_meta.get("bandpass_clean", True),
-            "band_hz": list(mixer_meta.get("band_hz") or []),
-            "master_seed": mixer_meta.get("master_seed"),
-        },
-        experiment_config={
-            "producer_version": __version__,
-            "n_simulations": clean_meta.get("n_simulations"),
-            "label_policy_name": clean_meta.get("label_policy_name"),
-            "label_policy_type": clean_meta.get("label_policy_type"),
-        },
-        noise_bank_source=str(mixer_meta.get("noise_bank_source") or "") or None,
+        fs_hz=float(first.fs_hz),
+        trace_duration_ms=float(first.trace_duration_ms),
+        noise_bank_source=noise_bank_source,
+        generation_params=build_theta_spec(simulations),
+        simulations=simulations,
         traces=traces,
     )
+
+
+def build_theta_spec(simulations: Simulations) -> GenerationParams:
+    """Build the bank-scoped theta-spec.
+
+    The regime is the set of structural ``type`` discriminators held
+    fixed across the bank; ``knobs`` is the list of swept parameters.
+    Wave 1 sweeps nothing, so the knob list is empty — which the schema
+    requires anyway rather than allowing omission, because "nothing
+    varied" is worth stating explicitly. SEP11 fills the list.
+    """
+    regime: dict[str, str] = {}
+    if simulations.simulation_id:
+        regime = {
+            "geometry": simulations.geometry[0].root.type,
+            "cell_model": simulations.cell_model[0].type,
+            "substrate": simulations.substrate[0].root.type,
+            "activation": simulations.activation[0].type,
+            "electrodes": simulations.electrodes[0].root.type,
+            "backend": simulations.backend[0].root.type,
+            "label_policy": simulations.label_policy[0].type,
+        }
+    return GenerationParams(regime=regime, knobs=[])
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +415,6 @@ __all__ = [
     "build_bank_metadata_for_classifier_bank",
     "build_classifier_bank_from_dataset",
     "build_clean_trace_metadata",
-    "build_synthetic_bank_from_classifier",
     "build_synthetic_bank_from_dataset",
+    "build_theta_spec",
 ]

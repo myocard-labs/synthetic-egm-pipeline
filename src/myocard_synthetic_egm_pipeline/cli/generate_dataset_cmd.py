@@ -46,9 +46,6 @@ from myocard_synthetic_egm_pipeline.cli._config import (
     load_yaml,
 )
 from myocard_synthetic_egm_pipeline.mixer import mix_classifier_bank
-from myocard_synthetic_egm_pipeline.mixer.storage import (
-    write_noise_mixed_synthetic_bank_from_classifier,
-)
 from myocard_synthetic_egm_pipeline.simulate import (
     DatasetConfig,
     DatasetResult,
@@ -222,13 +219,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         synthetic_path = None
         if cfg.also_emit_synthetic_bank:
-            synthetic_path = write_noise_mixed_synthetic_bank_from_classifier(
-                noise_mixed_bank=noise_mixed_bank,
+            # Built from the in-memory DatasetResult, not reconstructed
+            # from the mixed ClassifierBank: schema 2.0's per-simulation
+            # config is not recoverable from per-trace metadata. Only the
+            # signals and the three noise columns come from the mixer.
+            synthetic_path = write_synthetic_bank_from_dataset(
+                dataset_result=dataset_result,
+                config=dataset_cfg,
                 output_path=cfg.synthetic_bank_output
                 or _sibling_path(cfg.classifier_bank_output, ".synthetic.h5"),
                 description=cfg.description,
                 overwrite=args.overwrite,
                 bank_id=cfg.bank_id,
+                mixed_signals=[t.signal for t in noise_mixed_bank.traces],
+                snr_db=[float(t.trace_metadata["snr_db"]) for t in noise_mixed_bank.traces],
+                noise_record=[
+                    str(t.trace_metadata["noise_record"]) for t in noise_mixed_bank.traces
+                ],
+                noise_channel=[
+                    str(t.trace_metadata["noise_channel"]) for t in noise_mixed_bank.traces
+                ],
+                noise_bank_source=str(noise_bank.source),
             )
         print(
             _format_result(

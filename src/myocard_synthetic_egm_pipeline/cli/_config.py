@@ -438,6 +438,16 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
     also_emit_synthetic_bank = bool(
         _optional(doc, "output", "also_emit_synthetic_bank", default=False)
     )
+    if also_emit_synthetic_bank:
+        raise ConfigError(
+            "output.also_emit_synthetic_bank is not supported by synthegm-mix. "
+            "Standalone mixing is a post-process over a ClassifierBank on disk, and "
+            "synthetic_bank 2.0's per-simulation generation config cannot be "
+            "recovered from it -- a bank written here would carry a config that does "
+            "not describe the simulations behind its traces. Use "
+            "synthegm-generate-dataset with a `mix:` block, which still holds the "
+            "DatasetResult and writes both banks."
+        )
     output_synthetic_bank = _resolve_path(
         _optional(doc, "output", "synthetic_bank", default=None), cfg_dir
     )

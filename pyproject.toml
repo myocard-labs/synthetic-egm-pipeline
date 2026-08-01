@@ -61,8 +61,8 @@ classifiers = [
 # Finitewave is a hard runtime dep — the entire purpose of this package
 # is the simulator + mixer pipeline.
 dependencies = [
-  "myocard-egm-contracts @ git+https://github.com/myocard-labs/egm-contracts.git@v0.5.3",
-  "myocard-egm-data @ git+https://github.com/myocard-labs/egm-data.git@v0.5.0",
+  "myocard-egm-contracts @ git+https://github.com/myocard-labs/egm-contracts.git@v0.6.0",
+  "myocard-egm-data @ git+https://github.com/myocard-labs/egm-data.git@v0.6.0",
   "myocard-egm-signal @ git+https://github.com/myocard-labs/egm-signal.git@v0.2.0",
   # pydantic is used directly to validate stable bank ids (ids.py); it
   # also arrives transitively via egm-contracts, but we import it by name
@@ -221,7 +221,11 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
-files = ["src"]
+# Type-check tests as well as src (CL-100, fleet-wide convention). Strict
+# mypy over a test suite catches real sloppiness — under-annotated helpers,
+# bare dicts, unguarded optionals — and running `mypy` bare means CI and a
+# local run check exactly the same files.
+files = ["src", "tests"]
 
 # finitewave + tqdm + scipy ship without complete inline stubs; ignore-
 # missing silences these third-party hops without losing strict checking

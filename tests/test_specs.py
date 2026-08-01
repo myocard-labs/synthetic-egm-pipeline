@@ -9,6 +9,7 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
     EDGES,
     ActivationSource,
     CenteredGrid2D,
+    Edge,
     ElectrodePlacement,
     GeometrySpec,
     Patch2DGeometry,
@@ -83,8 +84,8 @@ def test_uniform_random_fibrosis_satisfies_protocol() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("edge", ["top", "bottom", "left", "right"])
-def test_planar_edge_stimulus_accepts_each_valid_edge(edge: str) -> None:
+@pytest.mark.parametrize("edge", EDGES)
+def test_planar_edge_stimulus_accepts_each_valid_edge(edge: Edge) -> None:
     s = PlanarEdgeStimulus(edge=edge)
     assert s.edge == edge
     assert s.type == "planar_edge"

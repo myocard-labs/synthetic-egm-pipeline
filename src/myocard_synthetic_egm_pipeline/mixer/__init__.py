@@ -15,7 +15,7 @@ Public API:
   ClassifierBank.
 - :func:`snr_scale`, :func:`sample_noise_for_length` — pure-math
   helpers exposed for tests + offline analysis.
-- :func:`write_noise_mixed_synthetic_bank_from_classifier` — optional
+- (retired at schema 2.0) the noise-mixed SyntheticBank sibling — optional
   Pydantic SyntheticBank sibling output (only useful for offline
   analysis tools that read the per-trace columns directly).
 """
@@ -29,9 +29,6 @@ from myocard_synthetic_egm_pipeline.mixer.mixing import (
     sample_noise_for_length,
     snr_scale,
 )
-from myocard_synthetic_egm_pipeline.mixer.storage import (
-    write_noise_mixed_synthetic_bank_from_classifier,
-)
 
 __all__ = [
     "DEFAULT_SNR_DB_RANGE",
@@ -39,5 +36,4 @@ __all__ = [
     "mix_classifier_bank",
     "sample_noise_for_length",
     "snr_scale",
-    "write_noise_mixed_synthetic_bank_from_classifier",
 ]

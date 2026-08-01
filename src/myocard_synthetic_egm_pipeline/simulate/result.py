@@ -24,10 +24,51 @@ both concrete, both stable across the Option A→B migration:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
+
+if TYPE_CHECKING:
+    from myocard_synthetic_egm_pipeline.simulate.specs import (
+        ActivationSource,
+        ElectrodePlacement,
+        GeometrySpec,
+        SubstrateStrategy,
+    )
+
+
+@dataclass(frozen=True)
+class SimulationSpecs:
+    """The strategy specs a single simulation was **actually run with**.
+
+    Every field holds the concrete, *realized* spec object — the one the
+    backend received — not the configured range it was drawn from. For
+    Phase 1 that distinction is the whole point of this type: the
+    dataset orchestrator samples a fibrosis density, an activation edge
+    and an electrode height per simulation, builds
+    :class:`~myocard_synthetic_egm_pipeline.simulate.specs.UniformRandomFibrosis`
+    / ``PlanarEdgeStimulus`` / ``CenteredGrid2D`` from them, and those
+    objects are the only record of what that simulation actually was.
+
+    Before ``synthetic_bank`` 2.0 they were discarded after
+    :func:`~myocard_synthetic_egm_pipeline.simulate.runner.run_single`
+    returned, and a handful of duck-typed scalars were copied into
+    ``run_metadata`` in their place. 2.0 serializes the specs themselves
+    as typed per-function objects, one set per simulation, so the
+    objects have to survive.
+
+    **Guardrail 2 note.** This adds a field to the concrete, public
+    :class:`SimulationResult` — a *widening*: every existing reader
+    keeps working untouched and only the runner (the sole producer of
+    the type) changes. The four strategy Protocols are not modified. See
+    ``project/architecture.md`` → Guardrails.
+    """
+
+    geometry: GeometrySpec
+    substrate: SubstrateStrategy
+    activation: ActivationSource
+    electrodes: ElectrodePlacement
 
 
 @dataclass(frozen=True)
@@ -118,6 +159,12 @@ class SimulationResult:
         for any future placement-aware label policy.
     bipolar_pairs
         Pass-through of ``RawSimulationResult.bipolar_pairs``.
+    specs
+        The realized :class:`SimulationSpecs` this simulation ran with —
+        the typed source of truth that ``synthetic_bank`` 2.0's
+        per-simulation config is serialized from. ``run_metadata``'s
+        duck-typed scalars are a flattened, lossy view of the same
+        facts, kept for backwards compatibility with existing readers.
     substrate_realization_metadata
         Pass-through — realized fibrosis metadata.
     run_metadata
@@ -136,6 +183,7 @@ class SimulationResult:
     substrate_mask_dr_mm: float
     electrode_positions_mm: npt.NDArray[np.float64]
     bipolar_pairs: tuple[tuple[int, int], ...]
+    specs: SimulationSpecs
     substrate_realization_metadata: dict[str, Any] = field(default_factory=dict)
     run_metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -10,6 +10,7 @@ from myocard_synthetic_egm_pipeline.simulate import (
     GlobalDensityLabel,
     LocalDensityLabel,
     SimulationResult,
+    SimulationSpecs,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ def test_global_density_rejects_threshold_out_of_range(bad_threshold: float) -> 
 def test_local_density_all_healthy_mask(
     healthy_substrate_mask: npt.NDArray[np.int8],
     four_pair_midpoints: npt.NDArray[np.float64],
+    minimal_specs: SimulationSpecs,
 ) -> None:
     """With no fibrotic cells, every pair is labeled 0 regardless of radius."""
     bipolar = np.zeros((4, 50), dtype=np.float32)
@@ -72,6 +74,7 @@ def test_local_density_all_healthy_mask(
         substrate_mask_dr_mm=0.25,
         electrode_positions_mm=np.zeros((8, 3)),
         bipolar_pairs=tuple((i, i + 1) for i in range(4)),
+        specs=minimal_specs,
         substrate_realization_metadata={"density_realized": 0.0},
         run_metadata={},
     )
@@ -120,6 +123,7 @@ def test_local_density_large_radius_behaves_globally(
 
 def test_local_density_rejects_3d_mask(
     four_pair_midpoints: npt.NDArray[np.float64],
+    minimal_specs: SimulationSpecs,
 ) -> None:
     """A 3D substrate mask requires a 3D-aware label policy; fail loudly."""
     bipolar = np.zeros((4, 50), dtype=np.float32)
@@ -132,6 +136,7 @@ def test_local_density_rejects_3d_mask(
         substrate_mask_dr_mm=0.25,
         electrode_positions_mm=np.zeros((8, 3)),
         bipolar_pairs=tuple((i, i + 1) for i in range(4)),
+        specs=minimal_specs,
         substrate_realization_metadata={"density_realized": 0.0},
         run_metadata={},
     )

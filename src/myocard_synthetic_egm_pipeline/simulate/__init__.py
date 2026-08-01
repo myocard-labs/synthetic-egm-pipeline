@@ -4,7 +4,8 @@ Public API re-exports from the backend-agnostic modules of the
 simulator layer:
 
 - :mod:`specs` — strategy Protocols + Phase-1 concretes.
-- :mod:`result` — RawSimulationResult, SimulationResult.
+- :mod:`bank_config` — producer specs → synthetic_bank 2.0 per-simulation config.
+- :mod:`result` — RawSimulationResult, SimulationResult, SimulationSpecs.
 - :mod:`pseudo_egm` — Okenov forward calc + bipolar pairing + downsample.
 - :mod:`label_policy` — LabelPolicy Protocol + concrete policies.
 - :mod:`runner` — :func:`run_single` per-simulation orchestrator.
@@ -18,8 +19,8 @@ from myocard_synthetic_egm_pipeline.simulate.builders import (
     AMP_TYPE,
     build_classifier_bank_from_dataset,
     build_clean_trace_metadata,
-    build_synthetic_bank_from_classifier,
     build_synthetic_bank_from_dataset,
+    build_theta_spec,
 )
 from myocard_synthetic_egm_pipeline.simulate.dataset import (
     DatasetConfig,
@@ -39,6 +40,7 @@ from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
 from myocard_synthetic_egm_pipeline.simulate.result import (
     RawSimulationResult,
     SimulationResult,
+    SimulationSpecs,
 )
 from myocard_synthetic_egm_pipeline.simulate.runner import run_single
 from myocard_synthetic_egm_pipeline.simulate.specs import (
@@ -76,13 +78,14 @@ __all__ = [
     "PlanarEdgeStimulus",
     "RawSimulationResult",
     "SimulationResult",
+    "SimulationSpecs",
     "SubstrateStrategy",
     "UniformRandomFibrosis",
     "bipolar_from_unipolar",
     "build_classifier_bank_from_dataset",
     "build_clean_trace_metadata",
-    "build_synthetic_bank_from_classifier",
     "build_synthetic_bank_from_dataset",
+    "build_theta_spec",
     "compute_phi_e",
     "downsample",
     "generate_dataset",

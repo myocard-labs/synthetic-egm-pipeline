@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import numpy.typing as npt
 from myocard_egm_data.banks import write_classifier_bank, write_synthetic_bank
 
 from myocard_synthetic_egm_pipeline.simulate.builders import (
@@ -43,7 +45,7 @@ def write_classifier_bank_from_dataset(
 
     Each bipolar trace lands as one ``ClassifierTrace`` with its
     integer label, per-sim sampled scalars in ``trace_metadata``, and
-    ``patient_id`` = ``sim_id`` so the patient-aware split treats each
+    ``patient_id`` = ``simulation_id`` so the patient-aware split treats each
     simulation as one patient.
     """
     output_path = Path(output_path)
@@ -65,14 +67,24 @@ def write_synthetic_bank_from_dataset(
     description: str = "",
     overwrite: bool = False,
     bank_id: str | None = None,
+    mixed_signals: list[npt.NDArray[np.float32]] | None = None,
+    snr_db: list[float] | None = None,
+    noise_record: list[str] | None = None,
+    noise_channel: list[str] | None = None,
+    noise_bank_source: str | None = None,
 ) -> Path:
-    """Build + write a Pydantic SyntheticBank for a finished DatasetResult.
+    """Build + write a ``synthetic_bank`` 2.0 for a finished DatasetResult.
 
-    Useful for offline analysis tools that read the per-trace columns
-    directly (notebooks, egm-viewer's Inspection tab). The legacy
-    ``synthetic_bank`` v1.0 schema is preserved verbatim — no growth,
-    no migration. Pre-mixer values: ``snr_db = NaN``,
-    ``noise_record = ""``, ``noise_channel = ""``.
+    This is the artifact that carries θ and the per-simulation
+    generation config — the parallel bank egm-studio's T4 views read
+    from, joined to the ClassifierBank on ``simulation_id``.
+
+    Clean runs leave the mixer arguments unset. The **inline mixer
+    path** passes the mixed signals plus the three per-trace noise
+    columns, so a noise-mixed bank is written from this same
+    ``DatasetResult`` — 2.0's per-simulation config cannot be
+    reconstructed from a mixed ClassifierBank's per-trace metadata, so
+    building it here is the only correct route.
     """
     output_path = Path(output_path)
     bank = build_synthetic_bank_from_dataset(
@@ -80,6 +92,11 @@ def write_synthetic_bank_from_dataset(
         config=config,
         description=description,
         bank_id=bank_id,
+        mixed_signals=mixed_signals,
+        snr_db=snr_db,
+        noise_record=noise_record,
+        noise_channel=noise_channel,
+        noise_bank_source=noise_bank_source,
     )
     return write_synthetic_bank(bank, output_path, overwrite=overwrite)
 

@@ -89,7 +89,8 @@ def test_sample_noise_for_length_crops_long_segments() -> None:
 
     # A bank with 500-sample segments.
     long_bank = NoiseBank(
-        schema_version=SchemaVersion.field_1_0,
+        schema_version=SchemaVersion.field_1_1,
+        bank_id="nbank_test",
         created_utc=datetime.now(timezone.utc),
         source="test",
         fs_hz=1000.0,
@@ -114,7 +115,8 @@ def test_sample_noise_for_length_rejects_empty_bank() -> None:
     )
 
     empty = NoiseBank(
-        schema_version=SchemaVersion.field_1_0,
+        schema_version=SchemaVersion.field_1_1,
+        bank_id="nbank_test",
         created_utc=datetime.now(timezone.utc),
         source="test",
         fs_hz=1000.0,
@@ -198,7 +200,8 @@ def test_mix_classifier_bank_rejects_fs_mismatch(
     )
 
     mismatched = NoiseBank(
-        schema_version=SchemaVersion.field_1_0,
+        schema_version=SchemaVersion.field_1_1,
+        bank_id="nbank_test",
         created_utc=datetime.now(timezone.utc),
         source="test",
         fs_hz=500.0,  # clean is 1000.0

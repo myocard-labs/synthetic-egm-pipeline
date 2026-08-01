@@ -43,7 +43,7 @@ from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
     bipolar_from_unipolar,
     downsample,
 )
-from myocard_synthetic_egm_pipeline.simulate.result import SimulationResult
+from myocard_synthetic_egm_pipeline.simulate.result import SimulationResult, SimulationSpecs
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     ActivationSource,
     ElectrodePlacement,
@@ -165,6 +165,16 @@ def run_single(
         substrate_mask_dr_mm=raw.substrate_mask_dr_mm,
         electrode_positions_mm=raw.electrode_positions_mm,
         bipolar_pairs=raw.bipolar_pairs,
+        # The realized specs, kept as objects rather than flattened.
+        # ``run_metadata`` above is a lossy view of the same facts;
+        # ``synthetic_bank`` 2.0's per-simulation config serializes from
+        # these (see result.SimulationSpecs).
+        specs=SimulationSpecs(
+            geometry=geometry,
+            substrate=substrate,
+            activation=activation,
+            electrodes=electrodes,
+        ),
         substrate_realization_metadata=dict(raw.substrate_realization_metadata),
         run_metadata=run_metadata,
     )

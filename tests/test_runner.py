@@ -145,3 +145,61 @@ def test_run_single_electrode_row_per_pair(mock_backend: SimulationBackend) -> N
     # each row should appear exactly four times.
     expected = sorted([r for r in range(electrodes.n_rows) for _ in range(electrodes.n_cols - 1)])
     assert sorted(rows) == expected
+
+
+def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) -> None:
+    """``SimulationResult.specs`` holds the exact spec objects passed in.
+
+    Identity, not equality: ``synthetic_bank`` 2.0 serializes the
+    per-simulation config from these, so the result must carry the
+    realized objects themselves rather than reconstructed copies. The
+    per-sim sampled values (density, edge, height) live only here and in
+    ``run_metadata``'s flattened view.
+    """
+    geometry, electrodes, config = _build_run_inputs()
+    substrate = UniformRandomFibrosis(density=0.42)
+    activation = PlanarEdgeStimulus(edge="left")
+
+    result = run_single(
+        geometry=geometry,
+        substrate=substrate,
+        activation=activation,
+        electrodes=electrodes,
+        backend=mock_backend,
+        config=config,
+        rng=np.random.default_rng(0),
+    )
+
+    assert result.specs.geometry is geometry
+    assert result.specs.substrate is substrate
+    assert result.specs.activation is activation
+    assert result.specs.electrodes is electrodes
+    # The sampled per-sim values are recoverable from the specs, which is
+    # the point — run_metadata's copies are a lossy convenience view.
+    assert result.specs.substrate.density == 0.42
+    assert result.specs.activation.edge == "left"
+    assert result.specs.electrodes.height_mm == electrodes.height_mm
+
+
+def test_run_metadata_join_key_is_simulation_id(mock_backend: SimulationBackend) -> None:
+    """The join key is spelled ``simulation_id`` everywhere (CL-024 §3).
+
+    ``synthetic_bank`` 2.0, egm-data's converter and the T4 bank-to-bank
+    join all key on ``simulation_id``; the producer used to write
+    ``sim_id`` on its direct path, so the same artifact carried two names
+    depending on which writer made it.
+    """
+    geometry, electrodes, config = _build_run_inputs()
+    result = run_single(
+        geometry=geometry,
+        substrate=UniformRandomFibrosis(density=0.1),
+        activation=PlanarEdgeStimulus(edge="top"),
+        electrodes=electrodes,
+        backend=mock_backend,
+        config=config,
+        rng=np.random.default_rng(0),
+    )
+    result.run_metadata["simulation_id"] = 7
+
+    assert "sim_id" not in result.run_metadata
+    assert result.run_metadata["simulation_id"] == 7
