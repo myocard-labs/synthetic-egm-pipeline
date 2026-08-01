@@ -55,11 +55,8 @@ run:
 
 output:
   classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
-  # clean_intermediate is unused when there's no inline mixer (the
-  # classifier_bank IS the clean bank in that case).
-  clean_intermediate: null
-  also_emit_synthetic_bank: false          # set true to also write a Pydantic SyntheticBank sibling
-  synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
+  # No clean_intermediate here: without an inline mixer the classifier_bank
+  # IS the clean bank, so there is nothing separate to persist.
   # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted
   description: >
     Phase 1 baseline synthetic corpus — 100 sims, LocalDensityLabel(r=2mm, t=0.1),

@@ -44,10 +44,12 @@ from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ, bandpass
 from tqdm import tqdm
 
 from myocard_synthetic_egm_pipeline import __version__
-from myocard_synthetic_egm_pipeline.constants import BANK_SOURCE
+from myocard_synthetic_egm_pipeline.constants import THETA_BANK_SOURCE
 from myocard_synthetic_egm_pipeline.ids import (
-    derive_synthetic_bank_id,
+    companion_path,
+    noise_mixed_id_from,
     resolve_noise_bank_id,
+    theta_bank_id_from,
     validate_artifact_id,
 )
 
@@ -175,17 +177,46 @@ def sample_noise_for_length(
 def _resolve_noise_mixed_id(override: str | None, clean_bank: ClassifierBank) -> str:
     """Resolve the noise-mixed bank's own stable id.
 
-    Override -> a ``_noise_mixed`` id derived from the clean source bank's cell
-    model (read off the clean ``ClassifierBankMetaData`` entry).
+    Derived from the **clean bank's id** by inserting the ``noise_mixed``
+    marker. It used to be re-derived from the cell model, read out of the
+    clean bank's ``bank_metadata`` — a coupling that broke silently the
+    moment generation parameters were cleaned off the ClassifierBank
+    (SEP12.10): the lookup fell back to ``"unknown"`` and produced a
+    wrong-but-valid id. One string now anchors the whole family.
     """
     if override is not None:
         return validate_artifact_id(override)
-    cell_model = "unknown"
-    for entry in clean_bank.banks:
-        if entry.bank_type == BANK_SOURCE:
-            cell_model = str(entry.bank_metadata.get("cell_model") or "unknown")
-            break
-    return derive_synthetic_bank_id(cell_model, noise_mixed=True)
+    if clean_bank.id is None:
+        raise ValueError(
+            "Cannot derive a noise-mixed bank id: the clean bank carries no id. "
+            "Pass noise_mixed_bank_id explicitly."
+        )
+    return validate_artifact_id(noise_mixed_id_from(str(clean_bank.id)))
+
+
+def _rewrite_theta_companion(
+    entries: list[ClassifierBankMetaData], mixed_bank_id: str
+) -> list[ClassifierBankMetaData]:
+    """Re-point the theta companion entry at the *mixed* run's theta bank.
+
+    The mixer copies the clean bank's provenance entries forward, but the
+    theta companion is not shared history — the mixed run writes its own
+    ``synthetic_bank`` (same per-simulation config, mixed signals), under
+    its own id. Carrying the clean entry through would leave the mixed
+    ClassifierBank pointing at a *different* artifact than the one
+    written beside it, which is the failure this entry exists to prevent.
+    """
+    rewritten: list[ClassifierBankMetaData] = []
+    for entry in entries:
+        if entry.bank_type == THETA_BANK_SOURCE:
+            entry = ClassifierBankMetaData(
+                bank_id=theta_bank_id_from(mixed_bank_id),
+                bank_type=entry.bank_type,
+                bank_path=entry.bank_path,
+                bank_metadata=dict(entry.bank_metadata),
+            )
+        rewritten.append(entry)
+    return rewritten
 
 
 def mix_classifier_bank(
@@ -196,6 +227,7 @@ def mix_classifier_bank(
     noise_bank_path: str = "",
     noise_bank_id: str | None = None,
     noise_mixed_bank_id: str | None = None,
+    output_bank_path: str | None = None,
 ) -> ClassifierBank:
     """Return a new ClassifierBank with each trace mixed against sampled noise.
 
@@ -267,10 +299,13 @@ def mix_classifier_bank(
     # banks are preserved verbatim so a downstream consumer can still
     # see where the underlying signal came from.
     resolved_noise_id = resolve_noise_bank_id(noise_bank_path or None, override=noise_bank_id)
+    # A COMPANION entry: the noise bank contributed to these traces but is
+    # not where they came from. Its path is rendered relative to the bank
+    # being written when they are neighbours.
     mixer_entry = ClassifierBankMetaData(
         bank_id=resolved_noise_id,
         bank_type="mixer",
-        bank_path=str(noise_bank_path or ""),
+        bank_path=companion_path(noise_bank_path or None, relative_to=output_bank_path),
         bank_metadata={
             "producer": "synthetic_egm_pipeline.mixer",
             "producer_version": __version__,
@@ -287,7 +322,10 @@ def mix_classifier_bank(
     resolved_noise_mixed_id = _resolve_noise_mixed_id(noise_mixed_bank_id, clean_bank)
     return ClassifierBank(
         id=resolved_noise_mixed_id,
-        banks=[*clean_bank.banks, mixer_entry],
+        banks=[
+            *_rewrite_theta_companion(list(clean_bank.banks), resolved_noise_mixed_id),
+            mixer_entry,
+        ],
         traces=new_traces,
         labels=dict(clean_bank.labels),
     )

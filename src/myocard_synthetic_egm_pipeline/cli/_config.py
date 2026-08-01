@@ -268,13 +268,57 @@ class GenerateDatasetCLIConfig:
     # Output
     classifier_bank_output: Path
     clean_intermediate_output: Path | None
-    also_emit_synthetic_bank: bool
-    synthetic_bank_output: Path | None
+    # Always resolved: explicit if the config sets output.synthetic_bank,
+    # otherwise derived as a sibling of the ClassifierBank. Both banks are
+    # always written, so there is no 'no path' case.
+    synthetic_bank_output: Path
     description: str
     bank_id: str | None
 
     # Optional inline mixing
     mix: InlineMixConfig | None
+
+
+def _sibling_synthetic_path(classifier_bank_path: Path) -> Path:
+    """``<name>.classifier.h5`` -> ``<name>.synthetic.h5``.
+
+    ``output.synthetic_bank`` is optional; when omitted the synthetic
+    bank lands beside its ClassifierBank so the pair a run produces is
+    obvious on disk without the config in hand.
+    """
+    name = classifier_bank_path.name
+    stem = (
+        name[: -len(".classifier.h5")]
+        if name.endswith(".classifier.h5")
+        else classifier_bank_path.stem
+    )
+    return classifier_bank_path.with_name(f"{stem}.synthetic.h5")
+
+
+def _reject_retired_synthetic_bank_flag(doc: dict[str, Any]) -> None:
+    """Refuse a config still carrying ``output.also_emit_synthetic_bank``.
+
+    The flag is retired: a synthetic run now always writes **both** the
+    ClassifierBank (the source-agnostic ML artifact) and the
+    ``synthetic_bank`` (theta + per-simulation provenance), joined on
+    ``simulation_id``. A switch that could turn the theta artifact off
+    was a switch that could silently leave the parameter-estimation work
+    with nothing to read.
+
+    Erroring rather than ignoring the key is deliberate. A retired option
+    that silently does nothing is worse than one that fails loudly —
+    especially here, where the failure would only surface much later, as
+    a missing artifact at analysis time.
+    """
+    if _optional(doc, "output", "also_emit_synthetic_bank", default=None) is not None:
+        raise ConfigError(
+            "output.also_emit_synthetic_bank was retired in synthetic-egm-pipeline "
+            "v0.4.0. Both banks are now always written for a synthetic run: the "
+            "ClassifierBank for training and the synthetic_bank for theta and "
+            "per-simulation provenance, joined on simulation_id. Remove the key; "
+            "set output.synthetic_bank to control the path (it defaults to a "
+            "sibling of output.classifier_bank)."
+        )
 
 
 def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConfig:
@@ -363,13 +407,13 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         _optional(doc, "output", "clean_intermediate", default=None),
         doc["_config_dir"],
     )
-    also_emit_synthetic_bank = bool(
-        _optional(doc, "output", "also_emit_synthetic_bank", default=False)
-    )
+    _reject_retired_synthetic_bank_flag(doc)
     synthetic_bank_output = _resolve_path(
         _optional(doc, "output", "synthetic_bank", default=None),
         doc["_config_dir"],
     )
+    if synthetic_bank_output is None:
+        synthetic_bank_output = _sibling_synthetic_path(classifier_bank_output)
     description = str(_optional(doc, "output", "description", default=""))
     # Optional explicit stable id for the primary output bank; None -> derived.
     # Validated at load so a malformed override fails before the N-sim run.
@@ -400,7 +444,6 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         run_config=run_config,
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,
-        also_emit_synthetic_bank=also_emit_synthetic_bank,
         synthetic_bank_output=synthetic_bank_output,
         description=description,
         bank_id=bank_id,
@@ -420,8 +463,6 @@ class MixCLIConfig:
     input_classifier_bank: Path
     noise_bank_path: Path
     output_classifier_bank: Path
-    also_emit_synthetic_bank: bool
-    output_synthetic_bank: Path | None
     mixer_config: MixerConfig
     noise_bank_id: str | None
     bank_id: str | None
@@ -429,28 +470,26 @@ class MixCLIConfig:
 
 def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
     """Translate a parsed YAML dict into a typed standalone-mix config."""
-    cfg_dir = doc["_config_dir"]
 
     input_classifier_bank = _required_path(doc, "input", "classifier_bank")
     noise_bank_path = _required_path(doc, "input", "noise_bank")
 
     output_classifier_bank = _required_path(doc, "output", "classifier_bank")
-    also_emit_synthetic_bank = bool(
-        _optional(doc, "output", "also_emit_synthetic_bank", default=False)
-    )
-    if also_emit_synthetic_bank:
-        raise ConfigError(
-            "output.also_emit_synthetic_bank is not supported by synthegm-mix. "
-            "Standalone mixing is a post-process over a ClassifierBank on disk, and "
-            "synthetic_bank 2.0's per-simulation generation config cannot be "
-            "recovered from it -- a bank written here would carry a config that does "
-            "not describe the simulations behind its traces. Use "
-            "synthegm-generate-dataset with a `mix:` block, which still holds the "
-            "DatasetResult and writes both banks."
-        )
-    output_synthetic_bank = _resolve_path(
-        _optional(doc, "output", "synthetic_bank", default=None), cfg_dir
-    )
+    # synthegm-mix cannot write a synthetic_bank at all, so BOTH of the
+    # keys that would ask it to are rejected rather than ignored. Silently
+    # accepting either would leave a config that reads as though it
+    # requested a theta artifact which never appears on disk.
+    for retired_key in ("also_emit_synthetic_bank", "synthetic_bank"):
+        if _optional(doc, "output", retired_key, default=None) is not None:
+            raise ConfigError(
+                f"output.{retired_key} is not supported by synthegm-mix. "
+                "Standalone mixing is a post-process over a ClassifierBank on disk, and "
+                "synthetic_bank 2.0's per-simulation generation config cannot be "
+                "recovered from it -- a bank written here would carry a config that does "
+                "not describe the simulations behind its traces. Use "
+                "synthegm-generate-dataset with a `mix:` block, which still holds the "
+                "DatasetResult and writes both banks."
+            )
 
     mixer_block = _optional(doc, "mixer", default={}) or {}
     mixer_config = _build_mixer_config(mixer_block)
@@ -469,8 +508,6 @@ def build_mix_config(doc: dict[str, Any]) -> MixCLIConfig:
         input_classifier_bank=input_classifier_bank,
         noise_bank_path=noise_bank_path,
         output_classifier_bank=output_classifier_bank,
-        also_emit_synthetic_bank=also_emit_synthetic_bank,
-        output_synthetic_bank=output_synthetic_bank,
         mixer_config=mixer_config,
         noise_bank_id=noise_bank_id,
         bank_id=bank_id,

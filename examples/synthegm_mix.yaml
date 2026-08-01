@@ -23,8 +23,6 @@ input:
 
 output:
   classifier_bank: ../banks/synthegm_v1_noise_mixed.classifier.h5
-  also_emit_synthetic_bank: false          # set true to additionally write a Pydantic SyntheticBank sibling
-  synthetic_bank: null                     # default: <classifier_bank>.synthetic.h5 sibling
   # bank_id: tbank_synthetic_aliev_panfilov_noise_mixed_2026-06-27  # optional; auto-derived (_noise_mixed) when omitted
 
 mixer:

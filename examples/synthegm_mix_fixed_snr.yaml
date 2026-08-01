@@ -23,8 +23,6 @@ input:
 
 output:
   classifier_bank: ../banks/synthegm_v1_noise_mixed_snr15.classifier.h5
-  also_emit_synthetic_bank: false
-  synthetic_bank: null
 
 mixer:
   snr_db_range: [15.0, 15.0]               # collapsed to a single value → every trace gets 15 dB exactly

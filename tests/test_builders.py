@@ -23,6 +23,8 @@ from myocard_egm_data.banks import (
     write_synthetic_bank,
 )
 
+from myocard_synthetic_egm_pipeline.constants import LOCAL_BANK_PATH, THETA_BANK_SOURCE
+from myocard_synthetic_egm_pipeline.ids import companion_path
 from myocard_synthetic_egm_pipeline.simulate import (
     DatasetConfig,
     DatasetResult,
@@ -37,48 +39,59 @@ from myocard_synthetic_egm_pipeline.simulate.builders import AMP_TYPE
 # ---------------------------------------------------------------------------
 
 
-def test_build_clean_trace_metadata_field_set() -> None:
-    """Helper produces the canonical 9-key dict; downstream readers
-    rely on these keys existing."""
-    md = build_clean_trace_metadata(
-        simulation_id=3,
-        pair_idx=7,
-        electrode_row=1,
-        fibrosis_density_requested=0.25,
-        fibrosis_density_realized=0.23,
-        electrode_height_mm=0.7,
-        stim_edge="top",
-        sim_seed=42,
-    )
-    assert set(md.keys()) == {
-        "simulation_id",
-        "pair_index",
-        "electrode_row",
-        "fibrosis_density_requested",
-        "fibrosis_density_realized",
-        "electrode_height_mm",
-        "stim_edge",
-        "sim_seed",
-        "patient_id",
-    }
-    # patient_id is set to str(simulation_id) so the patient-aware split treats
-    # each simulation as one patient.
+def test_trace_metadata_is_identity_only() -> None:
+    """A ClassifierBank trace carries identity, not generation parameters.
+
+    The bank is a source-agnostic ML compression; generation params are
+    the subject of the ``synthetic_bank`` and reachable through
+    ``simulation_id``. Keeping a copy here would be the same flat
+    per-trace duplication the 2.0 restructure removed from the other
+    artifact.
+    """
+    md = build_clean_trace_metadata(simulation_id=3, pair_idx=7)
+
+    assert set(md.keys()) == {"simulation_id", "pair_index", "patient_id"}
+    # patient_id groups one simulation as one patient for the split.
     assert md["patient_id"] == "3"
     assert md["pair_index"] == 7
 
 
-def test_build_clean_trace_metadata_handles_null_sim_id() -> None:
+def test_trace_metadata_carries_no_generation_params() -> None:
+    """Named explicitly, so a re-added generation key fails loudly.
+
+    Each of these had a copy here *and* in the synthetic bank; the
+    duplicate is what drifts.
+    """
+    md = build_clean_trace_metadata(simulation_id=0, pair_idx=0)
+
+    for gone in (
+        "fibrosis_density_requested",
+        "fibrosis_density_realized",
+        "electrode_row",
+        "electrode_height_mm",
+        "stim_edge",
+        "sim_seed",
+    ):
+        assert gone not in md, gone
+
+
+def test_clean_trace_metadata_has_no_noise_fields() -> None:
+    """A clean bank says nothing about noise rather than saying NaN.
+
+    A present-but-empty ``snr_db`` reads as "mixed, SNR unknown", which
+    is the opposite of the truth. The mixer adds the three noise fields
+    when it actually runs.
+    """
+    md = build_clean_trace_metadata(simulation_id=0, pair_idx=0)
+
+    for noise_key in ("snr_db", "noise_record", "noise_channel"):
+        assert noise_key not in md, noise_key
+
+
+def test_build_clean_trace_metadata_handles_null_simulation_id() -> None:
     """If simulation_id is missing, patient_id falls back to the empty string."""
-    md = build_clean_trace_metadata(
-        simulation_id=None,
-        pair_idx=0,
-        electrode_row=None,
-        fibrosis_density_requested=None,
-        fibrosis_density_realized=None,
-        electrode_height_mm=None,
-        stim_edge=None,
-        sim_seed=None,
-    )
+    md = build_clean_trace_metadata(simulation_id=None, pair_idx=0)
+
     assert md["patient_id"] == ""
 
 
@@ -125,14 +138,32 @@ def test_classifier_bank_metadata_includes_provenance(
         bank_path=Path("<test>"),
         description="round-trip test",
     )
-    assert len(bank.banks) == 1
+    # Two entries: the origin entry for these traces, and a companion
+    # entry naming the synthetic_bank that holds their generation config.
+    assert len(bank.banks) == 2
     meta = bank.banks[0]
     assert meta.bank_type == "synthetic_egm_pipeline"
     assert meta.bank_metadata["description"] == "round-trip test"
-    assert meta.bank_metadata["backend"] == "mock"
-    assert meta.bank_metadata["cell_model"] == "aliev_panfilov"
-    assert meta.bank_metadata["n_simulations"] == 3
-    assert meta.bank_metadata["geometry_size_mm"] == 4.0
+    # Reproducibility: which code wrote this. synthetic_bank 2.0 has
+    # nowhere to record it, so dropping it would lose the fact.
+    assert meta.bank_metadata["producer"] == "synthetic_egm_pipeline"
+    assert meta.bank_metadata["producer_version"]
+    # The task definition, by identity only — thresholds are generation
+    # detail and stay on the source bank.
+    assert meta.bank_metadata["label_policy"] == "global_density"
+    # The generation config is NOT copied here.
+    for gone in (
+        "backend",
+        "cell_model",
+        "geometry_size_mm",
+        "electrode_spacing_mm",
+        "fibrosis_density_range",
+        "fixed_stim_edge",
+        "ap_time_unit_ms",
+    ):
+        assert gone not in meta.bank_metadata, gone
+    # Everything above is recoverable per-simulation from the companion bank.
+    assert meta.bank_metadata["trace_duration_ms"] > 0
 
 
 def test_classifier_bank_amp_type_is_synthetic_au(
@@ -374,33 +405,6 @@ def test_synthetic_bank_rejects_mismatched_mixed_signal_count(
         )
 
 
-def test_clean_trace_metadata_uses_simulation_id() -> None:
-    """The ClassifierBank's per-trace join key is ``simulation_id``.
-
-    egm-data's ``synthetic_bank_to_classifier`` writes ``simulation_id``;
-    the producer's direct-write path used to write ``sim_id``, so a
-    ClassifierBank carried a differently-named join key depending on
-    which of the two paths produced it (CL-008 / CL-024 §3). Both write
-    one name now, and the T4 bank-to-bank join depends on it.
-    """
-    meta = build_clean_trace_metadata(
-        simulation_id=3,
-        pair_idx=1,
-        electrode_row=0,
-        fibrosis_density_requested=0.2,
-        fibrosis_density_realized=0.21,
-        electrode_height_mm=0.5,
-        stim_edge="top",
-        sim_seed=42,
-    )
-
-    assert meta["simulation_id"] == 3
-    assert "sim_id" not in meta
-    # patient_id is derived from the same value — the patient-aware split
-    # treats one simulation as one patient.
-    assert meta["patient_id"] == "3"
-
-
 # ---------------------------------------------------------------------------
 # Round-trip through the real egm-data writer/reader
 # ---------------------------------------------------------------------------
@@ -539,3 +543,299 @@ def test_seed_column_carries_the_run_master_seed(
     seeds = [int(x) for x in bank.simulations.seed]
 
     assert seeds == [small_dataset_config.master_seed] * len(small_dataset_result.results)
+
+
+# ---------------------------------------------------------------------------
+# SEP12.3b — the two banks a run emits must agree
+# ---------------------------------------------------------------------------
+
+
+def test_both_banks_from_one_run_agree(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """The ClassifierBank and the synthetic_bank describe the same traces.
+
+    A run emits both, and they are **parallel artifacts joined on
+    ``simulation_id``** rather than one derived from the other (design
+    note D4). Because the producer builds them through two independent
+    code paths (D7 — we deliberately do not route through egm-data's
+    converter, which would hardcode ``amp_type="mv"`` onto relative-unit
+    synthetic traces, FB-17), nothing structural forces them to match.
+
+    This is the guard that replaces the by-construction guarantee: same
+    trace count, same order, same labels, same join key. If either
+    builder's ordering or labelling drifts, the join that T4 depends on
+    silently starts pairing the wrong rows — which would not show up as
+    an error anywhere, just as wrong science.
+    """
+    classifier = build_classifier_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+        bank_path=Path("agree.classifier.h5"),
+    )
+    synthetic = build_synthetic_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+    )
+
+    assert len(classifier.traces) == len(synthetic.traces.signal)
+
+    classifier_sim_ids = [t.trace_metadata["simulation_id"] for t in classifier.traces]
+    synthetic_sim_ids = [int(x) for x in synthetic.traces.simulation_id]
+    assert classifier_sim_ids == synthetic_sim_ids
+
+    classifier_labels = [t.label_truth for t in classifier.traces]
+    synthetic_labels = [int(x.root) for x in synthetic.traces.label]
+    assert classifier_labels == synthetic_labels
+
+    # Same waveform in the same row of both banks.
+    assert classifier.traces[0].signal == pytest.approx(
+        np.asarray(synthetic.traces.signal[0], dtype=np.float32)
+    )
+
+
+def test_both_banks_agree_on_the_noise_mixed_path(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """The agreement has to survive mixing, where the two paths diverge most.
+
+    The ClassifierBank is mixed by the mixer; the synthetic_bank is
+    rebuilt from the DatasetResult with the mixed signals passed in. Two
+    different routes to the same waveforms is exactly where a drift
+    would appear.
+    """
+    n = len(small_dataset_result.labels)
+    mixed = [
+        np.full(small_dataset_result.results[0].n_samples, 0.25, dtype=np.float32) for _ in range(n)
+    ]
+    synthetic = build_synthetic_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+        mixed_signals=mixed,
+        snr_db=[10.0] * n,
+        noise_record=["iaf1_afw"] * n,
+        noise_channel=["CS12"] * n,
+    )
+    classifier = build_classifier_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+        bank_path=Path("agree_mixed.classifier.h5"),
+    )
+
+    assert [int(x) for x in synthetic.traces.simulation_id] == [
+        t.trace_metadata["simulation_id"] for t in classifier.traces
+    ]
+    assert [int(x.root) for x in synthetic.traces.label] == [
+        t.label_truth for t in classifier.traces
+    ]
+    # The mixed signal is what landed in the synthetic bank, not the clean one.
+    assert synthetic.traces.signal[0][0] == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# SEP12.7 — the Wave-1 equivalence gate
+# ---------------------------------------------------------------------------
+
+
+def test_per_simulation_config_recovers_the_1_1_per_trace_values(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """Everything 1.1 stored per trace is recoverable from the 2.0 config.
+
+    This is what the Wave-1 gate actually asks: the restructure moved
+    fields, so nothing may be *lost*. 1.1 wrote ``fibrosis_density``,
+    ``stim_edge``, ``electrode_height_mm`` and ``electrode_row`` onto
+    every trace; 2.0 stores each once per simulation (and the row on the
+    realized pair). A value that no longer round-trips is a regression
+    the schema itself cannot catch, because the new bank would still
+    validate.
+    """
+    bank = build_synthetic_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+    )
+
+    for i, result in enumerate(small_dataset_result.results):
+        run_meta = result.run_metadata
+        assert bank.simulations.substrate[i].root.density == pytest.approx(
+            run_meta["fibrosis_density_requested"]
+        )
+        activation = bank.simulations.activation[i]
+        assert isinstance(activation, PlanarEdgeActivation)
+        assert run_meta["stim_edge"] in [e.value for e in activation.edges]
+
+        electrodes = bank.simulations.electrodes[i].root
+        assert electrodes.height_mm == pytest.approx(run_meta["electrode_height_mm"])
+        expected_rows = run_meta["electrode_row_per_pair"]
+        assert [p.electrode_row for p in electrodes.pairs] == list(expected_rows)
+
+
+def test_signals_are_written_unchanged(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """Serialization is lossless: bank signals == simulator output.
+
+    The restructure touched only how a bank is *shaped*; if a waveform
+    changed on the way to disk, the phase's science would rest on
+    different data than the simulator produced.
+    """
+    bank = build_synthetic_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+    )
+    expected = np.concatenate([r.bipolar_traces for r in small_dataset_result.results], axis=0)
+    written = np.asarray(bank.traces.signal, dtype=np.float32)
+
+    assert np.array_equal(written, expected)
+
+
+@pytest.mark.slow
+def test_wave_1_equivalence_against_the_real_backend(tmp_path: Path) -> None:
+    """The same checks, but with Finitewave actually solving.
+
+    The MockBackend returns canned traces, so on its own it proves the
+    plumbing rather than the pipeline. This runs two real simulations and
+    asserts the same three invariants end to end — signals unchanged,
+    labels unchanged, per-simulation config recovering the 1.1 per-trace
+    values. Opt-in (``pytest -m slow``) to keep the default suite ~1 s.
+    """
+    from myocard_synthetic_egm_pipeline.backends import RunConfig
+    from myocard_synthetic_egm_pipeline.backends.finitewave import FinitewaveBackend
+    from myocard_synthetic_egm_pipeline.simulate import (
+        LocalDensityLabel,
+        Patch2DGeometry,
+        generate_dataset,
+    )
+
+    config = DatasetConfig(
+        n_simulations=2,
+        geometry=Patch2DGeometry(size_mm=10.0, dr_mm=0.25, anisotropy_ratio=3.0),
+        label_policy=LocalDensityLabel(radius_mm=2.0, threshold=0.1),
+        run_config=RunConfig(trace_duration_ms=40.0, output_fs_hz=1000.0, ap_time_unit_ms=1.97),
+        fibrosis_density_range=(0.0, 0.4),
+        electrode_n_rows=3,
+        electrode_n_cols=3,
+        electrode_spacing_mm=2.0,
+        master_seed=42,
+        show_progress=False,
+    )
+    dataset_result = generate_dataset(config=config, backend=FinitewaveBackend())
+
+    synthetic = build_synthetic_bank_from_dataset(dataset_result=dataset_result, config=config)
+    classifier = build_classifier_bank_from_dataset(
+        dataset_result=dataset_result, config=config, bank_path=tmp_path / "x.h5"
+    )
+
+    expected = np.concatenate([r.bipolar_traces for r in dataset_result.results], axis=0)
+    assert np.array_equal(np.asarray(synthetic.traces.signal, dtype=np.float32), expected)
+    assert np.array_equal(np.stack([t.signal for t in classifier.traces]), expected)
+    assert [int(x.root) for x in synthetic.traces.label] == [int(x) for x in dataset_result.labels]
+    for i, result in enumerate(dataset_result.results):
+        assert synthetic.simulations.substrate[i].root.density == pytest.approx(
+            result.run_metadata["fibrosis_density_requested"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# SEP12.9 — what a `banks` entry means
+# ---------------------------------------------------------------------------
+
+
+def test_origin_entry_does_not_claim_a_source_file(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """The traces originate here, so no source path is claimed.
+
+    ``bank_path`` is documented as where a source bank was *loaded from*.
+    A producer has no such file, and filling one in anyway is how this
+    field came to name a bank that is never written (clean runs) or one
+    whose traces differ from the file's own (noise-mixed runs).
+    """
+    bank = build_classifier_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+        bank_path=Path("/banks/out.classifier.h5"),
+    )
+    origin = bank.banks[0]
+
+    assert origin.bank_path == LOCAL_BANK_PATH
+    # Distinguishable from "nobody filled this in", which is now a bug signal.
+    assert origin.bank_path != ""
+    # And from any real path, because < > cannot appear in a portable one.
+    assert "<" in origin.bank_path
+
+
+def test_companion_entry_links_to_the_theta_bank(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """The ClassifierBank names the synthetic_bank holding its generation config.
+
+    Without it, pairing the two artifacts a run writes is a fact that
+    lives only in someone's memory — and egm-studio has to be told.
+    """
+    bank = build_classifier_bank_from_dataset(
+        dataset_result=small_dataset_result,
+        config=small_dataset_config,
+        bank_path=Path("/banks/run7.classifier.h5"),
+        bank_id="tbank_run7",
+        synthetic_bank_path=Path("/banks/run7.synthetic.h5"),
+    )
+    companion = next(b for b in bank.banks if b.bank_type == THETA_BANK_SOURCE)
+
+    assert companion.bank_id == "tbank_run7_theta"
+    # Siblings, so a bare filename — portable if the directory moves.
+    assert companion.bank_path == "run7.synthetic.h5"
+    assert companion.bank_metadata["join_key"] == "simulation_id"
+    # No trace points at the companion: it describes the traces without
+    # being where they came from.
+    assert all(t.bank_id != companion.bank_id for t in bank.traces)
+
+
+def test_companion_path_falls_back_to_absolute_when_far_away() -> None:
+    """A distant companion gets an absolute path, not a chain of `..`.
+
+    Portable-in-principle beats readable only up to a point; `../../../..`
+    is neither, and an absolute path at least resolves where it was
+    written.
+    """
+    near = companion_path("/banks/run7.synthetic.h5", relative_to="/banks/run7.classifier.h5")
+    far = companion_path("/elsewhere/a/b/c/noise.h5", relative_to="/banks/run7.classifier.h5")
+
+    assert near == "run7.synthetic.h5"
+    assert Path(far).is_absolute()
+
+
+def test_no_companion_path_when_target_is_unknown() -> None:
+    """No target means empty — the caller had nothing to point at."""
+    assert companion_path(None, relative_to="/banks/x.classifier.h5") == ""
+
+
+def test_companion_path_uses_relative_across_sibling_directories() -> None:
+    """A companion one directory over is still relative, not absolute.
+
+    Banks routinely sit in sibling directories under one project root,
+    and that root moves as a unit — so `../noise/x.h5` is portable and
+    should be preferred. An earlier rule bailed to absolute on any `..`,
+    which gave up exactly where relative was still useful.
+    """
+    assert (
+        companion_path("/repo/noise/iafdb.h5", relative_to="/repo/banks/x.classifier.h5")
+        == "../noise/iafdb.h5"
+    )
+
+
+def test_companion_path_absolute_only_across_unrelated_trees() -> None:
+    """Two paths sharing only the filesystem root get an absolute path.
+
+    Nothing stable links them, so a chain of `..` would express a
+    relationship that does not exist.
+    """
+    result = companion_path("/other/tree/n.h5", relative_to="/repo/banks/x.classifier.h5")
+
+    assert Path(result).is_absolute()

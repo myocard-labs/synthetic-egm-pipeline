@@ -364,3 +364,98 @@ def test_mix_config_rejects_malformed_bank_id(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match=r"output.bank_id"):
         build_mix_config(load_yaml(path))
+
+
+# ---------------------------------------------------------------------------
+# Retired output.also_emit_synthetic_bank (SEP12.5)
+# ---------------------------------------------------------------------------
+
+
+def _minimal_generate_doc(tmp_path: Path) -> dict[str, object]:
+    """Smallest generate-dataset config the builder accepts."""
+    return {
+        "_config_dir": tmp_path,
+        "dataset": {"n_simulations": 1},
+        "backend": {"type": "finitewave"},
+        "geometry": {"type": "patch_2d", "size_mm": 40.0, "dr_mm": 0.25},
+        "substrate": {"type": "uniform_random_fibrosis", "density_range": [0.0, 0.5]},
+        "activation": {"type": "planar_edge"},
+        "electrodes": {"type": "centered_grid_2d"},
+        "label_policy": {"type": "global_density", "threshold": 0.1},
+        "run": {
+            "trace_duration_ms": 192.0,
+            "output_fs_hz": 1000.0,
+            "ap_time_unit_ms": 1.97,
+        },
+        "output": {"classifier_bank": "out.classifier.h5"},
+    }
+
+
+def test_retired_synthetic_bank_flag_is_rejected(tmp_path: Path) -> None:
+    """A config still setting the retired flag fails loudly.
+
+    Silently ignoring it would be worse: the failure would surface much
+    later as a missing artifact at analysis time, with the config
+    apparently saying it had been requested.
+    """
+    doc = _minimal_generate_doc(tmp_path)
+    doc["output"]["also_emit_synthetic_bank"] = True  # type: ignore[index]
+
+    with pytest.raises(ConfigError, match="also_emit_synthetic_bank was retired"):
+        build_generate_dataset_config(doc)
+
+
+def test_retired_flag_rejected_even_when_false(tmp_path: Path) -> None:
+    """``false`` is rejected too — the key means nothing now either way.
+
+    Accepting ``false`` would imply the writer still honours it, which
+    is exactly the wrong thing to leave a reader believing.
+    """
+    doc = _minimal_generate_doc(tmp_path)
+    doc["output"]["also_emit_synthetic_bank"] = False  # type: ignore[index]
+
+    with pytest.raises(ConfigError, match="also_emit_synthetic_bank was retired"):
+        build_generate_dataset_config(doc)
+
+
+def test_synthetic_bank_path_defaults_to_a_sibling(tmp_path: Path) -> None:
+    """Omitting output.synthetic_bank lands it beside the ClassifierBank."""
+    cfg = build_generate_dataset_config(_minimal_generate_doc(tmp_path))
+
+    assert cfg.synthetic_bank_output == (tmp_path / "out.synthetic.h5").resolve()
+    assert cfg.classifier_bank_output == (tmp_path / "out.classifier.h5").resolve()
+
+
+def test_explicit_synthetic_bank_path_is_respected(tmp_path: Path) -> None:
+    """An explicit path overrides the derived sibling."""
+    doc = _minimal_generate_doc(tmp_path)
+    doc["output"]["synthetic_bank"] = "elsewhere/theta.synthetic.h5"  # type: ignore[index]
+
+    cfg = build_generate_dataset_config(doc)
+
+    assert cfg.synthetic_bank_output == (tmp_path / "elsewhere/theta.synthetic.h5").resolve()
+
+
+def test_mix_config_rejects_synthetic_bank_keys(tmp_path: Path) -> None:
+    """synthegm-mix refuses both keys that would ask it for a synthetic bank.
+
+    It cannot write one — standalone mixing has no access to the
+    generation config — so accepting either key would leave a config
+    that reads as though it requested a theta artifact that never
+    appears on disk.
+    """
+    (tmp_path / "in.classifier.h5").touch()
+    (tmp_path / "noise.h5").touch()
+    base: dict[str, object] = {
+        "_config_dir": tmp_path,
+        "input": {"classifier_bank": "in.classifier.h5", "noise_bank": "noise.h5"},
+        "output": {"classifier_bank": "out.classifier.h5"},
+    }
+
+    for key, value in (
+        ("also_emit_synthetic_bank", True),
+        ("synthetic_bank", "somewhere.synthetic.h5"),
+    ):
+        doc = {**base, "output": {**base["output"], key: value}}  # type: ignore[dict-item]
+        with pytest.raises(ConfigError, match="not supported by synthegm-mix"):
+            build_mix_config(doc)

@@ -66,11 +66,14 @@ run:
 
 output:
   classifier_bank: ../banks/synthegm_calibration.classifier.h5
-  clean_intermediate: null
-  # Useful for calibration: the SyntheticBank's columnar layout makes
-  # it easier to compare per-pair waveforms across runs.
-  also_emit_synthetic_bank: true
-  synthetic_bank: null                     # default sibling path
+  # Every run writes BOTH banks: the ClassifierBank for training and the
+  # synthetic_bank carrying theta + the per-simulation generation config,
+  # joined on `simulation_id`. `synthetic_bank` only overrides WHERE the
+  # second one lands — omit it (as the other examples do) and it defaults
+  # to a `<classifier_bank>.synthetic.h5` sibling. Named explicitly here
+  # because calibration runs get compared against each other, so it helps
+  # for the file to say what it is rather than inherit a name.
+  synthetic_bank: ../banks/synthegm_calibration_theta.synthetic.h5
   description: >
     Calibration run — fixed density, fixed edge, pinned height. For CV
     verification + bipolar morphology spot-checks.

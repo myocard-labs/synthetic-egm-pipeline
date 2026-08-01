@@ -221,7 +221,7 @@ def test_mix_classifier_bank_rejects_fs_mismatch(
 
 def test_mix_classifier_bank_rejects_empty_input(small_noise_bank: NoiseBank) -> None:
     """An empty clean bank has nothing to mix."""
-    empty = ClassifierBank(banks=[], traces=[], labels={})
+    empty = ClassifierBank(id="tbank_empty", banks=[], traces=[], labels={})
     with pytest.raises(ValueError, match="no traces"):
         mix_classifier_bank(
             clean_bank=empty,

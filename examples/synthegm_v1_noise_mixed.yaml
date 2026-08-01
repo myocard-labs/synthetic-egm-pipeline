@@ -61,8 +61,6 @@ output:
   # that compare clean-only vs noise-mixed training without re-running the
   # simulator. Set to null to skip.
   clean_intermediate: ../banks/synthegm_v1_clean.classifier.h5
-  also_emit_synthetic_bank: false
-  synthetic_bank: null
   description: >
     Phase 1 noise-mixed synthetic corpus — same clean dataset as baseline,
     overlaid with iafdb_noise_v1 at 10-25 dB per-trace SNR.

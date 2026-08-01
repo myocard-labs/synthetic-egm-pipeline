@@ -187,6 +187,13 @@ addopts = [
   "-ra",
   "--strict-markers",
   "--strict-config",
+  # The suite runs against a MockBackend and finishes in ~1 s; the handful
+  # of tests that spin up the real Finitewave solver are opt-in so that
+  # stays true. Run them with `pytest -m slow`.
+  "-m", "not slow",
+]
+markers = [
+  "slow: exercises the real Finitewave backend (seconds, not milliseconds)",
 ]
 filterwarnings = [
   "error",

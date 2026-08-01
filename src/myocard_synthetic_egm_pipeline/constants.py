@@ -90,3 +90,39 @@ documented in Nezlobinsky 2021.
 
 BANK_SOURCE: str = "synthetic_egm_pipeline"
 """Provenance tag stamped into every synthetic_bank's root source attr."""
+
+THETA_BANK_SOURCE: str = "synthetic_generation_params"
+"""``bank_type`` of the ClassifierBank entry pointing at its ``synthetic_bank``.
+
+A synthetic run writes two artifacts joined on ``simulation_id``, and until
+today nothing in the ClassifierBank said which ``synthetic_bank`` was its
+partner — pairing them was a fact that lived only in someone's head. This
+entry records it.
+
+**Phase-1.5 scope.** It is unambiguous only while a ClassifierBank carries
+traces from one run. Concatenate two such banks and you get two source
+entries and two companion entries with no way to pair them, because traces
+reference their *source* entry only. We do not concatenate in Phase 1.5; the
+general fix needs a real relationship field on the entry and is Phase-2 work.
+"""
+
+LOCAL_BANK_PATH: str = "<local>"
+r"""``bank_path`` sentinel meaning "the traces are in **this** file".
+
+``ClassifierBankMetaData.bank_path`` is documented as the path a source bank
+was *loaded from*, which presumes the traces came from somewhere else. A
+producer **originates** its traces: there is no source file, and writing one
+in anyway is how the field ended up naming a bank that is never written (the
+clean path) or one whose traces differ from the ones in the file (the
+noise-mixed path).
+
+Why a sentinel rather than an empty string: ``""`` is indistinguishable from
+"nobody filled this in", so it cannot mean *deliberately local* and *missing*
+at once. Reserving it for the latter turns a blank into a bug signal.
+
+Why angle brackets specifically: ``<`` and ``>`` are **illegal in Windows
+filenames** (with ``: " / \ | ? *``), so this string can never collide with a
+real portable path — including a bare relative filename such as
+``run7.synthetic.h5``, which is what companion entries carry. The convention
+is the same one Python uses for ``<stdin>`` / ``<string>``.
+"""

@@ -40,6 +40,7 @@ def write_classifier_bank_from_dataset(
     description: str = "",
     overwrite: bool = False,
     bank_id: str | None = None,
+    synthetic_bank_path: Path | str | None = None,
 ) -> Path:
     """Build + write a ClassifierBank for a finished DatasetResult.
 
@@ -55,6 +56,7 @@ def write_classifier_bank_from_dataset(
         bank_path=output_path,
         description=description,
         bank_id=bank_id,
+        synthetic_bank_path=synthetic_bank_path,
     )
     return write_classifier_bank(bank, output_path, overwrite=overwrite)
 
@@ -72,6 +74,7 @@ def write_synthetic_bank_from_dataset(
     noise_record: list[str] | None = None,
     noise_channel: list[str] | None = None,
     noise_bank_source: str | None = None,
+    bank_id_base: str | None = None,
 ) -> Path:
     """Build + write a ``synthetic_bank`` 2.0 for a finished DatasetResult.
 
@@ -97,6 +100,7 @@ def write_synthetic_bank_from_dataset(
         noise_record=noise_record,
         noise_channel=noise_channel,
         noise_bank_source=noise_bank_source,
+        bank_id_base=bank_id_base,
     )
     return write_synthetic_bank(bank, output_path, overwrite=overwrite)
 

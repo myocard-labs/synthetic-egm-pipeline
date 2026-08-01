@@ -165,18 +165,19 @@ def main(argv: list[str] | None = None) -> int:
                 description=cfg.description,
                 overwrite=args.overwrite,
                 bank_id=cfg.bank_id,
+                synthetic_bank_path=cfg.synthetic_bank_output,
             )
-            synthetic_path: Path | None = None
-            if cfg.also_emit_synthetic_bank:
-                synthetic_path = write_synthetic_bank_from_dataset(
-                    dataset_result=dataset_result,
-                    config=dataset_cfg,
-                    output_path=cfg.synthetic_bank_output
-                    or _sibling_path(cfg.classifier_bank_output, ".synthetic.h5"),
-                    description=cfg.description,
-                    overwrite=args.overwrite,
-                    bank_id=cfg.bank_id,
-                )
+            # Both banks, always: the ClassifierBank for training and the
+            # synthetic_bank for theta + per-simulation provenance, joined
+            # on simulation_id.
+            synthetic_path: Path | None = write_synthetic_bank_from_dataset(
+                dataset_result=dataset_result,
+                config=dataset_cfg,
+                output_path=cfg.synthetic_bank_output,
+                description=cfg.description,
+                overwrite=args.overwrite,
+                bank_id=cfg.bank_id,
+            )
             print(
                 _format_result(
                     cfg=cfg,
@@ -197,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             config=dataset_cfg,
             bank_path=cfg.clean_intermediate_output or cfg.classifier_bank_output,
             description=cfg.description,
+            synthetic_bank_path=cfg.synthetic_bank_output,
         )
 
         clean_intermediate_path: Path | None = None
@@ -213,34 +215,28 @@ def main(argv: list[str] | None = None) -> int:
             noise_bank_path=str(cfg.mix.noise_bank_path),
             noise_bank_id=cfg.mix.noise_bank_id,
             noise_mixed_bank_id=cfg.bank_id,
+            output_bank_path=str(cfg.classifier_bank_output),
         )
         classifier_path = write_classifier_bank(
             noise_mixed_bank, cfg.classifier_bank_output, overwrite=args.overwrite
         )
-        synthetic_path = None
-        if cfg.also_emit_synthetic_bank:
-            # Built from the in-memory DatasetResult, not reconstructed
-            # from the mixed ClassifierBank: schema 2.0's per-simulation
-            # config is not recoverable from per-trace metadata. Only the
-            # signals and the three noise columns come from the mixer.
-            synthetic_path = write_synthetic_bank_from_dataset(
-                dataset_result=dataset_result,
-                config=dataset_cfg,
-                output_path=cfg.synthetic_bank_output
-                or _sibling_path(cfg.classifier_bank_output, ".synthetic.h5"),
-                description=cfg.description,
-                overwrite=args.overwrite,
-                bank_id=cfg.bank_id,
-                mixed_signals=[t.signal for t in noise_mixed_bank.traces],
-                snr_db=[float(t.trace_metadata["snr_db"]) for t in noise_mixed_bank.traces],
-                noise_record=[
-                    str(t.trace_metadata["noise_record"]) for t in noise_mixed_bank.traces
-                ],
-                noise_channel=[
-                    str(t.trace_metadata["noise_channel"]) for t in noise_mixed_bank.traces
-                ],
-                noise_bank_source=str(noise_bank.source),
-            )
+        # Built from the in-memory DatasetResult, not reconstructed from
+        # the mixed ClassifierBank: schema 2.0's per-simulation config is
+        # not recoverable from per-trace metadata. Only the signals and
+        # the three noise columns come from the mixer.
+        synthetic_path = write_synthetic_bank_from_dataset(
+            dataset_result=dataset_result,
+            config=dataset_cfg,
+            output_path=cfg.synthetic_bank_output,
+            description=cfg.description,
+            overwrite=args.overwrite,
+            bank_id=cfg.bank_id,
+            mixed_signals=[t.signal for t in noise_mixed_bank.traces],
+            snr_db=[float(t.trace_metadata["snr_db"]) for t in noise_mixed_bank.traces],
+            noise_record=[str(t.trace_metadata["noise_record"]) for t in noise_mixed_bank.traces],
+            noise_channel=[str(t.trace_metadata["noise_channel"]) for t in noise_mixed_bank.traces],
+            noise_bank_source=str(noise_bank.source),
+        )
         print(
             _format_result(
                 cfg=cfg,
@@ -262,16 +258,6 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"ERROR while writing outputs: {exc}", file=sys.stderr)
         return 1
-
-
-def _sibling_path(primary: Path, suffix: str) -> Path:
-    """Default sibling path: ``<primary stem>.<suffix>`` next to ``primary``.
-
-    The suffix should start with a dot. E.g. ``primary = foo.h5``,
-    ``suffix = ".synthetic.h5"`` → ``foo.synthetic.h5``.
-    """
-    stem = primary.stem
-    return primary.with_name(f"{stem}{suffix}")
 
 
 if __name__ == "__main__":

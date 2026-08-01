@@ -49,8 +49,17 @@ from myocard_egm_data.banks import (
 )
 
 from myocard_synthetic_egm_pipeline import __version__
-from myocard_synthetic_egm_pipeline.constants import BANK_SOURCE
-from myocard_synthetic_egm_pipeline.ids import derive_synthetic_bank_id, validate_artifact_id
+from myocard_synthetic_egm_pipeline.constants import (
+    BANK_SOURCE,
+    LOCAL_BANK_PATH,
+    THETA_BANK_SOURCE,
+)
+from myocard_synthetic_egm_pipeline.ids import (
+    companion_path,
+    derive_synthetic_bank_id,
+    theta_bank_id_from,
+    validate_artifact_id,
+)
 from myocard_synthetic_egm_pipeline.simulate.bank_config import build_simulation_columns
 from myocard_synthetic_egm_pipeline.simulate.dataset import DatasetConfig, DatasetResult
 
@@ -70,33 +79,37 @@ def build_clean_trace_metadata(
     *,
     simulation_id: int | None,
     pair_idx: int,
-    electrode_row: int | None,
-    fibrosis_density_requested: float | None,
-    fibrosis_density_realized: float | None,
-    electrode_height_mm: float | None,
-    stim_edge: str | None,
-    sim_seed: int | None,
 ) -> dict[str, Any]:
-    """Canonical per-trace metadata dict for a clean trace.
+    """Per-trace metadata for a ClassifierBank trace.
 
-    Used by both the ClassifierBank builder and (indirectly via the
-    same call sites) the SyntheticBank-from-dataset builder. The mixer
-    extends this dict at mix time with three audit fields
-    (``snr_db``, ``noise_record``, ``noise_channel``); see
-    :func:`~myocard_synthetic_egm_pipeline.mixer.mixing.mix_classifier_bank`.
+    **Identity only.** The ClassifierBank is a *source-agnostic ML
+    compression*: signal, label, and the keys needed to join back to
+    where the trace came from. Generation parameters are the raw
+    material of the signal-realism / parameter-estimation work, not of
+    classification, so they live on the ``synthetic_bank`` and consumers
+    reach them through ``simulation_id``
+    (``synthetic_bank_source_of_truth.md`` section 12).
 
-    ``patient_id`` is set to ``str(simulation_id)`` so the patient-aware split
-    in egm-data treats each simulation as one patient.
+    Until Phase 1.5 this dict also carried ``fibrosis_density_requested``
+    / ``fibrosis_density_realized`` / ``electrode_row`` /
+    ``electrode_height_mm`` / ``stim_edge`` / ``sim_seed`` — the same
+    flat per-trace generation columns the ``synthetic_bank`` restructure
+    removed. Taking them out of one artifact and leaving the copy in the
+    other would have kept the duplication and the drift risk; every one
+    is now recoverable per-simulation.
+
+    ``patient_id`` is ``str(simulation_id)`` so egm-classifier's
+    patient-aware split treats one simulation as one patient — traces
+    from a simulation share a substrate, so splitting across them leaks.
+
+    The mixer adds ``snr_db`` / ``noise_record`` / ``noise_channel`` when
+    it runs. They are **absent on a clean bank** rather than NaN/empty:
+    a present-but-empty noise field reads as "mixed, details unknown",
+    which is the opposite of the truth.
     """
     return {
         "simulation_id": simulation_id,
         "pair_index": int(pair_idx),
-        "electrode_row": electrode_row,
-        "fibrosis_density_requested": fibrosis_density_requested,
-        "fibrosis_density_realized": fibrosis_density_realized,
-        "electrode_height_mm": electrode_height_mm,
-        "stim_edge": stim_edge,
-        "sim_seed": sim_seed,
         "patient_id": str(simulation_id) if simulation_id is not None else "",
     }
 
@@ -108,36 +121,41 @@ def build_bank_metadata_for_classifier_bank(
     bank_path: Path,
     description: str,
 ) -> dict[str, Any]:
-    """Bank-level provenance blob for the synthetic source bank entry."""
-    first_backend_meta: dict[str, Any] = {}
-    if dataset_result.results:
-        first_backend_meta = dict(
-            dataset_result.results[0].run_metadata.get("backend_metadata", {})
-        )
+    """Bank-level provenance for the ClassifierBank's origin entry.
+
+    Deliberately small. The generation config — geometry, substrate
+    ranges, electrode grid, cell model, backend — used to be copied here
+    too; it is the ``synthetic_bank``'s subject and is reachable through
+    the companion entry, so keeping a second copy only created two
+    things to disagree.
+
+    What stays, and why:
+
+    - ``producer`` / ``producer_version`` — **reproducibility**: which
+      code wrote this. Not generation physics, and ``synthetic_bank``
+      2.0 has nowhere to record it, so dropping it would lose the fact
+      rather than de-duplicate it.
+    - ``description`` — free text about the run.
+    - ``trace_duration_ms`` — the classifier's input-length contract, so
+      genuinely training-relevant.
+    - ``label_policy`` — the policy's **identity only**. It defines what
+      the classification task *is*, which is the ClassifierBank's whole
+      subject; its thresholds are generation detail and stay on the
+      source bank.
+    """
+    del bank_path  # the entry's own bank_path records locality
+    policy_types = sorted(
+        {
+            str(r.run_metadata.get("label_policy_type", config.label_policy.type))
+            for r in dataset_result.results
+        }
+    ) or [config.label_policy.type]
     return {
         "producer": "synthetic_egm_pipeline",
         "producer_version": __version__,
         "description": description,
-        "backend": first_backend_meta.get("backend_name"),
-        "cell_model": _cell_model_from_backend_meta(first_backend_meta),
-        "n_simulations": config.n_simulations,
-        "label_policy_name": config.label_policy.name,
-        "label_policy_type": config.label_policy.type,
-        "fibrosis_density_range": list(config.fibrosis_density_range),
-        "fraction_healthy": config.fraction_healthy,
-        "fixed_stim_edge": config.fixed_stim_edge,
-        "geometry_type": config.geometry.type,
-        "geometry_size_mm": getattr(config.geometry, "size_mm", None),
-        "geometry_dr_mm": getattr(config.geometry, "dr_mm", None),
-        "geometry_anisotropy_ratio": getattr(config.geometry, "anisotropy_ratio", None),
-        "electrode_n_rows": config.electrode_n_rows,
-        "electrode_n_cols": config.electrode_n_cols,
-        "electrode_spacing_mm": config.electrode_spacing_mm,
-        "electrode_height_mm_range": list(config.electrode_height_mm_range),
-        "fs_hz": config.run_config.output_fs_hz,
         "trace_duration_ms": config.run_config.trace_duration_ms,
-        "ap_time_unit_ms": config.run_config.ap_time_unit_ms,
-        "bank_path": str(bank_path),
+        "label_policy": "+".join(policy_types),
     }
 
 
@@ -153,6 +171,7 @@ def build_classifier_bank_from_dataset(
     bank_path: Path | str,
     description: str = "",
     bank_id: str | None = None,
+    synthetic_bank_path: Path | str | None = None,
 ) -> ClassifierBank:
     """Build an in-memory ClassifierBank from a DatasetResult.
 
@@ -177,10 +196,14 @@ def build_classifier_bank_from_dataset(
         if bank_id is not None
         else derive_synthetic_bank_id(_cell_model_from_backend_meta(first_backend_meta))
     )
+    # The ORIGIN entry: these traces were produced by this run, not loaded
+    # from another bank, so there is no source file to name. Writing one in
+    # anyway is how this field came to name a bank that is never written
+    # (clean runs) or one whose traces differ from the file's (noise-mixed).
     bank_meta = ClassifierBankMetaData(
         bank_id=resolved_bank_id,
         bank_type=BANK_SOURCE,
-        bank_path=str(bank_path),
+        bank_path=LOCAL_BANK_PATH,
         bank_metadata=build_bank_metadata_for_classifier_bank(
             config=config,
             dataset_result=dataset_result,
@@ -189,26 +212,31 @@ def build_classifier_bank_from_dataset(
         ),
     )
 
+    # The COMPANION entry: the synthetic_bank this run also writes, holding
+    # theta and the per-simulation generation config. Nothing referenced it
+    # before, so pairing the two artifacts was a fact that lived only in
+    # someone's memory. No trace points at this entry — it describes the
+    # traces without being where they came from.
+    theta_meta = ClassifierBankMetaData(
+        bank_id=theta_bank_id_from(resolved_bank_id),
+        bank_type=THETA_BANK_SOURCE,
+        bank_path=companion_path(synthetic_bank_path, relative_to=bank_path),
+        bank_metadata={
+            "join_key": "simulation_id",
+            "description": ("Per-simulation generation config + theta-spec for these traces."),
+        },
+    )
+
     traces: list[ClassifierTrace] = []
     flat_idx = 0
     for result in dataset_result.results:
-        run_meta = result.run_metadata
-        substrate_meta = result.substrate_realization_metadata
-        simulation_id = run_meta.get("simulation_id")
-        sim_seed = run_meta.get("sim_seed")
-        electrode_row_per_pair = run_meta.get("electrode_row_per_pair") or [None] * result.n_pairs
+        simulation_id = result.run_metadata.get("simulation_id")
 
         for pair_idx in range(result.n_pairs):
             label_value = int(dataset_result.labels[flat_idx])
             trace_meta = build_clean_trace_metadata(
                 simulation_id=simulation_id,
                 pair_idx=pair_idx,
-                electrode_row=electrode_row_per_pair[pair_idx],
-                fibrosis_density_requested=run_meta.get("fibrosis_density_requested"),
-                fibrosis_density_realized=substrate_meta.get("density_realized"),
-                electrode_height_mm=run_meta.get("electrode_height_mm"),
-                stim_edge=run_meta.get("stim_edge"),
-                sim_seed=sim_seed,
             )
             traces.append(
                 ClassifierTrace(
@@ -226,7 +254,7 @@ def build_classifier_bank_from_dataset(
 
     return ClassifierBank(
         id=resolved_bank_id,
-        banks=[bank_meta],
+        banks=[bank_meta, theta_meta],
         traces=traces,
         labels=dict(dataset_result.labels_dict),
     )
@@ -248,6 +276,7 @@ def build_synthetic_bank_from_dataset(
     noise_record: list[str] | None = None,
     noise_channel: list[str] | None = None,
     noise_bank_source: str | None = None,
+    bank_id_base: str | None = None,
 ) -> SyntheticBank:
     """Build an in-memory ``synthetic_bank`` 2.0 from a DatasetResult.
 
@@ -318,14 +347,23 @@ def build_synthetic_bank_from_dataset(
         noise_channel=(list(noise_channel) if noise_channel is not None else [""] * n_traces),
     )
 
-    resolved_bank_id = (
-        validate_artifact_id(bank_id)
-        if bank_id is not None
-        else derive_synthetic_bank_id(
+    # The synthetic_bank takes the run's base id with a `theta` marker, so
+    # it is distinct from its paired ClassifierBank (which keeps the bare
+    # id) while still visibly belonging to the same run. `bank_id` is the
+    # base for BOTH banks — one override keeps the pair in step.
+    # `bank_id_base` is the paired ClassifierBank's id when the caller has
+    # one (the mixed path passes the mixer's output id, so the two banks a
+    # noise-mixed run writes stay a matched pair). Otherwise derive it.
+    if bank_id_base is not None:
+        base_bank_id = validate_artifact_id(bank_id_base)
+    elif bank_id is not None:
+        base_bank_id = validate_artifact_id(bank_id)
+    else:
+        base_bank_id = derive_synthetic_bank_id(
             _cell_model_from_backend_meta(backend_meta_first),
             noise_mixed=mixed_signals is not None,
         )
-    )
+    resolved_bank_id = validate_artifact_id(theta_bank_id_from(base_bank_id))
 
     return SyntheticBank(
         schema_version=SchemaVersion(current_version("synthetic_bank")),

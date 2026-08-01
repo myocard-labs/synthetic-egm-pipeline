@@ -114,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             noise_bank_path=str(cfg.noise_bank_path),
             noise_bank_id=cfg.noise_bank_id,
             noise_mixed_bank_id=cfg.bank_id,
+            output_bank_path=str(cfg.output_classifier_bank),
         )
     except Exception as exc:
         print(f"ERROR during mixing: {exc}", file=sys.stderr)
@@ -145,11 +146,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     return 0
-
-
-def _sibling_synthetic(primary: Path) -> Path:
-    """Default Pydantic-SyntheticBank sibling path next to ``primary``."""
-    return primary.with_name(f"{primary.stem}.synthetic.h5")
 
 
 if __name__ == "__main__":

@@ -60,6 +60,15 @@ jobs:
       - name: Run pytest
         run: pytest --cov --cov-report=xml --cov-report=term
 
+      # The `slow` tests are deselected by default (pyproject `addopts`) so a
+      # local run stays ~1 s. They are the ones that exercise the real
+      # Finitewave backend end to end -- including the schema-migration
+      # equivalence check -- so CI must not inherit that deselection, or the
+      # gate silently never runs. finitewave is a hard runtime dep, so the
+      # only added cost is the tests themselves.
+      - name: Run pytest (slow — real Finitewave backend)
+        run: pytest -m slow
+
       - name: Upload coverage artifact
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4

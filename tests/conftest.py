@@ -143,14 +143,19 @@ def _make_simulation_result(
     # forwards them; populate with anything sensible.
     electrode_positions = np.zeros((n_pairs * 2, 3), dtype=np.float64)
     bipolar_pairs = tuple((i * 2, i * 2 + 1) for i in range(n_pairs))
+    # The grid must describe the SAME electrodes as `bipolar_pairs` above:
+    # pairs are (0,1), (2,3), ... so one pair per row of a 2-column grid.
+    # An n_rows=1 grid here would disagree with its own pair list, and the
+    # per-pair electrode_row written into the bank would silently differ
+    # from the one the runner computes.
     geometry = Patch2DGeometry(size_mm=40.0, dr_mm=dr_mm)
     specs = SimulationSpecs(
         geometry=geometry,
         substrate=UniformRandomFibrosis(density=fibrosis_density_requested),
         activation=PlanarEdgeStimulus(edge=cast(Edge, stim_edge)),
         electrodes=CenteredGrid2D(
-            n_rows=1,
-            n_cols=n_pairs + 1,
+            n_rows=n_pairs,
+            n_cols=2,
             spacing_mm=2.0,
             height_mm=electrode_height_mm,
             positions_mm=electrode_positions,
@@ -177,7 +182,8 @@ def _make_simulation_result(
             "stim_edge": stim_edge,
             "electrode_height_mm": electrode_height_mm,
             "fibrosis_density_requested": fibrosis_density_requested,
-            "electrode_row_per_pair": [0] * n_pairs,
+            # Matches the 2-column grid above: one pair per row.
+            "electrode_row_per_pair": list(range(n_pairs)),
             "backend_metadata": {
                 "backend_name": "mock",
                 "finitewave_version_pin": "0.9.3",
@@ -331,6 +337,9 @@ def small_classifier_bank() -> ClassifierBank:
         },
     )
     return ClassifierBank(
+        # A bank with no id is not a writable artifact — egm-data refuses
+        # one — so the fixture carries the id a real clean bank would.
+        id="tbank_synthetic_aliev_panfilov_2026-06-27",
         banks=[bank_meta],
         traces=traces,
         labels={0: "healthy", 1: "fibrotic"},
