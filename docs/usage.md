@@ -169,19 +169,24 @@ label_policy:
   fibrotic_name: fibrotic                  # default
 
 run:
-  trace_duration_ms: 200.0                 # default
+  trace_duration_ms: 192.0                 # default (192 = 3x64; T must be a multiple of 64)
   output_fs_hz: 1000.0                     # default (matches IAFDB)
   ap_time_unit_ms: 1.97                    # default (calibrated 2026-06-10)
   capture_oversample: 4                    # default; backend captures at 4x output_fs_hz
 
 output:
   classifier_bank: ../banks/synthegm_v1.classifier.h5   # required
-  clean_intermediate: null                 # default: don't persist; only used with mix block
+  # clean_intermediate: ../banks/clean.classifier.h5  # optional; omit to skip.
+  #   Only meaningful with a mix block. Setting it makes the run write FOUR
+  #   files, because the clean bank gets its own theta partner (see below).
   # synthetic_bank: ../banks/theta.synthetic.h5   # optional; omit for a
   #   `<classifier_bank>.synthetic.h5` sibling. It sets WHERE the second
   #   bank lands, not WHETHER — both banks are always written.
   description: ""                          # default; stamped into bank_metadata
   # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted
+  # clean_intermediate_bank_id: tbank_synthetic_ap_clean_2026-06-27  # optional;
+  #   names the CLEAN pair as bank_id names the mixed one. Only valid alongside
+  #   output.clean_intermediate.
 
 # Optional inline mixer block — omit (or set null) for clean-only output.
 mix:
@@ -225,10 +230,11 @@ Per-field reference:
 | `run.ap_time_unit_ms` | float | 1.97 | AP non-dimensional time → ms calibration. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
 | `output.classifier_bank` | path | (required) | Primary output path. |
-| `output.clean_intermediate` | path/null | null | Persist clean bank pre-mix; only meaningful with mix block. |
+| `output.clean_intermediate` | path | omit to skip | Persist the clean bank pre-mix; only meaningful with a mix block. Its `synthetic_bank` partner is written automatically beside it as `<stem>.synthetic.h5`. |
 | `output.synthetic_bank` | path | omit for the sibling default | Where the `synthetic_bank` lands. Sets the **path**, not whether it is written — both banks are written on every run. Default: `<classifier_bank>.synthetic.h5`. |
 | `output.description` | str | `""` | Stamped into the bank's metadata. |
 | `output.bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_<date>` | Optional explicit id for the primary bank (the noise-mixed bank in the mix path). See [Stable bank IDs](#stable-bank-ids). |
+| `output.clean_intermediate_bank_id` | str (ArtifactId) | auto: `tbank_synthetic_<cell_model>_<date>` | Optional explicit id base for the **clean** pair. Rejected if `output.clean_intermediate` is not set — an id for a bank that is never written would be silently ignored. |
 | `mix.noise_bank` | path | (required if block present) | iafdb-pipeline noise_bank.h5. |
 | `mix.noise_bank_id` | str (ArtifactId) | auto: read from the noise sidecar | Optional override for the mixed noise bank's id (the mixer's provenance entry). |
 | `mix.snr_db_range` | `[lo, hi]` | `[10.0, 25.0]` | Per-trace SNR sampled uniformly. |
@@ -330,10 +336,29 @@ Three files come out:
   intermediate (preserved because the example config sets
   `output.clean_intermediate`). Useful for ablation studies comparing
   clean-only vs noise-mixed training without re-running the simulator.
+- `../banks/synthegm_v1_clean.synthetic.h5` — **the clean intermediate's own
+  `synthetic_bank` partner**, carrying the same per-simulation config with the
+  *clean* signals.
+
+**Every ClassifierBank has exactly one `synthetic_bank` partner whose id it
+names.** That is why a mix run with `output.clean_intermediate` produces four
+files rather than three. The clean bank used to point at the mixed run's
+`synthetic_bank`, which failed twice over: the id it derived matched no
+artifact, so `join_traces_with_simulations` refused it outright — and had the
+ids matched, the join would have handed back **mixed** waveforms for traces
+read as clean, since a `synthetic_bank` stores `traces/signal`, not just
+config.
 
 The mixed pair takes `_noise_mixed` ids: the ClassifierBank
 `tbank_…_noise_mixed_<date>` and its partner
-`tbank_…_noise_mixed_theta_<date>`.
+`tbank_…_noise_mixed_theta_<date>`. The clean pair keeps the bare stem:
+`tbank_…_<date>` and `tbank_…_theta_<date>`.
+
+> **Standalone `synthegm-mix` writes no `synthetic_bank`**, so its output has
+> **no** theta partner and carries no theta entry at all. Schema 2.0's
+> per-simulation config cannot be recovered from a ClassifierBank's per-trace
+> metadata, so there is nothing to write. Use the inline path when you need the
+> theta artifact.
 
 ### Producing a noise-mixed dataset in two steps (decoupled mix)
 

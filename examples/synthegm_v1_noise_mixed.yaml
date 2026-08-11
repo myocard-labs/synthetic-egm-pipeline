@@ -9,6 +9,9 @@
 #      configured SNR distribution
 #   4. writes the *noise-mixed* ClassifierBank as the primary output
 #
+# Each ClassifierBank written gets its own theta (synthetic_bank)
+# partner, so with clean_intermediate set this run produces four files.
+#
 # Output: ../banks/synthegm_v1_noise_mixed.classifier.h5
 
 dataset:
@@ -59,8 +62,20 @@ output:
   classifier_bank: ../banks/synthegm_v1_noise_mixed.classifier.h5
   # Persist the pre-mix clean bank too — useful for ablation studies
   # that compare clean-only vs noise-mixed training without re-running the
-  # simulator. Set to null to skip.
+  # simulator. Omit the line entirely to skip.
+  #
+  # This makes the run write FOUR files: the mixed ClassifierBank + its
+  # theta bank, and the clean ClassifierBank + its own theta bank. Every
+  # ClassifierBank has exactly one theta partner whose id it names, so
+  # each pair joins on its own (D8 / CL-143). The clean theta bank lands
+  # beside its ClassifierBank as <stem>.synthetic.h5 — no config needed.
   clean_intermediate: ../banks/synthegm_v1_clean.classifier.h5
+  # Optional explicit ids. `bank_id` names the MIXED pair (ClassifierBank
+  # + its theta bank); `clean_intermediate_bank_id` names the CLEAN pair.
+  # One override per pair — each keeps its own ClassifierBank and theta
+  # bank in step, and neither can drift onto the other's artifacts.
+  # bank_id: tbank_synthetic_aliev_panfilov_noise_mixed_2026-06-27
+  # clean_intermediate_bank_id: tbank_synthetic_aliev_panfilov_clean_2026-06-27
   description: >
     Phase 1 noise-mixed synthetic corpus — same clean dataset as baseline,
     overlaid with iafdb_noise_v1 at 10-25 dB per-trace SNR.

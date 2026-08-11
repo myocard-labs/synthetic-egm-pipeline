@@ -2,7 +2,7 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 13/37 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 14/37 steps done — **Wave 1 complete; Wave 2 underway**
 **Repo estimate:** **79.5–142 h** active (37 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
@@ -156,7 +156,7 @@ files — mixed ClassifierBank + mixed θ, clean ClassifierBank + clean θ.
 side. Giving the clean bank a proper id base is now a *prerequisite* of the fix rather than a separate
 nicety, so the two land together in **S13** and B13's own step is retired.
 
-### D7 — keep both builders### D7 — keep both builders; do **not** derive the ClassifierBank via egm-data's converter *(repo-internal, confirmed with Daniel 2026-08-01)*
+### D7 — keep both builders; do **not** derive the ClassifierBank via egm-data's converter *(repo-internal, confirmed with Daniel 2026-08-01)*
 
 egm-data ships `synthetic_bank_to_classifier`, and deriving the ClassifierBank from the SyntheticBank
 would delete ~90 lines here and make D4's two artifacts agree by construction. I proposed exactly that
@@ -429,7 +429,7 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   Verified end-to-end on a real two-sim run, not just at import: `producer_version` 0.3.0 (was
   stamping a stale `0.2.0`), `trace_duration_ms` 192.0, signal `(40, 192)`.
 
-### S13 — One ClassifierBank, one θ bank (CL-143 + B13 · D8) ☐ (2–4 h)
+### S13 — One ClassifierBank, one θ bank (CL-143 + B13 · D8) ✅ (2–4 h)
 - **Change:** give the clean intermediate its **own id base** — B13's ask, and the root cause of
   CL-143: the clean bank is built with no `bank_id`, derives a cell-model id, and its companion entry
   then names the mixed run's θ file. Then **write a clean θ bank** beside it. After this, every
@@ -440,6 +440,17 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   test over a full inline-mix run, not a hand-built fixture — this defect lived in the CLI wiring, and
   every builder-level test passed while it was present.
 - **Depends on:** S12 (the re-pin).
+- **Done 2026-08-11.** One defect found beyond the brief, in the *other* CLI:
+  `_rewrite_theta_companion` rewrote the θ entry's **id** but kept the clean
+  bank's **path**. That was invisible while the two banks shared one θ file —
+  the very arrangement D8 removed — so fixing the clean side would have aimed
+  the mixed bank at the clean θ artifact. Both fields now move together, and
+  standalone `synthegm-mix`, which *cannot* write a θ bank at all, now **drops**
+  the entry instead of leaving a mixed-derived id on the clean run's file: the
+  same id-versus-file divergence as CL-143, one command over.
+  Tests live in a new `tests/test_cli_inline_mix.py` driving `main()` with the
+  backend swapped for `MockBackend` — the plan called for a full-run regression
+  precisely because every builder-level test passed while the defect shipped.
 
 ### S14 — Position config + size the simulation to the widest `p` (SEP2) ☐ (3–5 h)
 - **Change:** thread SIG1's `UniformPositionGenerator(low, high)` and `SingleActivationWindower`

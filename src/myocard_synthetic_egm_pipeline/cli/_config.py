@@ -272,8 +272,17 @@ class GenerateDatasetCLIConfig:
     # otherwise derived as a sibling of the ClassifierBank. Both banks are
     # always written, so there is no 'no path' case.
     synthetic_bank_output: Path
+    # The clean intermediate's own theta bank (D8: one ClassifierBank, one
+    # theta partner). Resolved iff a clean intermediate is requested — with no
+    # clean ClassifierBank on disk there is nothing to partner, and writing one
+    # anyway would leave an orphan theta file no artifact names.
+    clean_theta_output: Path | None
     description: str
     bank_id: str | None
+    # Id base for the clean intermediate pair (B13). The mixed pair takes
+    # `bank_id`; without a separate base the clean bank fell back to a
+    # cell-model-derived id, which is the root cause of CL-143.
+    clean_intermediate_bank_id: str | None
 
     # Optional inline mixing
     mix: InlineMixConfig | None
@@ -414,12 +423,26 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     )
     if synthetic_bank_output is None:
         synthetic_bank_output = _sibling_synthetic_path(classifier_bank_output)
+    clean_theta_output = (
+        _sibling_synthetic_path(clean_intermediate_output)
+        if clean_intermediate_output is not None
+        else None
+    )
     description = str(_optional(doc, "output", "description", default=""))
-    # Optional explicit stable id for the primary output bank; None -> derived.
-    # Validated at load so a malformed override fails before the N-sim run.
+    # Optional explicit stable ids; None -> derived. Validated at load so a
+    # malformed override fails before the N-sim run rather than after it.
     bank_id = _validated_id(
         _optional(doc, "output", "bank_id", default=None), field_path="output.bank_id"
     )
+    clean_intermediate_bank_id = _validated_id(
+        _optional(doc, "output", "clean_intermediate_bank_id", default=None),
+        field_path="output.clean_intermediate_bank_id",
+    )
+    if clean_intermediate_bank_id is not None and clean_intermediate_output is None:
+        raise ConfigError(
+            "output.clean_intermediate_bank_id names a bank that is not being "
+            "written; set output.clean_intermediate too, or drop the id."
+        )
 
     # --- optional mix block --------------------------------------------
     mix: InlineMixConfig | None = None
@@ -445,8 +468,10 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,
         synthetic_bank_output=synthetic_bank_output,
+        clean_theta_output=clean_theta_output,
         description=description,
         bank_id=bank_id,
+        clean_intermediate_bank_id=clean_intermediate_bank_id,
         mix=mix,
     )
 

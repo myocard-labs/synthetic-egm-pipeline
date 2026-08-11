@@ -83,13 +83,16 @@ def _format_result(
     clean_intermediate_path: Path | None,
     synthetic_path: Path | None,
     mixed: bool,
+    clean_theta_path: Path | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"Wrote classifier bank:    {classifier_path}")
-    if clean_intermediate_path is not None:
-        lines.append(f"Wrote clean intermediate: {clean_intermediate_path}")
     if synthetic_path is not None:
         lines.append(f"Wrote synthetic bank:     {synthetic_path}")
+    if clean_intermediate_path is not None:
+        lines.append(f"Wrote clean intermediate: {clean_intermediate_path}")
+    if clean_theta_path is not None:
+        lines.append(f"Wrote clean synthetic:    {clean_theta_path}")
     lines.append(f"  N simulations:          {len(dataset_result.results)}")
     lines.append(f"  N traces:               {dataset_result.labels.size}")
     lines.append(f"  Label policy:           {cfg.label_policy.name}")
@@ -193,18 +196,44 @@ def main(argv: list[str] | None = None) -> int:
         # Inline-mixer path. Build clean bank in memory, optionally
         # write the clean intermediate to disk, mix, then write the
         # noise-mixed bank as the primary output.
+        #
+        # When a clean intermediate is requested it is a *published artifact*,
+        # not scratch: it gets its own id base and its own theta partner, so
+        # the pair is joinable on its own terms (D8 / CL-143). It used to be
+        # built with no bank_id at all — falling back to a cell-model-derived
+        # id — while naming the mixed run's theta file, so its companion id
+        # matched no artifact and egm-data refused the join.
+        writing_clean = cfg.clean_intermediate_output is not None
         clean_bank = build_classifier_bank_from_dataset(
             dataset_result=dataset_result,
             config=dataset_cfg,
             bank_path=cfg.clean_intermediate_output or cfg.classifier_bank_output,
             description=cfg.description,
-            synthetic_bank_path=cfg.synthetic_bank_output,
+            bank_id=cfg.clean_intermediate_bank_id,
+            synthetic_bank_path=(
+                cfg.clean_theta_output if writing_clean else cfg.synthetic_bank_output
+            ),
         )
 
         clean_intermediate_path: Path | None = None
-        if cfg.clean_intermediate_output is not None:
+        clean_theta_path: Path | None = None
+        if writing_clean:
+            assert cfg.clean_intermediate_output is not None
+            assert cfg.clean_theta_output is not None
             clean_intermediate_path = write_classifier_bank(
                 clean_bank, cfg.clean_intermediate_output, overwrite=args.overwrite
+            )
+            # The clean bank's own theta partner: same per-simulation config as
+            # the mixed one, but the *clean* signals. Sharing the mixed theta
+            # file would hand a consumer mixed waveforms for a trace it joined
+            # as clean, with nothing flagging the swap (D8).
+            clean_theta_path = write_synthetic_bank_from_dataset(
+                dataset_result=dataset_result,
+                config=dataset_cfg,
+                output_path=cfg.clean_theta_output,
+                description=cfg.description,
+                overwrite=args.overwrite,
+                bank_id_base=str(clean_bank.id),
             )
 
         noise_bank = read_noise_bank_hdf5(cfg.mix.noise_bank_path)
@@ -216,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             noise_bank_id=cfg.mix.noise_bank_id,
             noise_mixed_bank_id=cfg.bank_id,
             output_bank_path=str(cfg.classifier_bank_output),
+            theta_bank_path=str(cfg.synthetic_bank_output),
         )
         classifier_path = write_classifier_bank(
             noise_mixed_bank, cfg.classifier_bank_output, overwrite=args.overwrite
@@ -243,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
                 dataset_result=dataset_result,
                 classifier_path=classifier_path,
                 clean_intermediate_path=clean_intermediate_path,
+                clean_theta_path=clean_theta_path,
                 synthetic_path=synthetic_path,
                 mixed=True,
             )

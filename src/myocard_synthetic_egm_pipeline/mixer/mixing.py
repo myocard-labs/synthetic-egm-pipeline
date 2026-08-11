@@ -195,7 +195,11 @@ def _resolve_noise_mixed_id(override: str | None, clean_bank: ClassifierBank) ->
 
 
 def _rewrite_theta_companion(
-    entries: list[ClassifierBankMetaData], mixed_bank_id: str
+    entries: list[ClassifierBankMetaData],
+    mixed_bank_id: str,
+    *,
+    theta_bank_path: str | None,
+    output_bank_path: str | None,
 ) -> list[ClassifierBankMetaData]:
     """Re-point the theta companion entry at the *mixed* run's theta bank.
 
@@ -205,14 +209,35 @@ def _rewrite_theta_companion(
     its own id. Carrying the clean entry through would leave the mixed
     ClassifierBank pointing at a *different* artifact than the one
     written beside it, which is the failure this entry exists to prevent.
+
+    **Both** the id and the path are rewritten. Rewriting only the id was
+    survivable while the clean bank's entry happened to name the mixed theta
+    file — the two banks shared one theta artifact, which is exactly the
+    defect D8 settled (CL-143). Now that the clean bank names its *own*
+    theta partner, inheriting its path would point the mixed bank at the
+    clean theta file: right id, wrong file, and a consumer joining on it
+    would read clean waveforms out of an artifact it believes is mixed.
+
+    ``theta_bank_path=None`` means **the caller is not writing a theta bank
+    for these mixed signals**, and the entry is *dropped* rather than
+    rewritten. That is the standalone ``synthegm-mix`` case: it post-processes
+    a ClassifierBank on disk, and schema 2.0's per-simulation config is not
+    recoverable from per-trace metadata, so no theta partner can exist. The
+    old code rewrote the id and kept the clean bank's path, leaving the mixed
+    bank naming a mixed-derived id at the *clean* theta file — the same
+    id-versus-file divergence as CL-143, one CLI over. Absence is the honest
+    answer: no theta partner, said by omission, not by a pointer to the wrong
+    artifact.
     """
     rewritten: list[ClassifierBankMetaData] = []
     for entry in entries:
         if entry.bank_type == THETA_BANK_SOURCE:
+            if theta_bank_path is None:
+                continue
             entry = ClassifierBankMetaData(
                 bank_id=theta_bank_id_from(mixed_bank_id),
                 bank_type=entry.bank_type,
-                bank_path=entry.bank_path,
+                bank_path=companion_path(theta_bank_path, relative_to=output_bank_path),
                 bank_metadata=dict(entry.bank_metadata),
             )
         rewritten.append(entry)
@@ -228,6 +253,7 @@ def mix_classifier_bank(
     noise_bank_id: str | None = None,
     noise_mixed_bank_id: str | None = None,
     output_bank_path: str | None = None,
+    theta_bank_path: str | None = None,
 ) -> ClassifierBank:
     """Return a new ClassifierBank with each trace mixed against sampled noise.
 
@@ -323,7 +349,12 @@ def mix_classifier_bank(
     return ClassifierBank(
         id=resolved_noise_mixed_id,
         banks=[
-            *_rewrite_theta_companion(list(clean_bank.banks), resolved_noise_mixed_id),
+            *_rewrite_theta_companion(
+                list(clean_bank.banks),
+                resolved_noise_mixed_id,
+                theta_bank_path=theta_bank_path,
+                output_bank_path=output_bank_path,
+            ),
             mixer_entry,
         ],
         traces=new_traces,

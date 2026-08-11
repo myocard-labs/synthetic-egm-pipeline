@@ -373,9 +373,38 @@ does not move with it, so `../..` is no more portable than absolute and
 merely harder to read. `ids.companion_path` implements exactly that
 split.
 
-**The θ link, and its Phase-1.5 limit.** The ClassifierBank now carries a
-`synthetic_generation_params` companion entry naming the
-`synthetic_bank` written by the same run, joined on `simulation_id`.
+**One ClassifierBank, one θ bank** (D8, settled 2026-08-11 after CL-143). The
+ClassifierBank carries a `synthetic_generation_params` companion entry naming
+the `synthetic_bank` written **for its own signals**, joined on
+`simulation_id`. The invariant is deliberately absolute — *every ClassifierBank
+has exactly one θ partner whose id it names* — because it is checkable in one
+line and has no special cases.
+
+The alternative, which we rejected, was to let a clean bank and its noise-mixed
+sibling **share** one θ file, with each recording that file's real id. That
+looks like a pure storage win, and it is wrong for a reason easy to miss: a θ
+bank stores `traces/signal`, not just config. Under sharing, a clean
+ClassifierBank's θ partner would contain the **mixed** waveforms, and a
+consumer joining on `simulation_id` / `pair_index` would get different signals
+from the two artifacts for the same trace with nothing flagging it — the same
+failure shape as a `bank_path` naming a file that doesn't hold what the pointer
+implies. The duplication is also transient: once §8.3 settles whether clean or
+noise-mixed features sit closer to IAFDB, production runs generate one or the
+other, so the cost is paid only on the comparison runs whose whole purpose is
+to have both.
+
+Consequences worth knowing:
+
+- An inline-mix run with `output.clean_intermediate` writes **four** files —
+  mixed ClassifierBank + mixed θ, clean ClassifierBank + clean θ.
+- The clean intermediate has its own **id base** (`output.clean_intermediate_bank_id`,
+  auto-derived when omitted). Without one it fell back to a cell-model-derived
+  id while naming the mixed run's θ file — an id matching no artifact, which is
+  precisely why `join_traces_with_simulations` refused it.
+- **Standalone `synthegm-mix` emits no θ entry at all.** It cannot write a θ
+  bank (2.0's per-simulation config is not recoverable from per-trace
+  metadata), so it has no partner, and it says so by omission rather than by
+  rewriting the id onto the clean run's file.
 Before this, which two files belonged together was a fact that existed
 only in someone's memory. It is unambiguous **only while a ClassifierBank
 holds one run's traces**: concatenate two and you get two origin entries

@@ -301,6 +301,24 @@ def test_one_override_names_both_banks(
 # ---------------------------------------------------------------------------
 
 
+def _clean_bank_with_theta_companion(bank: ClassifierBank) -> ClassifierBank:
+    """``bank`` plus a theta companion entry naming its own theta file."""
+    return ClassifierBank(
+        id=bank.id,
+        banks=[
+            *bank.banks,
+            ClassifierBankMetaData(
+                bank_id=theta_bank_id_from(str(bank.id)),
+                bank_type=THETA_BANK_SOURCE,
+                bank_path="clean.synthetic.h5",
+                bank_metadata={"join_key": "simulation_id"},
+            ),
+        ],
+        traces=bank.traces,
+        labels=bank.labels,
+    )
+
+
 def test_mixed_bank_companion_names_the_mixed_theta_bank(
     small_classifier_bank: ClassifierBank, small_noise_bank: NoiseBank
 ) -> None:
@@ -312,21 +330,44 @@ def test_mixed_bank_companion_names_the_mixed_theta_bank(
     through left the mixed ClassifierBank naming a *different* artifact
     than the one written beside it — exactly the mispairing this entry
     exists to prevent.
+
+    **Id and path both move.** Rewriting only the id was survivable while both
+    banks shared one theta file; now that the clean bank has its own (D8), a
+    kept path would point the mixed bank at the *clean* theta artifact.
     """
-    clean = ClassifierBank(
-        id=small_classifier_bank.id,
-        banks=[
-            *small_classifier_bank.banks,
-            ClassifierBankMetaData(
-                bank_id=theta_bank_id_from(str(small_classifier_bank.id)),
-                bank_type=THETA_BANK_SOURCE,
-                bank_path="clean.synthetic.h5",
-                bank_metadata={"join_key": "simulation_id"},
-            ),
-        ],
-        traces=small_classifier_bank.traces,
-        labels=small_classifier_bank.labels,
+    clean = _clean_bank_with_theta_companion(small_classifier_bank)
+
+    mixed = mix_classifier_bank(
+        clean_bank=clean,
+        noise_bank=small_noise_bank,
+        config=MixerConfig(show_progress=False),
+        theta_bank_path="mixed.synthetic.h5",
     )
+
+    companion = next(b for b in mixed.banks if b.bank_type == THETA_BANK_SOURCE)
+    assert companion.bank_id == theta_bank_id_from(str(mixed.id))
+    # i.e. it moved off the clean run's theta bank
+    assert companion.bank_id != theta_bank_id_from(str(clean.id))
+    assert str(companion.bank_path) == "mixed.synthetic.h5"
+
+
+def test_mix_without_a_theta_bank_drops_the_companion(
+    small_classifier_bank: ClassifierBank, small_noise_bank: NoiseBank
+) -> None:
+    """No theta bank written for the mixed signals -> no theta companion.
+
+    This is the standalone ``synthegm-mix`` case: it post-processes a
+    ClassifierBank on disk and *cannot* emit a ``synthetic_bank``, because
+    schema 2.0's per-simulation config is not recoverable from per-trace
+    metadata. The mixer used to rewrite the companion's id to a mixed-derived
+    one while keeping the clean bank's path — leaving the mixed bank naming an
+    id that no file carries, at a file that holds clean signals. That is the
+    CL-143 divergence in the other CLI.
+
+    Absence is the honest answer, and it matches the rule the noise columns
+    already follow: a field a run did not produce is omitted, never faked.
+    """
+    clean = _clean_bank_with_theta_companion(small_classifier_bank)
 
     mixed = mix_classifier_bank(
         clean_bank=clean,
@@ -334,10 +375,9 @@ def test_mixed_bank_companion_names_the_mixed_theta_bank(
         config=MixerConfig(show_progress=False),
     )
 
-    companion = next(b for b in mixed.banks if b.bank_type == THETA_BANK_SOURCE)
-    assert companion.bank_id == theta_bank_id_from(str(mixed.id))
-    # i.e. it moved off the clean run's theta bank
-    assert companion.bank_id != theta_bank_id_from(str(clean.id))
+    assert not [b for b in mixed.banks if b.bank_type == THETA_BANK_SOURCE]
+    # The rest of the clean bank's provenance still carries forward.
+    assert len(mixed.banks) == len(clean.banks)  # theta dropped, mixer added
 
 
 def test_noise_mixed_id_is_idempotent() -> None:

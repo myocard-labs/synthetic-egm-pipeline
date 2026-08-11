@@ -6,6 +6,31 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A clean intermediate is now joinable (CL-143 + B13).** In an inline-mix run
+  the clean ClassifierBank named the *mixed* run's `synthetic_bank` under an id
+  derived from its own, so the id matched no artifact and egm-data's
+  `join_traces_with_simulations` refused it. Refusing was correct —
+  `simulation_id` restarts at 0 in every bank, so a permissive join would pair
+  traces with another run's config. The clean bank now gets **its own id base**
+  (`output.clean_intermediate_bank_id`, auto-derived when omitted) and **its own
+  `synthetic_bank`**, written beside it as `<stem>.synthetic.h5`. A mix run with
+  `output.clean_intermediate` therefore writes **four** files.
+  Matching the ids alone would not have been enough: a `synthetic_bank` stores
+  `traces/signal`, so a shared θ file would have returned **mixed** waveforms
+  for traces joined as clean.
+- **The mixer re-points the θ companion's path, not just its id.** Rewriting
+  only the id was survivable while both banks shared one θ file; with the clean
+  bank now owning its own, an inherited path would aim the mixed bank at the
+  clean θ artifact.
+- **Standalone `synthegm-mix` no longer emits a θ companion entry.** It cannot
+  write a `synthetic_bank` (2.0's per-simulation config is not recoverable from
+  a ClassifierBank's per-trace metadata), so it previously left a mixed-derived
+  id pointing at the *clean* θ file — the same id-versus-file divergence as
+  CL-143, one CLI over. Absence is now the answer, matching the rule the noise
+  columns already follow: a field a run did not produce is omitted, never faked.
+
 ### Changed
 
 - **Wave-2 dependency re-pin** — egm-contracts `v0.6.0 → v0.6.1`, egm-data
