@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
+from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
 from myocard_synthetic_egm_pipeline.simulate import (
     CenteredGrid2D,
     Patch2DGeometry,
@@ -25,7 +26,7 @@ def _build_run_inputs() -> tuple[Patch2DGeometry, CenteredGrid2D, RunConfig]:
     geometry = Patch2DGeometry(size_mm=40.0, dr_mm=0.25)
     electrodes = CenteredGrid2D.sample(geometry=geometry, rng=np.random.default_rng(0))
     config = RunConfig(
-        trace_duration_ms=200.0,
+        trace_duration_ms=DEFAULT_TRACE_DURATION_MS,
         output_fs_hz=1000.0,
         ap_time_unit_ms=1.97,
         capture_oversample=4,

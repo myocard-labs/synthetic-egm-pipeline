@@ -8,6 +8,29 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Changed
 
+- **Wave-2 dependency re-pin** — egm-contracts `v0.6.0 → v0.6.1`, egm-data
+  `v0.6.0 → v0.6.2`, egm-signal `v0.2.0 → v0.4.0` (the SIG1 release carrying
+  `SingleActivationWindower`, which SEP2 calls).
+- **`__version__` is read from installed distribution metadata** instead of a
+  hardcoded literal (CL-117). The literal had drifted to `"0.2.0"` against a
+  `v0.3.0` tag, and it is stamped into every bank as `producer_version` — so
+  **every bank written before this fix names a version that never produced
+  it**. Banks generated from here on carry the true version; older ones cannot
+  be trusted on that field and should be regenerated if provenance matters.
+- **Default `trace_duration_ms` is 192 ms, was 200** (CL-112, design §8.1). At
+  1 kHz that is T = 192 samples, and T must be a multiple of 64: egm-classifier's
+  1D MobileViT halves the sequence six times, so an off-grid length fails
+  outright rather than degrading. **All five `examples/` configs set this
+  explicitly and have been updated too** — changing only the default would have
+  left every example generating unusable banks. Test fixtures now derive their
+  trace length from the same constant, so the suite exercises the shipped value.
+- **`numpy` capped at `>=1.26,<2.5`** (CL-118) — a deliberate, project-lead-blessed
+  exception to "never cap a runtime dependency": numpy 2.5's PEP-695 generic
+  stubs are unparseable by mypy at our `python_version = "3.10"` floor. It is a
+  type-checking constraint, not a runtime one; lift it when the floor moves.
+
+### Changed — Wave 1 (`synthetic_bank` 2.0)
+
 - **BREAKING — `synthetic_bank` 2.0 migration** (Phase 1.5 Wave 1; egm-contracts
   v0.6.0 + egm-data v0.6.0). Generation parameters move out of flat per-trace
   columns into typed, `type`-discriminated objects stored **once per simulation**

@@ -48,7 +48,7 @@ label_policy:
   fibrotic_name: fibrotic
 
 run:
-  trace_duration_ms: 200.0                 # captures one full activation
+  trace_duration_ms: 192.0                 # 192 = 3x64; T must be a multiple of 64 (MobileViT)
   output_fs_hz: 1000.0                     # matches IAFDB so synthetic + real are length-comparable
   ap_time_unit_ms: 1.97                    # AP non-dimensional time → ms (calibrated 2026-06-10)
   capture_oversample: 4                    # backend captures at 4× output rate; runner downsamples

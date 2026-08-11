@@ -49,7 +49,7 @@ label_policy:
   fibrotic_name: fibrotic
 
 run:
-  trace_duration_ms: 200.0
+  trace_duration_ms: 192.0
   output_fs_hz: 1000.0
   ap_time_unit_ms: 1.97
   capture_oversample: 4

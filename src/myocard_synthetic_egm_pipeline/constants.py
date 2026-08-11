@@ -35,8 +35,17 @@ helper that plumbs the ratio through to Finitewave's diffusion tensor.
 # Time-domain output defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_TRACE_DURATION_MS: float = 200.0
-"""Per-trace duration after downsampling (ms). Captures one full activation."""
+DEFAULT_TRACE_DURATION_MS: float = 192.0
+"""Per-trace duration after downsampling (ms). Captures one full activation.
+
+**192, not 200** (CL-112, design §8.1). At :data:`DEFAULT_OUTPUT_FS_HZ` this is
+T = 192 samples, and T must be a multiple of 64: egm-classifier's 1D MobileViT
+downsamples by 2 six times, so a length off that grid does not merely degrade
+the model — it fails outright at the first ragged stage. 200 is off the grid.
+
+192 is the largest multiple of 64 at or below the 200 ms this defaulted to, so
+the change costs 8 ms of capture and no activation morphology.
+"""
 
 DEFAULT_OUTPUT_FS_HZ: float = 1000.0
 """Per-trace sampling rate (Hz). Matches IAFDB so synthetic and real are

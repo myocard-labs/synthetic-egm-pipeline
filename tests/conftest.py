@@ -21,6 +21,7 @@ from myocard_egm_contracts._generated.python.noise_bank import Traces as NoiseTr
 from myocard_egm_data.banks import ClassifierBank, ClassifierBankMetaData, ClassifierTrace
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
+from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
 from myocard_synthetic_egm_pipeline.simulate import (
     CenteredGrid2D,
     DatasetConfig,
@@ -38,6 +39,13 @@ from myocard_synthetic_egm_pipeline.simulate.specs import Edge
 # ---------------------------------------------------------------------------
 # Simulation specs
 # ---------------------------------------------------------------------------
+
+
+#: Trace length used by every fixture below, in samples at 1 kHz. Tied to the
+#: shipped default so the suite exercises the value real runs use — a fixture
+#: on a different T would still pass while hiding a T-dependent defect, and
+#: would fall foul of the coming `T % 64 == 0` guard (S14).
+TRACE_SAMPLES: int = round(DEFAULT_TRACE_DURATION_MS)
 
 
 @pytest.fixture
@@ -201,7 +209,7 @@ def four_pair_simulation_result(
     four_pair_midpoints: npt.NDArray[np.float64],
 ) -> SimulationResult:
     """SimulationResult sized for the locality-aware label-policy tests."""
-    bipolar = np.random.default_rng(0).standard_normal((4, 200)).astype(np.float32)
+    bipolar = np.random.default_rng(0).standard_normal((4, TRACE_SAMPLES)).astype(np.float32)
     return _make_simulation_result(
         bipolar_traces=bipolar,
         fs_hz=1000.0,
@@ -217,11 +225,11 @@ def small_dataset_result(
     substrate_mask_with_patch: npt.NDArray[np.int8],
     four_pair_midpoints: npt.NDArray[np.float64],
 ) -> DatasetResult:
-    """3-sim DatasetResult, 4 pairs per sim, 200-sample traces at 1 kHz."""
+    """3-sim DatasetResult, 4 pairs per sim, 192-sample traces at 1 kHz."""
     rng = np.random.default_rng(0)
     results = [
         _make_simulation_result(
-            bipolar_traces=rng.standard_normal((4, 200)).astype(np.float32),
+            bipolar_traces=rng.standard_normal((4, TRACE_SAMPLES)).astype(np.float32),
             fs_hz=1000.0,
             midpoints=four_pair_midpoints,
             mask=substrate_mask_with_patch,
@@ -262,7 +270,7 @@ def small_dataset_config() -> DatasetConfig:
         geometry=Patch2DGeometry(size_mm=4.0, dr_mm=0.25),
         label_policy=GlobalDensityLabel(threshold=0.1),
         run_config=RunConfig(
-            trace_duration_ms=200.0,
+            trace_duration_ms=DEFAULT_TRACE_DURATION_MS,
             output_fs_hz=1000.0,
             ap_time_unit_ms=1.97,
         ),
@@ -281,7 +289,7 @@ _FIXTURE_BANK_ID = "tbank_synthetic_aliev_panfilov_2026-06-27"
 def small_classifier_bank() -> ClassifierBank:
     """A tiny ClassifierBank ready for mixer tests.
 
-    4 traces, all 200 samples at 1 kHz, two healthy + two fibrotic
+    4 traces, all 192 samples at 1 kHz, two healthy + two fibrotic
     labels. Per-trace metadata mirrors what the producer's builder
     stamps, so the mixer + the noise_mixed SyntheticBank builder both
     accept it.
@@ -295,7 +303,7 @@ def small_classifier_bank() -> ClassifierBank:
         traces.append(
             ClassifierTrace(
                 bank_id=_FIXTURE_BANK_ID,
-                signal=rng.standard_normal(200).astype(np.float32),
+                signal=rng.standard_normal(TRACE_SAMPLES).astype(np.float32),
                 freq_hz=1000.0,
                 amp_type="synthetic_au",
                 split=None,
@@ -406,7 +414,9 @@ class _MockBackend:
         config: Any,
         rng: np.random.Generator,
     ) -> RawSimulationResult:
-        n_capture = 200 * config.capture_oversample  # 200 ms at oversample x output_fs_hz
+        # Capture long enough for the runner to downsample to T; derived from
+        # the config rather than a literal so it tracks the trace duration.
+        n_capture = round(config.trace_duration_ms) * config.capture_oversample
         n_electrodes = electrodes.positions_mm.shape[0]
         unipolar = rng.standard_normal((n_capture, n_electrodes)).astype(np.float64)
         return RawSimulationResult(
