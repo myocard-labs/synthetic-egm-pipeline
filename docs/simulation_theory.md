@@ -15,8 +15,9 @@ The reading list at the bottom is annotated. Start with the three
 
 A single simulation goes through ten steps. Five live inside the
 backend; five are backend-agnostic and live in the runner / storage
-modules. **Note that the solver runs for longer than the trace it
-produces** — see *The four lengths* below.
+modules. Two things to read first: **the solver runs for longer than the trace
+it produces** (*The four lengths*), and **two coordinate systems meet in this
+pipeline** (*Coordinate systems*). Both have bitten us.
 
 ```
                     one simulation
@@ -145,7 +146,138 @@ trace is the leading `T` samples, and lengths 1 and 2 are the same number
 again — which is why the two were conflated for so long without anything
 breaking.
 
+
+## Coordinate systems — read this before anything below
+
+Every geometric quantity in this pipeline lives in one of **two** coordinate
+systems, and the pipeline crosses between them three times. Getting one of those
+crossings wrong cost two days and produced a bank of near-silent "healthy"
+traces that were read as physics for a week. This section exists so that never
+happens again.
+
+![The coordinate system](figures/coordinate_system.svg)
+
+### The array, and our physical map
+
+The tissue state is a numpy array of shape `(n_i, n_j)`. Our physical
+convention maps it **like an image**:
+
+$$
+x = j \cdot \mathrm{dr}, \qquad y = i \cdot \mathrm{dr}
+$$
+
+| | array | physical | increases toward |
+|---|---|---|---|
+| **axis-0** | `i` — rows | **y** | the bottom of the picture |
+| **axis-1** | `j` — columns | **x** | the right |
+
+Everything on our side follows from those two lines:
+
+- **`geometry.dr_mm`** is millimetres per cell — the only thing converting
+  between an index and a distance.
+- **Stimulus edges** are named in *index* terms: `top` is a thin strip at low
+  `i`, `bottom` at high `i`, `left` at low `j`, `right` at high `j`. So `top` and
+  `bottom` bound the **y** extent, `left` and `right` the **x** extent, exactly
+  as the names suggest for an image.
+- **`CenteredGrid2D`** places `n_rows × n_cols` electrodes and pairs
+  *within-row* consecutive ones, so **every bipolar pair separates along +x**,
+  and rows stack along +y. Confirmed directly: pair 0's separation vector is
+  `(2, 0, 0)` mm at 2 mm spacing.
+- **`fiber_angle_rad`** is measured from **+x**, so `0` means fibres along `x`
+  (i.e. along `j`) and `π/2` means along `y`.
+- **`positions_mm`** columns are `(x, y, z)`, with `z` the electrode standoff
+  above the plane rather than a third tissue axis — the mesh is 2D.
+
+### Finitewave's convention is the transpose
+
+Finitewave is internally consistent and **opposite to us**: throughout the
+package, *"x" means axis-0*. Verified in its source in three independent places:
+
+| Finitewave code | what it shows |
+|---|---|
+| `_compute_ecg_2d` | differences `coords[:, 0]` against `i` |
+| `compute_weights` | applies `d_xx` — built from `fibers[..., 0]` — to the `(i-1, j)` neighbour |
+| `StimVoltageCoord.stimulate` | slices `mesh[x1:x2, y1:y2]` |
+
+So Finitewave's "x" is our "y". Neither convention is wrong; they simply differ,
+and the boundary between them is where the bugs live.
+
+### The three crossings, and the rule
+
+![The boundary](figures/coordinate_boundary.svg)
+
+> **The rule: a value expressed in physical `x`/`y` must swap. A value that is
+> already an array index must not.**
+
+| crossing | physical or index? | action | where |
+|---|---|---|---|
+| electrode coordinates | physical `(x, y, z)` | **swap** | `egm_kernel_2d` pairs `x` with `j`, `y` with `i` |
+| fibre angle | physical, from `+x` | **swap** | `_build_tissue_2d`: `fibers[...,0] = sin θ`, `[...,1] = cos θ` |
+| stimulus edge | already an index | **none** | `_build_planar_edge_stimulus_2d` unchanged |
+
+The stimulus needed no fix, and the reason is worth internalising: it was never
+written in physical terms. `top` was always *"a strip at low `i`"*, so there was
+nothing to translate. **Naming a thing by its index rather than its axis is what
+made it immune.**
+
+### What getting it wrong looked like
+
+Both swaps were originally missing, and the failure was not a crash or a subtly
+wrong number — it was a plausible-looking result that survived a week of
+analysis.
+
+**Electrodes.** Passing `positions_mm / dr` straight through reflected the whole
+electrode grid across the diagonal. The mesh, substrate and stimulus were
+untouched; only the measurement points moved. Since the pairs separate along
+`x`, the transposed grid laid them along `i`, and a `left` stimulus — propagating
+along `j` — ran **perpendicular to every pair**. A bipolar trace is a difference
+of two nearby unipolar potentials, so its amplitude scales with
+$\vec{d}_{AB} \cdot \hat{n}$: perpendicular means both poles sit on the same
+wavefront, fire together, and the **near field cancels**.
+
+Measured on a clean 40 mm patch, changing only the stimulus edge:
+
+| stimulus | relative to the pairs | median peak-to-peak |
+|---|---|---|
+| `left` | along | **1.08e-01** |
+| `top` | across | 1.34e-06 |
+
+Five orders of magnitude, from propagation direction alone. Before the fix those
+two numbers were the other way round.
+
+The consequence for reading traces, which generalises beyond this bug: **a
+near-flat bipolar trace can mean the wavefront is perpendicular to the pair, not
+that the tissue is quiet.** An earlier round of analysis read exactly that
+signal as "a planar wave over uniform tissue is degenerate" and concluded the
+healthy class was physically meaningless — a conclusion that was withdrawn once
+the orientation was corrected.
+
+**Fibres.** `fibers[..., 0]` feeds `d_xx`, which acts along axis-0 — our `y`. So
+writing `fibers[...,0] = cos(θ)` put `fiber_angle_rad = 0` along `+y` while the
+spec docstring and every config comment said `+x`. With `anisotropy_ratio = 3`
+the along-fibre direction conducts $\sqrt{3}$ faster, so this did not merely
+mislabel an axis — **it put the fast conduction axis 90° from the intended one**,
+which then corrupted any conduction-velocity measurement taken along it.
+
+### How this is defended now
+
+Three tests in `tests/test_egm_kernel.py`, each aimed at a different way of
+getting it wrong:
+
+- a wave **along** the pairs must beat a wave **across** them by >10×;
+- healthy density-0 tissue must produce a real activation, not a cancelled blob;
+- a wave along the fibres must clear the mesh sooner than one across them.
+
+Plus an exactness check that our kernel given `(x, y, z)` equals the stock
+kernel given `(y, x, z)` — pinning the change as *precisely* a transpose, on a
+deliberately non-square mesh so an `i`/`j` mix-up cannot hide behind symmetry.
+
 ## Step 1 — Tissue + substrate setup
+
+> **Axis note.** `fiber_angle_rad` is measured from **+x**, but Finitewave
+> stores fibre component 0 against axis-0 (our `y`), so `_build_tissue_2d`
+> writes `sin θ` into component 0 and `cos θ` into component 1. See
+> *Coordinate systems*.
 
 **What the code does.** ``FinitewaveBackend`` reads the
 ``Patch2DGeometry`` spec (40 mm square at 0.25 mm spacing → 160×160 mesh
@@ -222,6 +354,10 @@ density without re-running the simulation.
   3:1 default.
 
 ## Step 2 — Activation source
+
+> **Axis note.** The edge names are defined in *index* terms — `top` is a strip
+> at low `i`, `left` at low `j` — which is why they needed no correction when the
+> electrode and fibre conventions were fixed. See *Coordinate systems*.
 
 **What the code does.** ``PlanarEdgeStimulus(edge)`` is a thin strip
 of voltage applied to a chosen edge of the mesh at ``t=0``. The strip
@@ -368,6 +504,11 @@ coordinates. Two things to notice about the V_m field:
   ionic models.
 
 ## Step 4 — V_m → φ_e capture at electrode positions
+
+> **Axis note.** This is where electrode coordinates cross into Finitewave, and
+> where they were transposed for the whole of Wave 1. Our `(x, y, z)` pairs `x`
+> with `j` and `y` with `i`; Finitewave's kernel pairs column 0 with `i`. See
+> *Coordinate systems* for what that cost and how it is defended now.
 
 **What the code does.** Finitewave's ``ECG2DTracker`` is instantiated
 with the ``ElectrodePlacement``'s electrode coordinates (in mesh-index
@@ -525,6 +666,11 @@ electrode positions). Three properties of φ_e to keep in mind:
   notation is unfamiliar.
 
 ## Step 6 — Bipolar pairing
+
+> **Axis note.** `CenteredGrid2D` separates each pair along **+x**, so bipolar
+> amplitude depends on whether the wavefront travels along `x` (large biphasic)
+> or along `y` (near-cancelled). A flat trace is not evidence of quiet tissue.
+> See *Coordinate systems*.
 
 **What the code does.** ``pseudo_egm.bipolar_from_unipolar(phi_e,
 pairs)`` differences the unipolar φ_e traces between the two

@@ -413,6 +413,33 @@ references its origin entry alone. We do not concatenate in Phase 1.5.
 The general fix needs a real relationship field on the entry — a
 cross-repo change, deferred to Phase 2.
 
+## Coordinate conventions
+
+**One rule, and it is load-bearing.** The tissue array is `(n_i, n_j)`; our
+physical map is `x = j·dr` (axis-1) and `y = i·dr` (axis-0) — the array reads
+like an image. Finitewave's is the **transpose**: throughout that package, "x"
+means axis-0.
+
+So anything handed across the boundary **in physical `x`/`y` swaps**; anything
+already expressed as an array index does not.
+
+| crossing | swaps? | where |
+|---|---|---|
+| electrode `positions_mm` | **yes** | `backends/finitewave/egm_kernel.py` |
+| `fiber_angle_rad` | **yes** | `_build_tissue_2d` |
+| stimulus edge (`top`/`left`/…) | no | already index-space |
+
+The stimulus was immune because it was named by index (`top` = a strip at low
+`i`) rather than by axis. That is the design lesson: **name geometric things by
+the index they act on, not by the physical direction you have in mind**, and the
+translation error cannot be written.
+
+Both swaps were missing until S39, which produced near-silent bipolar traces
+that read as healthy tissue for a week — the pairs separate along `x`, so a
+transposed grid put every pair perpendicular to a `left` wavefront and the near
+field cancelled. Full derivation, figures and the measured before/after:
+`docs/simulation_theory.md` → *Coordinate systems*.
+
 ## Stable cross-artifact IDs
 
 Since v0.3.0 (egm-contracts v0.5.0 / egm-data v0.4.0) every bank the

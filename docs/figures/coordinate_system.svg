@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 520" font-family="DejaVu Sans, sans-serif" font-size="13">
+  <rect width="860" height="520" fill="#ffffff"/>
+  <text x="430" y="26" text-anchor="middle" font-size="17" font-weight="bold">The one coordinate system — everything in this repo, on one picture</text>
+  <text x="430" y="46" text-anchor="middle" font-size="12" fill="#555">array axis-0 = i = rows = y (down) · axis-1 = j = cols = x (right) · reads like an image</text>
+
+  <!-- mesh -->
+  <rect x="200" y="80" width="330" height="330" fill="#fbfbfb" stroke="#333" stroke-width="1.5"/>
+  <g stroke="#e6e6e6" stroke-width="1">
+    <line x1="200" y1="146" x2="530" y2="146"/><line x1="200" y1="212" x2="530" y2="212"/>
+    <line x1="200" y1="278" x2="530" y2="278"/><line x1="200" y1="344" x2="530" y2="344"/>
+    <line x1="266" y1="80" x2="266" y2="410"/><line x1="332" y1="80" x2="332" y2="410"/>
+    <line x1="398" y1="80" x2="398" y2="410"/><line x1="464" y1="80" x2="464" y2="410"/>
+  </g>
+
+  <!-- axes -->
+  <line x1="200" y1="66" x2="530" y2="66" stroke="#1a6b1a" stroke-width="2.5" marker-end="url(#g)"/>
+  <text x="540" y="70" fill="#1a6b1a" font-weight="bold">+x  = j  = axis-1</text>
+  <line x1="186" y1="80" x2="186" y2="410" stroke="#2b6cb0" stroke-width="2.5" marker-end="url(#b)"/>
+  <text x="120" y="250" fill="#2b6cb0" font-weight="bold" transform="rotate(-90 120 250)">+y  = i  = axis-0</text>
+  <text x="196" y="76" font-size="11" fill="#666">(0,0)</text>
+
+  <!-- stimulus edges -->
+  <rect x="200" y="80" width="330" height="16" fill="#c1272d" opacity="0.55"/>
+  <text x="365" y="92" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold">top — low i (low y)</text>
+  <rect x="200" y="394" width="330" height="16" fill="#c1272d" opacity="0.25"/>
+  <text x="365" y="406" text-anchor="middle" font-size="11" font-weight="bold">bottom — high i</text>
+  <rect x="200" y="80" width="16" height="330" fill="#b35c00" opacity="0.55"/>
+  <text x="208" y="250" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold" transform="rotate(-90 208 250)">left — low j (low x)</text>
+  <rect x="514" y="80" width="16" height="330" fill="#b35c00" opacity="0.25"/>
+  <text x="522" y="250" text-anchor="middle" font-size="11" font-weight="bold" transform="rotate(-90 522 250)">right — high j</text>
+
+  <!-- electrode grid: pairs along x -->
+  <g fill="#2b6cb0">
+    <circle cx="299" cy="212" r="7"/><circle cx="365" cy="212" r="7"/><circle cx="431" cy="212" r="7"/>
+    <circle cx="299" cy="278" r="7"/><circle cx="365" cy="278" r="7"/><circle cx="431" cy="278" r="7"/>
+  </g>
+  <g stroke="#2b6cb0" stroke-width="2.5">
+    <line x1="299" y1="212" x2="365" y2="212"/><line x1="365" y1="212" x2="431" y2="212"/>
+    <line x1="299" y1="278" x2="365" y2="278"/><line x1="365" y1="278" x2="431" y2="278"/>
+  </g>
+  <text x="365" y="200" text-anchor="middle" font-size="11" fill="#2b6cb0" font-weight="bold">bipolar pairs separate along +x</text>
+  <text x="365" y="300" text-anchor="middle" font-size="11" fill="#2b6cb0">rows stack along +y</text>
+
+  <!-- fibre direction -->
+  <line x1="240" y1="360" x2="300" y2="360" stroke="#6b3fa0" stroke-width="3" marker-end="url(#p)"/>
+  <text x="308" y="364" font-size="11" fill="#6b3fa0" font-weight="bold">fiber_angle_rad = 0  →  along +x</text>
+
+  <!-- consequence box -->
+  <rect x="580" y="96" width="260" height="150" fill="#f4faf4" stroke="#1a6b1a"/>
+  <text x="710" y="118" text-anchor="middle" font-weight="bold" fill="#1a6b1a">left / right stimulus</text>
+  <text x="710" y="138" text-anchor="middle" font-size="12">propagates along ±x</text>
+  <text x="710" y="158" text-anchor="middle" font-size="12">= ALONG the pairs</text>
+  <text x="710" y="184" text-anchor="middle" font-size="12" font-weight="bold">poles fire in sequence</text>
+  <text x="710" y="206" text-anchor="middle" font-size="13" font-weight="bold" fill="#1a6b1a">large biphasic EGM</text>
+  <text x="710" y="230" text-anchor="middle" font-size="11" font-family="monospace">measured p2p 1.08e-01</text>
+
+  <rect x="580" y="262" width="260" height="150" fill="#fdf4f4" stroke="#c1272d"/>
+  <text x="710" y="284" text-anchor="middle" font-weight="bold" fill="#c1272d">top / bottom stimulus</text>
+  <text x="710" y="304" text-anchor="middle" font-size="12">propagates along ±y</text>
+  <text x="710" y="324" text-anchor="middle" font-size="12">= ACROSS the pairs</text>
+  <text x="710" y="350" text-anchor="middle" font-size="12" font-weight="bold">poles fire together</text>
+  <text x="710" y="372" text-anchor="middle" font-size="13" font-weight="bold" fill="#c1272d">near field cancels</text>
+  <text x="710" y="396" text-anchor="middle" font-size="11" font-family="monospace">measured p2p 1.34e-06</text>
+
+  <text x="430" y="450" text-anchor="middle" font-size="12">A near-flat bipolar trace can mean the wavefront is <tspan font-weight="bold">perpendicular to the pair</tspan>,</text>
+  <text x="430" y="470" text-anchor="middle" font-size="12">not that the tissue is quiet. Check the propagation direction before concluding anything.</text>
+  <text x="430" y="496" text-anchor="middle" font-size="11" fill="#666">Numbers measured on a clean 40 mm patch, density 0, 5x5 grid at 2 mm spacing.</text>
+
+  <defs>
+    <marker id="g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#1a6b1a"/></marker>
+    <marker id="b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#2b6cb0"/></marker>
+    <marker id="p" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#6b3fa0"/></marker>
+  </defs>
+</svg>

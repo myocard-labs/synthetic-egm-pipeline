@@ -2,7 +2,7 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 17/41 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 18/41 steps done — **Wave 1 complete; Wave 2 underway**
 **Next:** S37 (axis conventions) then S38 (CV recalibration + detection curve) — both block further
 bank generation; see their notes.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
@@ -580,7 +580,7 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   install its kernel would inherit upstream's and match every byte. Hence an explicit assertion that
   `_compute is egm_kernel_2d`, and a second that the traces are not two matching piles of zeros.
 
-### S39 — One axis convention across stimulus, electrodes and fibres (CL-169 + CL-170) ☐ (3–5 h)
+### S39 — One axis convention across stimulus, electrodes and fibres (CL-169 + CL-170) ✅ (3–5 h)
 - **Change:** fix the transpose *inside our kernel* — the repo holds **three** axis maps and they
   disagree. Ours is `x = j` (axis-1), `y = i` (axis-0), per `simulate/pseudo_egm.py` and the edge
   definitions in `specs.py`. Finitewave's kernel differences coordinate column 0 against axis-0, so
@@ -598,6 +598,24 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   a wave ∥ fibres is √3 ≈ 1.73x faster than ⊥ fibres, on the intended axis.
 - **Blocks:** S38 — CV must be measured on a correctly-identified axis.
 - **Depends on:** S37.
+- **Done 2026-08-12.** Confirmed from Finitewave's source that it is **internally consistent** and
+  simply opposite to us — "x" means axis-0 in `_compute_ecg_2d`, in `compute_weights` (`d_xx` acts on
+  the `(i-1, j)` neighbour), and in `StimVoltageCoord.stimulate` (`mesh[x1:x2, y1:y2]`). So two of our
+  three surfaces needed swapping and one did not.
+  **The stimulus was immune, and the reason generalises:** it was named by *index* (`top` = a strip at
+  low `i`) rather than by axis, so there was no physical `x`/`y` to mistranslate. That is now recorded
+  in `architecture.md` as a convention for future code — **name geometric things by the index they act
+  on**, and the error cannot be written.
+  **Measured before/after** on a clean 40 mm patch, changing only the stimulus edge: `left` (along the
+  pairs) went 1.35e-06 → **1.08e-01**, `top` (across) went 1.61e-01 → 1.34e-06. Exactly mirrored,
+  which retires CL-168's "planar waves over uniform tissue are degenerate" hypothesis outright.
+  **The fibre swap mattered more than a label:** `fibers[...,0]` acts on axis-0 = our `y`, so
+  `fiber_angle_rad = 0` ran fibres along `+y` while every doc said `+x`. At `anisotropy_ratio = 3`
+  that put the **fast conduction axis 90° from the intended one**, corrupting any CV measured along it.
+  **S37's byte-identity gate was sharpened, not deleted:** our kernel given `(x, y, z)` must equal the
+  stock kernel given `(y, x, z)` exactly, pinning the change as *precisely* a transpose. It moved to
+  the fast suite by calling both kernels directly, on a non-square mesh so an `i`/`j` mix-up cannot
+  hide behind symmetry.
 
 ### S40 — Restore the 1/r weighting (CL-166) ☐ (1–2 h)
 - **Change:** one `sqrt`. The stock kernel divides by `d`, the **squared** grid distance, giving an

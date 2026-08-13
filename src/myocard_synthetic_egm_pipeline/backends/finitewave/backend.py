@@ -150,10 +150,11 @@ class FinitewaveBackend(SimulationBackend):
         # whole V_m history (~504 MB per simulation at the production
         # geometry). Only the kernel arithmetic is ours.
         #
-        # NOTE: these coords are still in OUR (x, y, z) order, which the
-        # kernel differences against (i, j) — the transpose of our convention.
-        # That mismatch is deliberate at this step so the vendored kernel
-        # reproduces the stock tracker byte-for-byte; S39 fixes it.
+        # Coords go across in OUR (x, y, z) order and the kernel knows it:
+        # x indexes axis-1 (j), y indexes axis-0 (i). Upstream's kernel reads
+        # column 0 as i, which is the transpose — see egm_kernel for what that
+        # cost us. The convention is stated in the kernel rather than fixed by
+        # a silent column swap here.
         coords_grid = electrodes.positions_mm / geometry.dr_mm
         egm_tracker = EGMTracker(measure_coords=coords_grid)
         egm_tracker.step = capture_step
@@ -199,14 +200,37 @@ class FinitewaveBackend(SimulationBackend):
 
 
 def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
-    """Build a healthy 2D tissue patch with a uniform fiber field."""
+    """Build a healthy 2D tissue patch with a uniform fiber field.
+
+    **Fibre components are stored in Finitewave's axis order, not ours** (S39).
+    ``fibers[..., 0]`` feeds ``d_xx``, which ``compute_weights`` applies to the
+    ``(i-1, j)`` neighbour — so component 0 acts along mesh **axis-0**. Our
+    convention is ``x = j`` (axis-1), ``y = i`` (axis-0), and
+    ``fiber_angle_rad`` is documented as measured from **+x** (``specs.py``:
+    *"0 = along +x, π/2 = along +y"*).
+
+    So the components are crossed relative to the naive reading:
+
+    - our ``x`` (axis-1) is Finitewave's *y* -> ``fibers[..., 1] = cos(theta)``
+    - our ``y`` (axis-0) is Finitewave's *x* -> ``fibers[..., 0] = sin(theta)``
+
+    Written the other way round, ``fiber_angle_rad = 0`` ran the fibres along
+    our **+y** while every doc and config comment said ``+x``. That is the same
+    root cause as the electrode transpose (CL-169/CL-170): Finitewave uses
+    "x" for axis-0 throughout, and we use it for axis-1, so every physical
+    ``(x, y)`` handed across the boundary has to swap.
+
+    Because ``anisotropy_ratio = 3`` makes the along-fibre axis conduct
+    ``sqrt(3)`` faster, getting this backwards did not merely mislabel an axis —
+    it put the fast axis at 90 degrees to the intended one.
+    """
     import math
 
     tissue = fw.CardiacTissue2D(shape=geometry.shape)
     n_i, n_j = tissue.mesh.shape
     fibers = np.zeros((n_i, n_j, 2), dtype=np.float64)
-    fibers[:, :, 0] = math.cos(geometry.fiber_angle_rad)
-    fibers[:, :, 1] = math.sin(geometry.fiber_angle_rad)
+    fibers[:, :, 0] = math.sin(geometry.fiber_angle_rad)  # axis-0 = our y
+    fibers[:, :, 1] = math.cos(geometry.fiber_angle_rad)  # axis-1 = our x
     tissue.fibers = fibers
     return tissue
 

@@ -82,6 +82,25 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Fixed
 
+- **Electrode coordinates and fibre orientation were transposed (CL-169 + CL-170).**
+  Finitewave uses "x" for mesh axis-0 throughout; we use it for axis-1. Anything
+  handed across that boundary in physical `x`/`y` had to swap, and neither did.
+  **Electrodes** — the grid was reflected across the diagonal. Since bipolar
+  pairs separate along `x`, that left every pair *perpendicular* to a `left`
+  wavefront, so the near field cancelled and healthy tissue read as silent. On a
+  clean 40 mm patch, changing only the stimulus edge: `left` 1.35e-06 →
+  **1.08e-01**, `top` 1.61e-01 → 1.34e-06 — exactly mirrored.
+  **Fibres** — `fibers[...,0]` acts along axis-0, so `fiber_angle_rad = 0` ran
+  fibres along `+y` while the spec and every config said `+x`. At
+  `anisotropy_ratio = 3` this put the fast conduction axis 90° from the intended
+  one, which corrupts any conduction-velocity measurement taken along it.
+  **Stimulus edges were already correct** and are unchanged: they are named by
+  index (`top` = a strip at low `i`), so there was no physical direction to
+  mistranslate.
+  This retires the earlier reading that a planar wave over uniform tissue is
+  degenerate and that the healthy class was physically meaningless — that was
+  the transpose, not physics.
+
 - **A clean intermediate is now joinable (CL-143 + B13).** In an inline-mix run
   the clean ClassifierBank named the *mixed* run's `synthetic_bank` under an id
   derived from its own, so the id matched no artifact and egm-data's
