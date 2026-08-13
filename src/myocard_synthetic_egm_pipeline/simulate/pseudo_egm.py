@@ -62,6 +62,7 @@ def compute_phi_e(
     *,
     electrode_positions_mm: npt.NDArray[np.float64],
     dr_mm: float,
+    conductivity: float = 1.0,
 ) -> npt.NDArray[np.float64]:
     """Compute per-electrode pseudo-EGM from a V_m history on a 2D grid.
 
@@ -139,6 +140,12 @@ def compute_phi_e(
         weight = 1.0 / r  # (n_i, n_j)
         # Sum over interior nodes for each capture step.
         phi_e[:, e_idx] = (lap * weight[np.newaxis, :, :]).sum(axis=(1, 2))
+
+    # The 1/(4 pi sigma_e) of the Plonsey / Gima-Rudy integral. A constant
+    # scale, so it changes no morphology and no classification — added (S40)
+    # only so this and the production kernel are directly comparable, which is
+    # the whole point of keeping this function around.
+    phi_e *= 1.0 / (4.0 * np.pi * conductivity)
 
     return phi_e
 

@@ -18,8 +18,8 @@ Two defects sit in the stock kernel's arithmetic, and both need fixing:
    That reflects the electrode grid across the diagonal, leaving every bipolar
    pair perpendicular to a ``left`` wavefront so the *near* field cancels;
 2. **a mixed weighting** — the source term is a Laplacian (the diffusion
-   increment) but the weight is ``1/r²``, which belongs to the gradient
-   formulation. One term from each of two equivalent forms.
+   increment) but the weight was ``1/r²``, which belongs to the gradient
+   formulation. One term from each of two equivalent forms. Fixed in S40.
 
 Defect 1 is **ours**: upstream's API means ``[i, j, z]`` and we hand it
 ``[x, y, z]``. Defect 2 is upstream's, and they have already fixed it on the
@@ -81,7 +81,13 @@ from numba import njit, prange
 
 @njit(parallel=True)
 def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracker
-    u_tr: Any, u: Any, coords: Any, dr: float, indexes: Any
+    u_tr: Any,
+    u: Any,
+    coords: Any,
+    dr: float,
+    indexes: Any,
+    distance_power: float = 1.0,
+    conductivity: float = 1.0,
 ) -> Any:
     """Pseudo-EGM at each measurement point, for a 2D mesh.
 
@@ -93,10 +99,20 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
     so the **near** field cancelled. That is the ``1.35e-6`` "dead healthy
     tissue" artifact.
 
-    One quirk still remains, deliberately, and is corrected in S40: ``d`` holds
-    the **squared** grid distance and the accumulator divides by ``d`` rather
-    than ``sqrt(d)``, giving ``1/r²`` where the Laplacian source term calls for
-    ``1/r``. There is also no ``1/(4·pi·sigma_e)`` prefactor yet.
+    **The weighting is ``1/r``** (S40), matching the Laplacian source term:
+
+    .. math::
+        \\phi_e = \frac{1}{4 \\pi \\sigma_e}
+                 \\sum_{\text{myo}} \frac{\nabla \\cdot (D \nabla V_m)}{r}
+
+    Upstream 0.9.3 divided by ``d`` — the **squared** grid distance — never
+    taking a square root, which is an inverse-square weight. That is not wrong
+    in general: ``1/r²`` is correct when paired with the *gradient* form
+    :math:`\\int \nabla V_m \\cdot \nabla(1/r)`, which is what openCARP uses.
+    It is wrong *here*, because our source term is the **Laplacian**. Upstream
+    reached the same conclusion independently — their unreleased ``solvers``
+    branch restores the ``sqrt`` and defaults ``distance_power`` to 1 — and
+    their own class docstring said *"the inverse of the distance"* all along.
 
     Parameters
     ----------
@@ -105,23 +121,39 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
         diffusion increment, i.e. the Laplacian source term.
     coords
         ``(n_points, 3)`` measurement points as ``(x, y, z)`` **in grid-index
-        units**, so the caller has already divided physical millimetres by
-        ``dr``. ``z`` is the electrode standoff above the plane.
+        units** — the caller divides physical millimetres by ``dr``, and that
+        includes ``z``, the electrode standoff. Mixing units here is the exact
+        class of error this module exists to document, so: **every component of
+        ``coords`` is in cells, not millimetres.**
     dr
-        Grid spacing in mm per cell. Converts grid distance to physical.
+        Grid spacing in mm per cell. Converts grid distance to physical, which
+        is why it appears to the **first** power — the divisor is
+        ``r_grid**power * dr``, and only ``power = 1`` makes that a physical
+        distance.
     indexes
         Flat indices of myocardium nodes; the sum runs over these only.
+    distance_power
+        Exponent on the distance. **1.0 is the correct value** and the default.
+        Exposed only so the pre-fix ``1/r²`` banks stay reproducible for
+        comparison when everything is regenerated — deliberately *not* a config
+        field, because it is a debugging knob rather than a generation mode.
+    conductivity
+        Extracellular conductivity :math:`\\sigma_e` in the ``1/(4 pi sigma_e)``
+        prefactor. A constant scale, so it changes no morphology and no
+        classification, but it makes the output comparable with anything else
+        computing a pseudo-EGM.
     """
     n_j = u.shape[1]
     n_c = coords.shape[0]
     egm = np.zeros(n_c)
+    prefactor = 1.0 / (4.0 * np.pi * conductivity)
 
     for c in range(n_c):
         # Our (x, y) -> mesh (j, i). The pairing below is the whole of the
         # S39 fix; upstream had x against i and y against j.
         x = coords[c, 0]  # along axis-1 (j)
         y = coords[c, 1]  # along axis-0 (i)
-        z = coords[c, 2]  # height above the plane
+        z = coords[c, 2]  # standoff, also in cells
         acc = 0.0
 
         for ind in prange(len(indexes)):  # type: ignore[no-untyped-call, attr-defined]
@@ -129,11 +161,15 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
             i = ii // n_j
             j = ii % n_j
 
-            d = (y - i) * (y - i) + (x - j) * (x - j) + z * z
-            if d > 0.0:
-                acc += (u_tr[i, j] - u[i, j]) / (d * dr)
+            # Squared grid distance -> grid distance -> physical distance.
+            # The sqrt is the S40 fix; upstream divided by d_squared * dr,
+            # which is dimensionally consistent with neither pure formulation.
+            d_squared = (y - i) * (y - i) + (x - j) * (x - j) + z * z
+            if d_squared > 0.0:
+                r_phys = np.sqrt(d_squared) ** distance_power * dr
+                acc += (u_tr[i, j] - u[i, j]) / r_phys
 
-        egm[c] = acc
+        egm[c] = prefactor * acc
 
     return egm
 
@@ -156,6 +192,21 @@ class EGMTracker(fw.ECGTracker):  # type: ignore[misc]
     up on the unfixed arithmetic without anyone noticing.
     """
 
+    #: The kernel this tracker installs. Named so tests can assert on it
+    #: without depending on the closure built in :meth:`initialize`.
+    kernel = staticmethod(egm_kernel_2d)
+
+    def __init__(
+        self,
+        measure_coords: Any = None,
+        *,
+        distance_power: float = 1.0,
+        conductivity: float = 1.0,
+    ) -> None:
+        super().__init__(measure_coords=measure_coords)
+        self.distance_power = distance_power
+        self.conductivity = conductivity
+
     def initialize(self, model: Any) -> None:
         super().initialize(model)
         if model.u.ndim != 2:
@@ -164,7 +215,19 @@ class EGMTracker(fw.ECGTracker):  # type: ignore[misc]
                 "A 3D kernel needs the same axis and weighting review this one had — "
                 "see investigations/pseudo_egm_axes_and_weighting.md."
             )
-        self._compute = egm_kernel_2d
+
+        # Bind the two physics parameters into a closure rather than overriding
+        # `calc_ecg`. Upstream's `calc_ecg` invokes `self._compute` with a fixed
+        # five-argument signature, and overriding it would mean copying the
+        # diffusion-kernel call — real logic we have no reason to own. The extra
+        # Python frame costs one call per *capture step*, not per node.
+        power = float(self.distance_power)
+        cond = float(self.conductivity)
+
+        def compute(u_tr: Any, u: Any, coords: Any, dr: float, indexes: Any) -> Any:
+            return egm_kernel_2d(u_tr, u, coords, dr, indexes, power, cond)
+
+        self._compute = compute
 
 
 __all__ = ["EGMTracker", "egm_kernel_2d"]
