@@ -144,6 +144,41 @@ decide the figure set alongside the intracardiac-papers work.
 > egm-studio + egm-classifier figure needs. Recipes live in intracardiac-papers; the figure
 > CLI (`egm-studio-render`) ships in egm-studio; only the producer-side pickling lives here.
 
+### Gradient-form pseudo-EGM kernel — *trigger: boundary artifacts*
+
+**Do not build this speculatively.** The gradient form
+$\phi_e \propto \int \nabla V_m \cdot \nabla(1/r)\,dV$ and the Laplacian form we ship
+$\phi_e \propto \int \nabla^2 V_m \cdot (1/r)\,dV$ are **mathematically equivalent** — related by
+integration by parts — so a second implementation buys a *validation* capability, not a modelling
+one. `simulate/pseudo_egm.compute_phi_e` already provides independent validation of the same form
+more cheaply.
+
+**Build it when** we see evidence of **boundary artifacts** in generated traces. The equivalence
+drops a surface term that is not zero on a finite mesh with zero-flux edges, so the two forms diverge
+*near the mesh edge specifically*. A disagreement between them is therefore a direct diagnostic for
+boundary contamination. Concrete triggers:
+
+- traces from electrodes near the patch edge behaving differently from centred ones in a way geometry
+  does not explain;
+- a suspected far-boundary wave-extinction artifact (CL-166 raised this as a candidate source of the
+  synchronous whole-mesh events the detector was locking onto);
+- wanting to cross-validate against **openCARP**, which uses the gradient form — matching the
+  formulation removes one difference from the comparison.
+
+**Costs to weigh at that point.** The Laplacian source is *free* — the diffusion increment is already
+computed every solver step, which is why both Finitewave and our kernel use it. A gradient form needs
+$\nabla V_m$ computed separately over the whole mesh at every capture step. It also has to carry the
+**anisotropy tensor** correctly: the true source is $\nabla \cdot (\sigma_i \nabla V_m)$ with
+$\sigma_i$ a tensor, and at `anisotropy_ratio = 3` that is not optional. The diffusion increment
+already includes it; a hand-rolled gradient form would have to reintroduce it.
+
+**Design note:** the S37 kernel deliberately separates the *source term* from the *weighting*, so a
+second form can be added without restructuring. `distance_power` is exposed for the same reason —
+it reproduces the pre-fix $1/r^2$ banks for comparison without needing a new formulation.
+
+**Refs:** `intracardiac-platform/project/investigations/pseudo_egm_axes_and_weighting.md` §3.1, §5 ·
+CL-166 · CL-169.
+
 ### `DistanceToNearestFibroticLabel` — regression target
 
 Minimum distance from the pair's midpoint to a fibrotic node; a continuous regression

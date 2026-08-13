@@ -28,6 +28,25 @@ For the case where a backend already provides per-electrode φ_e (e.g.
 Finitewave's ``ECG2DTracker.output``), the runner can skip
 :func:`compute_phi_e` entirely and pass the tracker output straight to
 :func:`bipolar_from_unipolar` + :func:`downsample`.
+
+Which of these three the pipeline actually calls
+------------------------------------------------
+Worth stating, because the answer surprised us: **two of the three.**
+
+- :func:`bipolar_from_unipolar` — production, Step 6 of the runner;
+- :func:`downsample` — production, Step 7;
+- :func:`compute_phi_e` — **not** production. Every bank this repo has written
+  came from the Finitewave-side tracker (now
+  :mod:`~myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel`), never
+  from here.
+
+That gap is how two kernels came to disagree on the physics unnoticed: this one
+was thoroughly unit-tested and irrelevant, while the one that produced the data
+was untested and authoritative. From S40 :func:`compute_phi_e` is promoted to
+the **numerical reference** the production kernel is checked against — but only
+on isotropic, unmasked tissue, because the Laplacian here is a plain 5-point
+stencil while the production path uses Finitewave's anisotropic, myocardium-
+masked diffusion kernel. See ``project/phase_1_5_plan.md`` S40.
 """
 
 from __future__ import annotations

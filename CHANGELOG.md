@@ -8,6 +8,22 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Added
 
+- **Our own pseudo-EGM kernel** (`backends/finitewave/egm_kernel.py`), replacing
+  Finitewave's `ECG2DTracker` in the production path. **`egm`, not `ecg`** — this
+  computes the extracellular potential at *intracardiac* electrode positions,
+  which is an electrogram; upstream's surface-lead naming framed a two-day
+  investigation around the wrong mental model.
+  **No physics changes here.** The kernel reproduces stock 0.9.3 exactly — same
+  `1/r²`, same axis handling, same absent prefactor — and generated banks are
+  byte-identical. It exists so the two arithmetic defects it enables fixing (an
+  electrode-coordinate transpose, and a `1/r²` weight paired with a Laplacian
+  source) can each land as their own attributable change.
+  Vendoring rather than the alternatives: upstream's fix is on an unreleased
+  branch that restructures the package around a numba/jax/mlx abstraction, and
+  computing φ_e ourselves would mean holding the whole V_m history — roughly
+  504 MB per simulation at the production geometry, which is why the streaming
+  tracker was chosen originally.
+
 - **Controlled-position cropping, part 2: the crop itself (SEP2 + SEP10).** Each
   bipolar trace is now cut to a `T`-sample window with its **detected**
   activation at a position sampled per window, and the realized position is

@@ -1,4 +1,4 @@
-"""FinitewaveBackend — Aliev-Panfilov 2D solver + ECG2DTracker forward calc.
+"""FinitewaveBackend — Aliev-Panfilov 2D solver + our EGM tracker forward calc.
 
 This file is the only place in the repo that imports ``finitewave``
 (Guardrail 1 in ``project/architecture.md``). It translates the four
@@ -12,9 +12,10 @@ public strategy specs into Finitewave's native API:
   → :class:`finitewave.StimVoltageCoord2D` wrapped in a
   :class:`finitewave.StimSequence`
 - :class:`~myocard_synthetic_egm_pipeline.simulate.specs.CenteredGrid2D`
-  → :class:`finitewave.ECG2DTracker` (which computes the same Okenov
-  pseudo-EGM formula our :mod:`pseudo_egm` helper would, but does it
-  in C-extension code during the AP integration)
+  → :class:`~myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel.EGMTracker`,
+  our subclass of Finitewave's tracker. It streams the pseudo-EGM during
+  the AP integration, as the stock tracker does, but computes it with a
+  kernel we own — see that module for why vendoring was necessary.
 
 Each translation lives in a private ``_apply_*`` helper. The public
 :meth:`FinitewaveBackend.simulate` method wires them together, runs
@@ -41,6 +42,7 @@ import numpy as np
 import numpy.typing as npt
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
+from myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel import EGMTracker
 from myocard_synthetic_egm_pipeline.simulate.result import RawSimulationResult
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     ActivationSource,
@@ -127,7 +129,7 @@ class FinitewaveBackend(SimulationBackend):
         # --- 4. Install activation ------------------------------------------
         _install_activation_2d(model=model, source=activation, tissue=tissue)
 
-        # --- 5. Set t_max and install the ECG2DTracker ----------------------
+        # --- 5. Set t_max and install the EGM tracker -----------------------
         # The capture, not the trace: with cropping configured the solver must
         # run past the end of the trace so a window placed around the
         # activation has signal behind it (see simulate.sizing).
@@ -141,16 +143,22 @@ class FinitewaveBackend(SimulationBackend):
             ap_time_unit_ms=config.ap_time_unit_ms,
         )
 
-        # ECG2DTracker takes electrode positions in mesh-index units
-        # (coord_grid = coord_mm / dr_mm). The tracker computes the
-        # same Okenov/Plonsey pseudo-EGM formula our compute_phi_e
-        # implements; we use the built-in because it runs in C while
-        # the solver iterates rather than over a captured V_m field.
+        # The tracker takes electrode positions in mesh-index units
+        # (coords_grid = coord_mm / dr_mm). We subclass Finitewave's rather
+        # than replacing it wholesale: streaming during the solve is why it
+        # was chosen, and computing phi_e ourselves would mean holding the
+        # whole V_m history (~504 MB per simulation at the production
+        # geometry). Only the kernel arithmetic is ours.
+        #
+        # NOTE: these coords are still in OUR (x, y, z) order, which the
+        # kernel differences against (i, j) — the transpose of our convention.
+        # That mismatch is deliberate at this step so the vendored kernel
+        # reproduces the stock tracker byte-for-byte; S39 fixes it.
         coords_grid = electrodes.positions_mm / geometry.dr_mm
-        ecg_tracker = fw.ECG2DTracker(measure_coords=coords_grid)
-        ecg_tracker.step = capture_step
+        egm_tracker = EGMTracker(measure_coords=coords_grid)
+        egm_tracker.step = capture_step
         tracker_seq = fw.TrackerSequence()
-        tracker_seq.add_tracker(ecg_tracker)
+        tracker_seq.add_tracker(egm_tracker)
         model.tracker_sequence = tracker_seq
 
         # --- 6. Run ---------------------------------------------------------
@@ -158,7 +166,7 @@ class FinitewaveBackend(SimulationBackend):
 
         # --- 7. Collect unipolar traces ------------------------------------
         # tracker.output shape: (n_capture, n_electrodes).
-        unipolar = np.asarray(ecg_tracker.output, dtype=np.float64)
+        unipolar = np.asarray(egm_tracker.output, dtype=np.float64)
 
         # --- 8. Assemble result --------------------------------------------
         backend_metadata: dict[str, Any] = {

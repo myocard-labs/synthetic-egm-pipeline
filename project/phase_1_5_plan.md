@@ -2,7 +2,7 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 16/39 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 17/41 steps done — **Wave 1 complete; Wave 2 underway**
 **Next:** S37 (axis conventions) then S38 (CV recalibration + detection curve) — both block further
 bank generation; see their notes.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
@@ -32,7 +32,8 @@ execution order**, matching the Steps section below.
 | SEP3 | 2 | Absolute noise floor in the mixer (today's SNR is purely relative) | S (2) | 3–6 h | S32 |
 | SEP6 | 2 | Multi-edge `planar_edge` activation variant | S (2) | 3–6 h | S33 |
 | SEP7 | 2 | `point` + `s1s2` activation variants | M (3) | 6–11 h | S34–S35 |
-| CL-169/170 · CL-166/167 | 2 | **Simulator correctness** — one axis convention across stimulus / electrodes / fibres; CV recalibration; one detection curve. *Local steps, not §3 issues.* | M (3) | 6–10 h | S37–S38 |
+| CL-169/170 · CL-166 | 2 | **Pseudo-EGM correctness** — vendor our own EGM kernel, fix the axis transpose, restore `1/r`. *Local steps, not §3 issues.* | M (3) | 6–11 h | S37 · S39–S40 |
+| CL-166/167 | 2 | **CV recalibration + one detection curve.** *Local step.* | S (2) | 3–5 h | S38 |
 | *(phase exit)* | — | **examples/ config-set rework** · roadmap trim · CHANGELOG · architecture.md reconciliation | — | 2–4 h | S36 |
 
 **Cross-repo prerequisites — all met (checked 2026-08-11).** Wave 1 is done here (SEP12 shipped).
@@ -547,29 +548,93 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   falls into, and a varied range has no natural bounds to assume — so both arms
   name their range, and `examples/synthegm_v1_anchored.yaml` is the fixed one.
 
-### S37 — One axis convention across stimulus, electrodes and fibres (CL-169 + CL-170) ☐ (3–5 h)
-- **Discovered mid-wave 2026-08-12**, so it takes the next free number and sits where it happens
-  (the iafdb pattern). **Local step — deliberately not raised to a §3 phase issue** (Daniel): the
-  design doc does not need the churn.
-- **Change:** the repo holds **three** axis maps and they disagree. Ours is `x = j` (axis-1),
-  `y = i` (axis-0) — `simulate/pseudo_egm.py` L102–106 and the edge definitions in `specs.py`.
-  Finitewave's `ECG2DTracker._compute_ecg_2d` reads coordinate column 0 as axis-0, i.e. the
-  **transpose**, so feeding it `positions_mm / dr` reflects the electrode grid across the diagonal.
-  Every pair ends up **perpendicular** to a `left` wavefront, both poles fire together, and the
-  **near** field cancels — the `1.35e-6` "dead healthy tissue" blob.
-  Fix by passing the tracker coordinates in *its* order (swap the x/y columns). Keep the tracker
-  rather than switching to our own `compute_phi_e`: the tracker runs in C alongside the solver
-  instead of over a captured V_m field, which is why it was chosen, and the transpose is a caller
-  bug not a tracker bug. Then audit the **fibre tensor** the same way (`_build_tissue_2d` L199–202
-  sets `fibers[...,0] = cos θ`): if component 0 is axis-0, `fiber_angle_rad = 0` runs fibres along
-  our `y`, not the `x` a reader assumes — the same root cause on a third surface.
+### S37 — Our own EGM kernel, numerically identical to the stock tracker (CL-169) ✅ (2–4 h)
+- **Discovered mid-wave 2026-08-12**, so it takes the next free number and sits where it happens.
+  **Local step — not raised to a §3 phase issue** (Daniel).
+- **Change:** subclass Finitewave's `ECG2DTracker` and override `calc_ecg` with our own `njit`
+  kernel in a new `backends/finitewave/egm_kernel.py`. **`egm`, not `ecg`** — the tracker computes
+  φ_e at intracardiac electrode positions, which is an *electrogram*; "ECG" is upstream's framing for
+  surface leads and it quietly misled this investigation for two days.
+  **This step changes no physics.** The kernel reproduces stock 0.9.3 exactly: same `1/r²`, same
+  axis handling, same everything. It exists to prove the plumbing before the physics moves.
+- **Why a separate step at all** — the two defects it enables fixing are each one line, so bundling
+  would be tempting. But the verification here is *"the banks are byte-identical"*, and that check
+  stops meaning anything the moment a real change rides along. Same argument as S17's `CellModelSpec`
+  refactor and the Wave-1 equivalence gate; both earned their keep.
+- **Why vendor rather than the alternatives** — upstream's `solvers` branch already fixes the
+  weighting, but it is unreleased (PyPI stops at 0.9.3) and restructures the package around a
+  numba/jax/mlx backend abstraction, so adopting it is a port, not a bump. Switching to our
+  `compute_phi_e` instead would need the whole V_m history in memory (~504 MB per simulation at the
+  production geometry) — which is exactly why the streaming tracker was chosen in the first place.
+- **Verify:** regenerate a bank with the vendored kernel and assert the signals are **byte-identical**
+  to one generated with the stock tracker. Nothing else.
+- **Depends on:** S13.
+- **Done 2026-08-12.** `EGMTracker` overrides **`initialize` only** — upstream's `calc_ecg`
+  dispatches through `self._compute`, so reassigning it there swaps the arithmetic while inheriting
+  the diffusion-kernel call, step scheduling and output accumulation. Overriding `calc_ecg` would
+  have meant copying real logic we have no reason to own. 3D **raises** rather than falling back to
+  upstream's kernel, which is how a future 3D geometry would otherwise end up on arithmetic that
+  never had this review.
+  **The byte-identity check needed two guards to mean anything.** Identical code trivially gives
+  identical output, so what it actually tests is the *plumbing*; a subclass that silently failed to
+  install its kernel would inherit upstream's and match every byte. Hence an explicit assertion that
+  `_compute is egm_kernel_2d`, and a second that the traces are not two matching piles of zeros.
+
+### S39 — One axis convention across stimulus, electrodes and fibres (CL-169 + CL-170) ☐ (3–5 h)
+- **Change:** fix the transpose *inside our kernel* — the repo holds **three** axis maps and they
+  disagree. Ours is `x = j` (axis-1), `y = i` (axis-0), per `simulate/pseudo_egm.py` and the edge
+  definitions in `specs.py`. Finitewave's kernel differences coordinate column 0 against axis-0, so
+  feeding it `positions_mm / dr` reflects the electrode grid across the diagonal. Every pair ends up
+  **perpendicular** to a `left` wavefront, both poles fire together, and the **near** field cancels —
+  the `1.35e-6` "dead healthy tissue" blob.
+  Then audit the **fibre tensor** the same way (`_build_tissue_2d` sets `fibers[...,0] = cos θ`): if
+  component 0 is axis-0, `fiber_angle_rad = 0` runs fibres along our `y`, not the `x` a reader
+  assumes — same root cause, third surface.
 - **Verify:** regression test — a plane wave launched **parallel** to a known pair gives a large
   biphasic deflection; **perpendicular** gives ≈ 0. That is textbook bipolar directional sensitivity
-  and it is the assertion that would have caught this. Plus: on a uniform density-0 patch the
-  healthy EGM shows a **real local activation**, and per-pair `activation_position` **spreads**
-  across the grid rather than clustering (CL-167's check that the pseudo-EGM is locally dominated).
-  Anisotropy check: a wave ∥ fibres is √3 ≈ 1.73x faster than ⊥ fibres, on the intended axis.
-- **Depends on:** S13. **Blocks S15** — its verification needs trustworthy traces.
+  and it is the assertion that would have caught this. Plus: on a uniform density-0 patch the healthy
+  EGM shows a **real local activation**, and per-pair `activation_position` **spreads** across the
+  grid rather than clustering (CL-167's check that the pseudo-EGM is locally dominated). Anisotropy:
+  a wave ∥ fibres is √3 ≈ 1.73x faster than ⊥ fibres, on the intended axis.
+- **Blocks:** S38 — CV must be measured on a correctly-identified axis.
+- **Depends on:** S37.
+
+### S40 — Restore the 1/r weighting (CL-166) ☐ (1–2 h)
+- **Change:** one `sqrt`. The stock kernel divides by `d`, the **squared** grid distance, giving an
+  effective `1/r²`; restoring `sqrt(d)` gives the `1/r` of the Laplacian form we compute the source
+  for. Expose `distance_power` (default 1) as upstream's branch does, so the pre-fix `1/r²` banks
+  remain reproducible for comparison — that is worth having when everything gets regenerated and the
+  question is "how much did this actually change?". Add the missing `1/(4πσ_e)` prefactor to both
+  this kernel and `compute_phi_e`; a constant scale, but it makes our output comparable with anything
+  else computing a pseudo-EGM.
+- **Why this is not a judgement call.** `1/r²` is correct when paired with the **gradient** ∇V_m,
+  which is what openCARP does. Our source term is the **Laplacian** (the diffusion increment), so it
+  pairs with `1/r`. Upstream's `solvers` branch reached the same conclusion independently — `sqrt`
+  restored, `distance_power` defaulting to 1 — and Finitewave's own class docstring said *"the
+  inverse of the distance"* all along.
+- **Verify — on isotropic clean tissue only** (Daniel, 2026-08-12, option 1 of three). The vendored
+  kernel and `compute_phi_e` agree numerically on the same V_m field, at `anisotropy_ratio = 1` and
+  `density = 0`. **This is the step where `compute_phi_e` stops being decorative**: it has been
+  unit-tested in isolation and never called in production, which is precisely how two kernels came to
+  disagree on the physics unnoticed.
+  **Why the tissue is constrained, and it is not a fudge.** The two compute *different Laplacians*:
+  `compute_phi_e` applies a plain isotropic 5-point stencil with no tissue mask, while our kernel
+  uses Finitewave's `diffusion_kernel(u_tr, u, model.weights, myo_indexes)` — the **anisotropic**
+  stencil, masked to myocardium. At production settings (ratio 3, density up to 0.6) they must
+  disagree, and a naive `allclose` would fail for entirely correct reasons.
+  Constraining the tissue keeps the cross-check pointed at what it is *for*: arithmetic errors in the
+  **weighting** and the **axes**, both of which are visible on the simplest possible tissue. The
+  anisotropy and the mask are the solver's business and are already covered by S37's byte-identity
+  gate against upstream.
+  **Rejected alternatives.** Teaching `compute_phi_e` the tensor and the mask would make it a true
+  production-settings reference, but the two implementations then converge toward each other and the
+  independence that makes the check worth having erodes. Retiring `compute_phi_e` gives up the
+  independent check entirely, and its non-Finitewave-backend justification — openCARP skipped,
+  TorchCor Phase 2+ — is distant rather than dead.
+  **The trap this avoids** is the one that created the situation: `compute_phi_e` was thoroughly
+  tested on inputs that never resembled production. Promoting it to a reference without stating what
+  it can and cannot reference would repeat exactly that.
+- **Depends on:** S39.
 
 ### S38 — CV recalibration + one detection curve across corpora (CL-166 + CL-167) ☐ (3–5 h)
 - **Discovered mid-wave 2026-08-12.** Local step, as S37.
@@ -587,7 +652,8 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   this needs a decision on which, not just a code change.
 - **Verify:** plane-wave sweep of `D` lands CV in the 50–100 cm/s band on the correct axis; APD
   unchanged from before the sweep; the solver stays stable; both corpora name the same curve.
-- **Depends on:** S37 (CV must be measured on a correctly-identified axis).
+- **Depends on:** S40 (CV must be measured on a correctly-identified axis, and after the
+  weighting settles — a `1/r` kernel changes what the detector sees).
 
 ### S15 — Crop per trace, record the realized position, anchoring flag (SEP2 + SEP10) ✅ (3–5 h)
 - **Change:** call the windower per bipolar trace. **Per trace, not per simulation** — the wave sweeps
