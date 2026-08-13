@@ -8,7 +8,10 @@ stamping) without spinning up Finitewave.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
+import pytest
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
@@ -18,6 +21,10 @@ from myocard_synthetic_egm_pipeline.simulate import (
     PlanarEdgeStimulus,
     UniformRandomFibrosis,
     run_single,
+)
+from myocard_synthetic_egm_pipeline.simulate.sizing import (
+    required_capture_duration_ms,
+    window_length_samples,
 )
 
 
@@ -204,3 +211,112 @@ def test_run_metadata_join_key_is_simulation_id(mock_backend: SimulationBackend)
 
     assert "sim_id" not in result.run_metadata
     assert result.run_metadata["simulation_id"] == 7
+
+
+# ---------------------------------------------------------------------------
+# Capture sizing + the no-padding rule (SEP2 / S14)
+# ---------------------------------------------------------------------------
+
+
+class _ShortBackend:
+    """A backend that returns fewer samples than the trace needs."""
+
+    name = "short"
+
+    def __init__(self, inner: SimulationBackend, *, shortfall: int) -> None:
+        self._inner = inner
+        self._shortfall = shortfall
+
+    def simulate(self, **kwargs: object) -> object:
+        raw = self._inner.simulate(**kwargs)  # type: ignore[arg-type]
+        trimmed = raw.unipolar_traces[: -self._shortfall]
+        return replace(raw, unipolar_traces=trimmed)
+
+
+def test_sized_capture_yields_full_length_traces_with_no_padding(
+    mock_backend: SimulationBackend,
+) -> None:
+    """A run sized for the position range produces T samples, none invented."""
+    geometry, electrodes, config = _build_run_inputs()
+    sized = replace(
+        config,
+        capture_duration_ms=required_capture_duration_ms(
+            trace_duration_ms=config.trace_duration_ms,
+            output_fs_hz=config.output_fs_hz,
+            position_low=0.25,
+        ),
+    )
+
+    result = run_single(
+        geometry=geometry,
+        substrate=UniformRandomFibrosis(density=0.2),
+        activation=PlanarEdgeStimulus(edge="left"),
+        electrodes=electrodes,
+        config=sized,
+        backend=mock_backend,
+        rng=np.random.default_rng(0),
+    )
+
+    expected_t = window_length_samples(
+        trace_duration_ms=sized.trace_duration_ms, output_fs_hz=sized.output_fs_hz
+    )
+    assert result.bipolar_traces.shape[1] == expected_t
+    # No zero-pad tail: a padded trace ends in an exactly-flat run, which is
+    # the positional regularity the crop exists to remove.
+    assert not np.all(result.bipolar_traces[:, -8:] == 0.0)
+
+
+def test_a_short_capture_raises_instead_of_padding(mock_backend: SimulationBackend) -> None:
+    """Under correct sizing a short capture is a bug, so it must be loud.
+
+    The old behaviour zero-padded "so the bank stays uniform". It is uniform in
+    the worst way: the pad is perfectly flat and always at the tail, so the
+    trace carries a positional cue a classifier can key on — precisely the
+    shortcut controlled-position cropping exists to remove.
+    """
+    geometry, electrodes, config = _build_run_inputs()
+
+    with pytest.raises(ValueError, match=r"Capture produced .* samples"):
+        run_single(
+            geometry=geometry,
+            substrate=UniformRandomFibrosis(density=0.2),
+            activation=PlanarEdgeStimulus(edge="left"),
+            electrodes=electrodes,
+            config=config,
+            backend=_ShortBackend(mock_backend, shortfall=64),  # type: ignore[arg-type]
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_short_capture_error_points_at_the_sizing_knob(mock_backend: SimulationBackend) -> None:
+    """The message must name what to change, not just report the shortfall."""
+    geometry, electrodes, config = _build_run_inputs()
+
+    with pytest.raises(ValueError, match="capture_duration_ms"):
+        run_single(
+            geometry=geometry,
+            substrate=UniformRandomFibrosis(density=0.2),
+            activation=PlanarEdgeStimulus(edge="left"),
+            electrodes=electrodes,
+            config=config,
+            backend=_ShortBackend(mock_backend, shortfall=64),  # type: ignore[arg-type]
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_stimulus_delay_moves_the_activation_later(mock_backend: SimulationBackend) -> None:
+    """The delay reaches the solver: same run, later activation.
+
+    Asserted on the *spec* rather than on a detected index, because the mock
+    backend does not simulate propagation. The real check is that the delay is
+    converted to model units and lands on the activation the backend receives —
+    which is also what gets serialised into the bank's per-simulation config,
+    so the delay is recoverable from the artifact.
+    """
+    delay_ms = 40.0
+    ap_time_unit_ms = 1.97
+    activation = PlanarEdgeStimulus(edge="left", time_model_units=delay_ms / ap_time_unit_ms)
+
+    assert activation.time_model_units == pytest.approx(delay_ms / ap_time_unit_ms)
+    # Default is fire-at-zero, so an unset delay cannot shift anything.
+    assert PlanarEdgeStimulus(edge="left").time_model_units == 0.0

@@ -69,6 +69,7 @@ class RunConfig:
     output_fs_hz: float
     ap_time_unit_ms: float
     capture_oversample: int = 4
+    capture_duration_ms: float | None = None
 
     def __post_init__(self) -> None:
         if self.trace_duration_ms <= 0:
@@ -79,6 +80,33 @@ class RunConfig:
             raise ValueError("ap_time_unit_ms must be positive.")
         if self.capture_oversample < 1:
             raise ValueError("capture_oversample must be >= 1.")
+        if self.capture_duration_ms is not None:
+            if self.capture_duration_ms <= 0:
+                raise ValueError("capture_duration_ms must be positive.")
+            if self.capture_duration_ms < self.trace_duration_ms:
+                raise ValueError(
+                    "capture_duration_ms "
+                    f"({self.capture_duration_ms}) is shorter than trace_duration_ms "
+                    f"({self.trace_duration_ms}); the capture cannot be shorter than "
+                    "the trace cut from it."
+                )
+
+    @property
+    def effective_capture_duration_ms(self) -> float:
+        """How long the backend actually simulates.
+
+        Separate from :attr:`trace_duration_ms`, which is what lands on disk.
+        The two were one number until controlled-position cropping (SEP2): a
+        window placed around the activation needs signal *after* it, so the
+        solver has to run past the end of the trace it will eventually yield.
+        ``None`` means "no cropping configured" and keeps the historical
+        behaviour of capturing exactly the trace.
+        """
+        return (
+            self.capture_duration_ms
+            if self.capture_duration_ms is not None
+            else self.trace_duration_ms
+        )
 
 
 @runtime_checkable

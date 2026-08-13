@@ -66,6 +66,7 @@ def _build_dataset_config(cfg: GenerateDatasetCLIConfig, show_progress: bool) ->
         fibrosis_density_range=cfg.fibrosis_density_range,
         fraction_healthy=cfg.fraction_healthy,
         fixed_stim_edge=cfg.fixed_stim_edge,
+        stimulus_delay_ms=cfg.stimulus_delay_ms,
         electrode_n_rows=cfg.electrode_n_rows,
         electrode_n_cols=cfg.electrode_n_cols,
         electrode_spacing_mm=cfg.electrode_spacing_mm,
@@ -153,7 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         # backends land, dispatch on cfg.backend_type here.
         backend = FinitewaveBackend()
         dataset_cfg = _build_dataset_config(cfg, show_progress=show_progress)
-        dataset_result = generate_dataset(config=dataset_cfg, backend=backend)
+        dataset_result = generate_dataset(
+            config=dataset_cfg,
+            backend=backend,
+            position_generator=cfg.position_generator,
+        )
     except Exception as exc:
         print(f"ERROR during simulation: {exc}", file=sys.stderr)
         return 1

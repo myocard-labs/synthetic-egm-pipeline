@@ -37,8 +37,11 @@ if TYPE_CHECKING:
     # runtime would close the cycle backends → simulate.result →
     # simulate → simulate.runner → backends. ``from __future__ import
     # annotations`` makes all annotations strings so this is safe.
+    from myocard_egm_signal import ActivationPositionGenerator
+
     from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 
+from myocard_synthetic_egm_pipeline.simulate.cropping import crop_traces
 from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
     bipolar_from_unipolar,
     downsample,
@@ -61,6 +64,7 @@ def run_single(
     backend: SimulationBackend,
     config: RunConfig,
     rng: np.random.Generator,
+    position_generator: ActivationPositionGenerator | None = None,
 ) -> SimulationResult:
     """Run one simulation and return a finished :class:`SimulationResult`.
 
@@ -78,6 +82,16 @@ def run_single(
     rng
         Reproducible source of randomness for any per-sim sampling the
         backend's strategy adapters do (e.g. fibrosis pattern draw).
+    position_generator
+        egm-signal's position generator (SEP2). When supplied, each bipolar
+        trace is cropped to a ``T``-sample window with its activation at a
+        sampled fractional position; when ``None`` the trace is the first
+        ``T`` samples of the capture, as before cropping existed.
+
+        Deliberately **not** on :class:`RunConfig`: the generator is stateful
+        (it owns an rng) while ``RunConfig`` is a frozen value object handed to
+        the backend, so putting it there would let two runs sharing a config
+        silently share one random stream.
     """
     raw = backend.simulate(
         geometry=geometry,
@@ -98,34 +112,57 @@ def run_single(
         target_fs_hz=config.output_fs_hz,
     )
 
-    # --- 3. Truncate / pad to exact target samples ----------------------
+    # --- 3. Truncate to exact target samples ----------------------------
     # The downsample step's sample count is approximate (integer rounding
     # of duration_ms * fs_hz). We pin to the exact target so every trace
     # in a dataset shares T.
+    #
+    # A capture that comes in SHORT is a hard error, not something to pad.
+    # This used to zero-pad "so the bank stays uniform", which is uniform in
+    # the worst way: zeros are perfectly flat and always at the tail, so a
+    # padded trace carries a positional regularity a classifier can key on —
+    # exactly the shortcut controlled-position cropping (T1) exists to
+    # remove. It is the same argument egm-classifier makes in CL-112 for
+    # cropping rather than padding at the dataset boundary. Under correct
+    # sizing (simulate.sizing) this branch is unreachable; if it fires, the
+    # sizing is wrong and silently manufacturing data would hide that.
     target_samples = round(config.trace_duration_ms * 1e-3 * config.output_fs_hz)
     n = bipolar_target.shape[0]
-    if n >= target_samples:
-        bipolar_final = bipolar_target[:target_samples]
-    else:
-        # Backend came in slightly short (rare; can happen with
-        # non-integer downsample ratios near a boundary). Pad with
-        # zeros so the bank stays uniform.
-        pad = np.zeros(
-            (target_samples - n, bipolar_target.shape[1]),
-            dtype=bipolar_target.dtype,
+    if n < target_samples:
+        raise ValueError(
+            f"Capture produced {n} samples at {config.output_fs_hz} Hz but the trace "
+            f"needs {target_samples} (trace_duration_ms={config.trace_duration_ms}). "
+            f"The backend simulated {config.effective_capture_duration_ms} ms. "
+            "Increase capture_duration_ms (or the position range's lower bound, "
+            "which drives it) rather than accepting a short trace."
         )
-        bipolar_final = np.concatenate([bipolar_target, pad], axis=0)
 
-    # --- 4. Reshape (T, n_pairs) → (n_pairs, T) + float32 ---------------
-    bipolar_traces: npt.NDArray[np.float32] = bipolar_final.T.astype(np.float32, copy=False)
+    # --- 4. Reshape (n_samples, n_pairs) → (n_pairs, n_samples) + float32 ---
+    captured: npt.NDArray[np.float32] = bipolar_target.T.astype(np.float32, copy=False)
 
-    # --- 5. Per-pair midpoints (physical mm) ----------------------------
+    # --- 5. Place the window (SEP2) -------------------------------------
+    # With a position policy the trace is a T-sample window cut around each
+    # pair's *detected* activation; without one it is the leading T samples,
+    # which is what the producer did before cropping existed.
+    activation_positions: npt.NDArray[np.float64] | None = None
+    if position_generator is None:
+        bipolar_traces = captured[:, :target_samples]
+    else:
+        cropped = crop_traces(
+            traces=captured,
+            position_generator=position_generator,
+            window_length_samples=target_samples,
+        )
+        bipolar_traces = cropped.signals
+        activation_positions = cropped.realized_positions
+
+    # --- 6. Per-pair midpoints (physical mm) ----------------------------
     midpoints = _compute_pair_midpoints_mm(
         positions_mm=raw.electrode_positions_mm,
         bipolar_pairs=raw.bipolar_pairs,
     )
 
-    # --- 6. Run-level provenance ----------------------------------------
+    # --- 7. Run-level provenance ----------------------------------------
     # Duck-typed extraction of per-sim scalars from the strategy specs.
     # Concretes that don't expose the field get None; downstream
     # consumers (ClassifierBank trace_metadata, SyntheticBank columns)
@@ -175,6 +212,7 @@ def run_single(
             activation=activation,
             electrodes=electrodes,
         ),
+        activation_positions=activation_positions,
         substrate_realization_metadata=dict(raw.substrate_realization_metadata),
         run_metadata=run_metadata,
     )

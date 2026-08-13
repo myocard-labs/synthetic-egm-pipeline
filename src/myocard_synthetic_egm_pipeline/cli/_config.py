@@ -26,8 +26,10 @@ from typing import Any, Literal
 
 import yaml
 
-# egm-signal owns the bandpass default; importing for the mixer block.
-from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ
+# egm-signal owns the bandpass default (mixer block) and the position policy
+# (SEP2). The generator is SIG1's type, not a local one — see
+# _build_position_generator for why it is constructed rather than wrapped.
+from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ, UniformPositionGenerator
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig
 from myocard_synthetic_egm_pipeline.constants import (
@@ -53,6 +55,12 @@ from myocard_synthetic_egm_pipeline.simulate import (
     LabelPolicy,
     LocalDensityLabel,
     Patch2DGeometry,
+)
+from myocard_synthetic_egm_pipeline.simulate.sizing import (
+    WINDOW_LENGTH_MULTIPLE,
+    required_capture_duration_ms,
+    required_stimulus_delay_ms,
+    window_length_samples,
 )
 
 
@@ -197,16 +205,148 @@ def _build_label_policy(doc: dict[str, Any]) -> LabelPolicy:
     )
 
 
-def _build_run_config(doc: dict[str, Any]) -> RunConfig:
-    """Construct a :class:`RunConfig` from the ``run:`` block."""
+def _build_position_generator(doc: dict[str, Any]) -> UniformPositionGenerator | None:
+    """Construct the position generator from the ``activation_position:`` block.
+
+    ``None`` when the block is absent, which means **no cropping** — the trace
+    is the first ``T`` samples of the capture, as before SEP2. Cropping is
+    opt-in rather than defaulted because the position policy decides the
+    positional structure of every bank a run writes, and there is no default
+    that is right by accident: anchored is the arm T1 suspects of enabling a
+    positional shortcut, and a varied range has no natural bounds to assume.
+    Both arms of the §8.9 A/B therefore name their range explicitly.
+
+    The generator is **stateful** — it owns an rng — so it is constructed once
+    per run and seeded from the run's ``master_seed``, keeping a run
+    reproducible without threading a generator through every call.
+    """
+    block = _optional(doc, "activation_position", default=None)
+    if block is None:
+        return None
+    if "low" not in block or "high" not in block:
+        raise ConfigError(
+            "activation_position must set both 'low' and 'high' (use the same "
+            "value twice for the fixed/anchored arm, e.g. low: 0.5, high: 0.5)."
+        )
+    low = float(block["low"])
+    high = float(block["high"])
+    if not 0.0 <= low <= high <= 1.0:
+        raise ConfigError(
+            f"activation_position must satisfy 0 <= low <= high <= 1; got low={low}, high={high}."
+        )
+    seed = _optional(block, "seed", default=None)
+    master_seed = int(_optional(doc, "dataset", "master_seed", default=0))
+    return UniformPositionGenerator(
+        low=low, high=high, seed=master_seed if seed is None else int(seed)
+    )
+
+
+def _stimulus_delay_ms(
+    doc: dict[str, Any], *, position_generator: UniformPositionGenerator | None
+) -> float:
+    """``activation.stimulus_delay_ms`` — explicit, else derived, else 0.
+
+    Three cases, in precedence order:
+
+    1. **explicit** — the config sets it; used as given;
+    2. **derived** — a position policy is configured but no delay is: the
+       smallest delay that guarantees the front budget, ``k(p_high)``. Cropping
+       does not work without one, so defaulting to zero here would mean every
+       shipped cropping config raises;
+    3. **zero** — no position policy, so nothing needs positioning and the
+       stimulus fires at ``t = 0`` as it always has.
+
+    **What the delay is for, and what it is not for.** It positions the
+    activation far enough into the capture that a window can be placed at any
+    ``p`` — the same property an IAFDB record has for free by being long. It is
+    *not* a way to buy pre-activation morphology: ``phi_e ∝ Σ I_m,i / r_i`` sums
+    over the whole mesh, so while nothing is depolarising the lead-in is flat.
+    That flatness is a realism question, deliberately not gated on here (D9).
+    """
+    value = _optional(doc, "activation", "stimulus_delay_ms", default=None)
+    if value is not None:
+        delay = float(value)
+        if delay < 0:
+            raise ConfigError(f"activation.stimulus_delay_ms must be >= 0; got {delay}.")
+        return delay
+    if position_generator is None:
+        return 0.0
+    # Cropping configured but no explicit delay: derive the smallest delay that
+    # guarantees a window at p_high has signal in front of it. Without this the
+    # crop raises on every trace whose activation arrives before k(p_high) —
+    # which, at any realistic conduction velocity, is all of them.
     block = _optional(doc, "run", default={}) or {}
-    return RunConfig(
+    return required_stimulus_delay_ms(
         trace_duration_ms=float(
             _optional(block, "trace_duration_ms", default=DEFAULT_TRACE_DURATION_MS)
         ),
         output_fs_hz=float(_optional(block, "output_fs_hz", default=DEFAULT_OUTPUT_FS_HZ)),
+        position_high=position_generator.high,
+    )
+
+
+def _build_run_config(
+    doc: dict[str, Any],
+    *,
+    position_generator: UniformPositionGenerator | None,
+    stimulus_delay_ms: float = 0.0,
+) -> RunConfig:
+    """Construct a :class:`RunConfig` from the ``run:`` block.
+
+    When a position policy is configured the capture is sized from it, so the
+    solver runs past the end of the trace and a window placed around the
+    activation has signal behind it (see
+    :mod:`~myocard_synthetic_egm_pipeline.simulate.sizing`).
+    """
+    block = _optional(doc, "run", default={}) or {}
+    trace_duration_ms = float(
+        _optional(block, "trace_duration_ms", default=DEFAULT_TRACE_DURATION_MS)
+    )
+    # V — assumed upper bound on stimulus-to-pair travel. Overridable because
+    # the right value depends on conduction velocity and the substrate, and a
+    # heavily fibrotic run conducts far slower than the default was sized for.
+    travel_raw = _optional(block, "travel_allowance_ms", default=None)
+    travel_allowance_ms = None if travel_raw is None else float(travel_raw)
+    if travel_allowance_ms is not None and travel_allowance_ms <= 0:
+        raise ConfigError(f"run.travel_allowance_ms must be > 0; got {travel_allowance_ms}.")
+    output_fs_hz = float(_optional(block, "output_fs_hz", default=DEFAULT_OUTPUT_FS_HZ))
+
+    t_samples = window_length_samples(
+        trace_duration_ms=trace_duration_ms, output_fs_hz=output_fs_hz
+    )
+    if t_samples % WINDOW_LENGTH_MULTIPLE != 0:
+        raise ConfigError(
+            f"run.trace_duration_ms={trace_duration_ms} at {output_fs_hz} Hz gives "
+            f"T={t_samples} samples, which is not a multiple of {WINDOW_LENGTH_MULTIPLE}. "
+            "egm-classifier's 1D MobileViT halves the sequence six times, so an "
+            f"off-grid T fails outright downstream (CL-112). Nearest valid: "
+            f"{t_samples - t_samples % WINDOW_LENGTH_MULTIPLE} or "
+            f"{t_samples + WINDOW_LENGTH_MULTIPLE - t_samples % WINDOW_LENGTH_MULTIPLE} samples."
+        )
+
+    capture_duration_ms = (
+        required_capture_duration_ms(
+            trace_duration_ms=trace_duration_ms,
+            output_fs_hz=output_fs_hz,
+            position_low=position_generator.low,
+            stimulus_delay_ms=stimulus_delay_ms,
+            travel_allowance_ms=travel_allowance_ms,
+        )
+        if position_generator is not None
+        else None
+    )
+
+    # With no position policy the capture is just the trace, but an explicit
+    # delay still has to be paid for or the wave is truncated at the far end.
+    if capture_duration_ms is None and stimulus_delay_ms > 0:
+        capture_duration_ms = trace_duration_ms + stimulus_delay_ms
+
+    return RunConfig(
+        trace_duration_ms=trace_duration_ms,
+        output_fs_hz=output_fs_hz,
         ap_time_unit_ms=float(_optional(block, "ap_time_unit_ms", default=AP_TIME_UNIT_MS)),
         capture_oversample=int(_optional(block, "capture_oversample", default=4)),
+        capture_duration_ms=capture_duration_ms,
     )
 
 
@@ -256,6 +396,7 @@ class GenerateDatasetCLIConfig:
     fibrosis_density_range: tuple[float, float]
     fraction_healthy: float
     fixed_stim_edge: Edge | None
+    stimulus_delay_ms: float
     electrode_n_rows: int
     electrode_n_cols: int
     electrode_spacing_mm: float
@@ -264,6 +405,12 @@ class GenerateDatasetCLIConfig:
     # Label policy + run config
     label_policy: LabelPolicy
     run_config: RunConfig
+    # Position policy for controlled-position cropping (SEP2). ``None`` means
+    # no cropping was configured. Held here rather than folded into RunConfig
+    # because it is stateful (it owns an rng) and RunConfig is a frozen value
+    # object the backend receives — a generator on it would make two runs
+    # sharing a RunConfig silently share a random stream.
+    position_generator: UniformPositionGenerator | None
 
     # Output
     classifier_bank_output: Path
@@ -350,7 +497,11 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     # --- strategies + policy --------------------------------------------
     geometry = _build_geometry(doc)
     label_policy = _build_label_policy(doc)
-    run_config = _build_run_config(doc)
+    position_generator = _build_position_generator(doc)
+    stimulus_delay_ms = _stimulus_delay_ms(doc, position_generator=position_generator)
+    run_config = _build_run_config(
+        doc, position_generator=position_generator, stimulus_delay_ms=stimulus_delay_ms
+    )
 
     # --- substrate block ------------------------------------------------
     substrate_block = _optional(doc, "substrate", default={}) or {}
@@ -459,12 +610,14 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         fibrosis_density_range=density_range,
         fraction_healthy=fraction_healthy,
         fixed_stim_edge=fixed_stim_edge,
+        stimulus_delay_ms=stimulus_delay_ms,
         electrode_n_rows=electrode_n_rows,
         electrode_n_cols=electrode_n_cols,
         electrode_spacing_mm=electrode_spacing_mm,
         electrode_height_mm_range=electrode_height_mm_range,
         label_policy=label_policy,
         run_config=run_config,
+        position_generator=position_generator,
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,
         synthetic_bank_output=synthetic_bank_output,

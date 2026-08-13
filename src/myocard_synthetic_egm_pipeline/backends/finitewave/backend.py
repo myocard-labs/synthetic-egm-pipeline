@@ -128,7 +128,10 @@ class FinitewaveBackend(SimulationBackend):
         _install_activation_2d(model=model, source=activation, tissue=tissue)
 
         # --- 5. Set t_max and install the ECG2DTracker ----------------------
-        t_max_model_units = config.trace_duration_ms / config.ap_time_unit_ms
+        # The capture, not the trace: with cropping configured the solver must
+        # run past the end of the trace so a window placed around the
+        # activation has signal behind it (see simulate.sizing).
+        t_max_model_units = config.effective_capture_duration_ms / config.ap_time_unit_ms
         model.t_max = t_max_model_units
 
         capture_step, fs_capture_hz = _pick_capture_step(

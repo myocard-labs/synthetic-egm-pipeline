@@ -13,9 +13,10 @@ The reading list at the bottom is annotated. Start with the three
 
 ## The pipeline at a glance
 
-A single simulation goes through nine steps. Five live inside the
-backend; four are backend-agnostic and live in the runner / storage
-modules.
+A single simulation goes through ten steps. Five live inside the
+backend; five are backend-agnostic and live in the runner / storage
+modules. **Note that the solver runs for longer than the trace it
+produces** — see *The four lengths* below.
 
 ```
                     one simulation
@@ -29,7 +30,8 @@ modules.
    │  5. Pseudo-EGM theory (math)       (reference)       │
    │  6. Bipolar pairing             ┐                    │
    │  7. Downsample to 1 kHz         │  backend-agnostic  │
-   │  8. Label assignment            │  runner            │
+   │  7b. Window the activation      │  runner            │
+   │  8. Label assignment            │                    │
    │  9. Storage (ClassifierBank)    ┘                    │
    │                                                      │
    └──────────────────────────────────────────────────────┘
@@ -83,6 +85,65 @@ CenteredGrid2D               ←──────┘
                ▼
         ClassifierBank.h5 (egm-data writer)
 ```
+
+
+## The four lengths — and which one each stage sees
+
+Four different durations appear in this pipeline. They were two until cropping
+landed, which is why they are easy to run together. Worked example: the shipped
+production settings, `trace_duration_ms: 192`, `output_fs_hz: 1000`,
+`capture_oversample: 4`, `activation_position: [0.25, 0.75]`, `ap_time_unit_ms:
+1.97`.
+
+| # | Length | Where it comes from | Worked value |
+|---|---|---|---|
+| 1 | **Window / output length `T`** | `run.trace_duration_ms` × `output_fs_hz` | **192 samples** (192 ms) |
+| 2 | **Capture duration** | *derived* — how long the solver must run for a `T`-window to fit around the activation | **335 ms** |
+| 3 | **Solver time** | capture ÷ `ap_time_unit_ms`, in AP's dimensionless units | **170.05 model units** |
+| 4 | **Capture at the capture rate** | capture × (`output_fs_hz` × `capture_oversample`) | **1309 samples** @ 3905 Hz |
+
+Read as a chain, with the array shapes the code actually produces:
+
+```
+config: trace_duration_ms = 192 ms          ... this is T, the OUTPUT window
+           |
+           v   derived: + back-overhang for the crop (+ stimulus delay, if set)
+capture_duration_ms = 335 ms
+           |
+           v   / ap_time_unit_ms
+solver runs t_max = 170.05 model units      ... Finitewave's clock
+           |
+           v   captured at 4 x 1000 Hz
+unipolar (1309, n_electrodes)
+           |
+           v   Step 6: bipolar pairing
+bipolar  (1309, 20)                         @ 3905 Hz
+           |
+           v   Step 7: downsample to 1 kHz
+bipolar  (335, 20)   -> transposed to (20, 335)
+           |
+           v   Step 7b: WINDOW — one T-sample cut per pair, around its
+           |             detected activation, at a sampled position p
+bipolar  (20, 192)                          ... what lands in the bank
+```
+
+**So: the windowing input is the 335-sample downsampled capture, and its output
+is the 192-sample trace.** Neither is "the trace duration" in the old sense —
+the config value names the *output*, and everything upstream of the window is
+sized to make that output cuttable.
+
+**Why the capture is derived rather than configured.** The window has to fit
+around an activation whose arrival time the config does not know — it follows
+from patch size, conduction velocity, the realized fibrosis draw and the pair's
+position, none of which is a number a user types. So the producer derives the
+smallest capture that guarantees a fit and runs that. A configured capture set
+too short would reject every trace at the crop.
+
+**Without a position policy the picture collapses back to the old one.** No
+`activation_position` block means no crop: capture = `trace_duration_ms`, the
+trace is the leading `T` samples, and lengths 1 and 2 are the same number
+again — which is why the two were conflated for so long without anything
+breaking.
 
 ## Step 1 — Tissue + substrate setup
 
@@ -208,9 +269,18 @@ directions, so we want directionally-balanced training data.
 ## Step 3 — AP solver
 
 **What the code does.** Finitewave runs the Aliev-Panfilov model
-([Aliev 1996]) on the 160×160 mesh for ``trace_duration_ms /
+([Aliev 1996]) on the 160×160 mesh for ``effective_capture_duration_ms /
 AP_TIME_UNIT_MS`` model time units, with ``dt = 0.01`` model units per
-integration step. AP_TIME_UNIT_MS = 1.97 ms is the calibration constant
+integration step.
+
+> **This used to read ``trace_duration_ms``, and that is now wrong.** The two
+> were the same number until controlled-position cropping (SEP2) arrived: the
+> solver ran for exactly as long as the trace it produced. It no longer does —
+> a window placed around the activation needs signal either side of it, so the
+> solver runs **longer** than the trace. ``trace_duration_ms`` now means *the
+> length of the output window*, not the length of the simulation. See
+> **The four lengths** below; they are easy to conflate and this doc conflated
+> two of them. AP_TIME_UNIT_MS = 1.97 ms is the calibration constant
 that maps AP non-dimensional time → physical milliseconds (re-run the
 calibration when ``dr`` or the model changes).
 
@@ -533,6 +603,34 @@ existing function-signature stays the same.
   truncate/pad block after the downsample, so every trace in a
   dataset shares T).
 
+## Step 7b — Windowing (controlled-position crop)
+
+**What the code does.** ``simulate/cropping.py`` cuts one ``T``-sample window
+per bipolar trace out of the downsampled capture, placing that pair's
+**detected** activation at a fractional position ``p`` drawn per window from
+egm-signal's ``UniformPositionGenerator``. Skipped entirely when the config has
+no ``activation_position`` block, in which case the trace is the leading ``T``
+samples of the capture.
+
+**Per trace, not per simulation.** The wavefront sweeps the electrode grid, so
+pairs either side of it activate tens of milliseconds apart. One offset applied
+to a whole simulation would hit the requested position for a single pair and
+leave it uncontrolled for the rest.
+
+**Detected, not told.** The stimulus time is configured, but the activation time
+*at a given pair* is not — the stored trace is a pseudo-EGM whose timing follows
+the wavefront's arrival, a function of conduction velocity, the realized
+fibrosis draw, the electrode standoff and the pair's position. Detecting also
+keeps the sim-to-real comparison honest: the real corpus offers nothing but the
+electrogram, so handing the synthetic side a privileged ground-truth time would
+flatter the comparison the experiment exists to make.
+
+**Same path as IAFDB.** The windower is egm-signal's
+``SingleActivationWindower``, which is ``window_train`` with a **train of one** —
+the same function the real corpus goes through. The single-versus-multi
+activation difference is the only intended divergence in framing between the two
+corpora.
+
 ## Step 8 — Label assignment
 
 **What the code does.** ``LabelPolicy.apply(simulation_result)`` is
@@ -725,3 +823,169 @@ classification.
 - **[Stewart 1999]** — Stewart MS. *Source-sink mismatch and
   termination of conducted action potentials.* Numerical study of
   why thin-strip stimulation reliably initiates a propagating wave.
+
+## Capture sizing for controlled-position cropping — the equations
+
+The goal is to window a synthetic trace the way an IAFDB trace is windowed. A
+real record is arbitrarily long with activations somewhere in the middle, so a
+window at any position has material either side of it. A simulation has to be
+*arranged* to have that property, using two knobs: fire the stimulus late enough
+that signal exists before the activation, and run long enough that signal exists
+after it. Everything below is that arrangement, made explicit.
+
+### Symbols
+
+All in samples at $f_s$ = `output_fs_hz`, unless suffixed ms.
+
+| symbol | meaning | source |
+|---|---|---|
+| $T$ | window length = on-disk trace length | `trace_duration_ms` $\times f_s$ |
+| $p$ | fractional activation position, $p \in [p_{lo}, p_{hi}] \subseteq [0,1]$ | `activation_position` |
+| $k(p)$ | offset from window start to the activation | derived |
+| $a$ | activation index within the capture | **measured**, per pair |
+| $D$ | stimulus delay | derived or configured |
+| $V$ | travel allowance | assumed |
+| $N$ | capture length | derived |
+
+### Window placement
+
+The window puts the activation $k(p)$ samples in from its start:
+
+$$
+k(p) = \operatorname{round}\bigl(p \, (T-1)\bigr)
+$$
+
+so around an activation at index $a$ it spans
+
+$$
+\bigl[\, a - k(p),\; a - k(p) + T \,\bigr)
+$$
+
+and it fits the capture exactly when both hold:
+
+$$
+\underbrace{a - k(p) \;\ge\; 0}_{\text{front}}
+\qquad\text{and}\qquad
+\underbrace{a - k(p) + T \;\le\; N}_{\text{back}}
+$$
+
+### The activation index is not free
+
+$a$ is not a configured value — it is where the wavefront reaches that pair,
+which depends on conduction velocity, the realized fibrosis draw, the electrode
+standoff and the pair's position. What *is* controllable is that it decomposes:
+
+$$
+a \;=\; D \;+\; t_{\text{travel}}, \qquad t_{\text{travel}} \ge 0
+$$
+
+Both constraints are then satisfiable without knowing $t_{\text{travel}}$.
+
+### Front — bought with the delay
+
+The worst case is the largest position, since the further back in its window the
+activation sits, the more signal is needed ahead of it. Because
+$t_{\text{travel}} \ge 0$,
+
+$$
+D \;\ge\; k(p_{hi})
+\quad\Longrightarrow\quad
+a \;\ge\; k(p) \;\; \forall\, p \le p_{hi}
+$$
+
+so the producer takes the smallest sufficient delay:
+
+$$
+\boxed{\,D = k(p_{hi}) = \operatorname{round}\bigl(p_{hi}(T-1)\bigr)\,}
+$$
+
+This holds for **any** patch size, conduction velocity or electrode placement —
+no geometry term appears. That robustness is deliberate: CV is being
+recalibrated, and a front guarantee that depended on it would have to be
+re-derived afterwards.
+
+### Back — bought with capture length
+
+The worst case here is the *smallest* position with the *largest* $a$. Bounding
+$t_{\text{travel}} \le V$ gives $a \le D + V$, and substituting into the back
+constraint:
+
+$$
+N \;\ge\; (D + V) - k(p_{lo}) + T
+$$
+
+so the producer takes:
+
+$$
+\boxed{\,N = D + V + T - k(p_{lo})\,}
+$$
+
+### The travel allowance $V$
+
+$t_{\text{travel}} = d / \mathrm{CV}$ for a stimulus-to-pair distance $d$.
+Neither term is available at config time: the config carries no
+stimulus-to-pair distance, and CV is an *output* of calibration rather than an
+input. So $V$ is **assumed, not derived**:
+
+$$
+V = T
+$$
+
+At the production 40 mm patch the furthest pair sits ~24 mm from the stimulus
+edge, which $T = 192$ covers for any CV above ~0.13 mm/ms — comfortably below
+both the present (~0.20) and the target (~0.60) values. An over-estimate costs
+solver time; an under-estimate costs traces, so this errs long, and a geometry
+that exceeds it raises at the crop with the knob named rather than silently
+yielding a short trace.
+
+### Worked example — the shipped settings
+
+$T = 192$, $p \in [0.4, 0.6]$ (matching iafdb-pipeline), $f_s = 1000$ Hz:
+
+$$
+D = \operatorname{round}(0.6 \times 191) = 115 \text{ samples}
+$$
+
+$$
+k(p_{lo}) = \operatorname{round}(0.4 \times 191) = 76
+$$
+
+$$
+N = 115 + 192 + 192 - 76 = 423 \text{ samples} = 423 \text{ ms}
+$$
+
+Then the solver clock, at `ap_time_unit_ms` = 1.97:
+
+$$
+t_{\max} = \frac{N_{\text{ms}}}{\texttt{ap\_time\_unit\_ms}} = \frac{423}{1.97} = 214.7 \text{ model units}
+$$
+
+Sanity check on the extremes. The activation lands somewhere in
+$a \in [115,\, 307]$:
+
+- earliest ($a = 115$), latest position ($p = 0.6$): window starts at
+  $115 - 115 = 0$ — flush against the front, nothing spare;
+- latest ($a = 307$), earliest position ($p = 0.4$): window ends at
+  $307 - 76 + 192 = 423$ — flush against the back, nothing spare.
+
+Both bounds are tight, which is the point: the capture is the smallest one that
+cannot fail.
+
+### Without a position policy
+
+No `activation_position` block means no crop. Then $D = 0$, $N = T$, the trace is
+the leading $T$ samples of the capture, and the solver runs for exactly
+`trace_duration_ms` — the behaviour that predates cropping, and the reason the
+capture and the trace were one number for so long.
+
+### Why not zero-padding
+
+A capture that comes up short raises rather than padding. Zeros are perfectly
+flat and always at the tail, so a padded trace carries a positional regularity a
+classifier can key on — precisely the shortcut that varying $p$ exists to
+remove. Under correct sizing the case is unreachable; if it fires, the sizing is
+wrong and manufacturing data would hide that.
+
+Implementation: `simulate/sizing.py`. The offset conversion $k(p)$ is restated
+there rather than imported so it matches egm-signal's crop exactly — a
+one-sample disagreement is a window that fits in theory and not in practice.

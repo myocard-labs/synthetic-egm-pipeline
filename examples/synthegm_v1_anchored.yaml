@@ -1,4 +1,12 @@
-# synthegm-generate-dataset — v1 baseline (clean dataset only).
+# synthegm-generate-dataset — v1 baseline, ANCHORED position arm.
+#
+# The fixed arm of the anchored-vs-varied A/B (SEP10, study §8.9). It is
+# the same class as the varied arm with the range collapsed to a point:
+# UniformPositionGenerator(0.5, 0.5) IS a fixed position, so switching arms
+# is a value change, not a code path. A collapsed generator does not consume
+# its random stream, so this arm is reproducible however the seed is set.
+#
+# Pair with synthegm_v1_baseline.yaml (p in [0.25, 0.75]) for the A/B.
 #
 # Project default for the Phase 1 synthetic training corpus: 100
 # simulations × 20 bipolar pairs = 2,000 traces, fibrosis density
@@ -7,7 +15,7 @@
 # ``synthegm_v1_noise_mixed.yaml`` to add the IAFDB noise overlay in one
 # run, or run ``synthegm-mix`` separately against the clean output.
 #
-# Output: ../banks/synthegm_v1_baseline.classifier.h5
+# Output: ../banks/synthegm_v1_anchored.classifier.h5
 
 dataset:
   n_simulations: 100                       # 100 sims × 20 pairs = 2000 traces
@@ -54,18 +62,17 @@ run:
   capture_oversample: 4                    # backend captures at 4× output rate; runner downsamples
 
 # Controlled-position cropping (SEP2). Omit this block for no cropping.
-# MATCHES iafdb-pipeline's shipped range, deliberately: the two corpora must
-# be windowed the same way or position itself becomes a 'which corpus is
-# this' cue. `high` sets the stimulus delay (D = round(p_hi*(T-1)) = 115 ms)
-# and `low` sets the tail, together giving a 423 ms capture for a 192 ms
-# trace. See docs/simulation_theory.md -> Capture sizing.
+# `low` DRIVES how long the solver runs: a window placed early in its span
+# needs signal after the activation, so the capture extends past the trace
+# (T=192 with p_lo=0.25 -> 335 samples). The front is never extended — the
+# trace starts when the stimulus fires — which is why `high` stays below 1.
 activation_position:
-  low: 0.4
-  high: 0.6
+  low: 0.5
+  high: 0.5
   # seed: 7                                # default: dataset.master_seed
 
 output:
-  classifier_bank: ../banks/synthegm_v1_baseline.classifier.h5
+  classifier_bank: ../banks/synthegm_v1_anchored.classifier.h5
   # No clean_intermediate here: without an inline mixer the classifier_bank
   # IS the clean bank, so there is nothing separate to persist.
   # bank_id: tbank_synthetic_aliev_panfilov_2026-06-27  # optional; auto-derived from cell model when omitted

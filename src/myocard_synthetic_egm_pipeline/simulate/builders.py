@@ -26,6 +26,7 @@ This module imports no backend code (Guardrail 1).
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 from myocard_egm_contracts._generated.python.synthetic_bank import (
+    ActivationPosition,
     GenerationParams,
     LabelItem,
     PairIndexItem,
@@ -62,6 +64,7 @@ from myocard_synthetic_egm_pipeline.ids import (
 )
 from myocard_synthetic_egm_pipeline.simulate.bank_config import build_simulation_columns
 from myocard_synthetic_egm_pipeline.simulate.dataset import DatasetConfig, DatasetResult
+from myocard_synthetic_egm_pipeline.simulate.result import SimulationResult
 
 # Amplitude convention for ClassifierBank.amp_type. The Phase-1
 # pseudo-EGM forward calc drops the 4*pi/sigma_e normalisation so
@@ -265,6 +268,31 @@ def build_classifier_bank_from_dataset(
 # ---------------------------------------------------------------------------
 
 
+def _activation_position_column(
+    results: Sequence[SimulationResult],
+) -> list[ActivationPosition] | None:
+    """Flatten per-simulation realized positions into the trace column.
+
+    ``None`` when the run applied no crop. Mixed state — some simulations
+    cropped, some not — cannot arise from a single run (one position generator
+    is passed to every ``run_single`` call or none is), so it is treated as a
+    programming error rather than silently half-filling the column.
+    """
+    cropped = [r.activation_positions is not None for r in results]
+    if not any(cropped):
+        return None
+    if not all(cropped):
+        raise ValueError(
+            "some simulations were cropped and others were not; a bank's "
+            "activation_position column must be all-or-nothing."
+        )
+    return [
+        ActivationPosition(float(p))
+        for result in results
+        for p in result.activation_positions  # type: ignore[union-attr]
+    ]
+
+
 def build_synthetic_bank_from_dataset(
     *,
     dataset_result: DatasetResult,
@@ -298,9 +326,17 @@ def build_synthetic_bank_from_dataset(
     the per-simulation config is not recoverable from per-trace
     metadata (see ``project/architecture.md``).
 
-    ``activation_position`` is left absent: Wave 1 applies no controlled
-    crop, and the schema is explicit that absence means *unknown*, never
-    0.0 (which is a legitimate position). SEP2 populates it.
+    ``activation_position`` carries each trace's **realized** crop position
+    when the run configured a position policy, and is **absent** when it did
+    not. Absence means *no crop happened* — the schema is explicit that it
+    never means 0.0, which is a legitimate position. Realized rather than
+    requested: the two differ whenever ``p * (T - 1)`` is not an integer, and
+    only the realized value describes the stored trace.
+
+    A run either crops every trace or none of them, so the column is all-or-
+    nothing rather than per-trace-optional. A partially-populated column would
+    be indistinguishable from a run where detection failed on some pairs, and
+    the crop raises on that case instead.
 
     No I/O — pair with :func:`myocard_egm_data.banks.write_synthetic_bank`.
     """
@@ -341,7 +377,7 @@ def build_synthetic_bank_from_dataset(
         simulation_id=[int(x) for x in dataset_result.simulation_ids],
         pair_index=[PairIndexItem(int(x)) for x in dataset_result.pair_indices],
         label=[LabelItem(int(x)) for x in dataset_result.labels],
-        activation_position=None,
+        activation_position=_activation_position_column(results),
         snr_db=list(snr_db) if snr_db is not None else [math.nan] * n_traces,
         noise_record=list(noise_record) if noise_record is not None else [""] * n_traces,
         noise_channel=(list(noise_channel) if noise_channel is not None else [""] * n_traces),

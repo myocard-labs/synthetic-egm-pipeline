@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     # runtime would close the cycle backends → simulate.result →
     # simulate → simulate.dataset → backends. ``from __future__ import
     # annotations`` makes all annotations strings so this is safe.
+    from myocard_egm_signal import ActivationPositionGenerator
+
     from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 
 from myocard_synthetic_egm_pipeline.constants import (
@@ -115,6 +117,13 @@ class DatasetConfig:
     fraction_healthy: float = 0.0
 
     fixed_stim_edge: Edge | None = None
+    #: Delay before the stimulus fires, in ms. 0 = fire at t=0 (the historical
+    #: behaviour). Held in ms because every other duration in the config is in
+    #: ms; converted to the solver's model units at spec construction, where
+    #: ``ap_time_unit_ms`` is in hand. **Diagnostic first:** a delay buys only
+    #: *resting* lead-in, since phi_e sums membrane current over the whole mesh
+    #: and nothing is depolarising yet — see CL-163/CL-164.
+    stimulus_delay_ms: float = 0.0
 
     electrode_n_rows: int = DEFAULT_ELECTRODE_GRID_ROWS
     electrode_n_cols: int = DEFAULT_ELECTRODE_GRID_COLS
@@ -132,6 +141,8 @@ class DatasetConfig:
             raise ValueError("fibrosis_density_range must satisfy 0 <= lo <= hi < 1.")
         if not 0.0 <= self.fraction_healthy <= 1.0:
             raise ValueError("fraction_healthy must be in [0, 1].")
+        if self.stimulus_delay_ms < 0:
+            raise ValueError("stimulus_delay_ms must be >= 0.")
         if self.fixed_stim_edge is not None and self.fixed_stim_edge not in EDGES:
             raise ValueError(
                 f"fixed_stim_edge must be None or one of {EDGES}, got {self.fixed_stim_edge!r}."
@@ -176,12 +187,21 @@ def generate_dataset(
     *,
     config: DatasetConfig,
     backend: SimulationBackend,
+    position_generator: ActivationPositionGenerator | None = None,
 ) -> DatasetResult:
     """Run ``config.n_simulations`` simulations and return a flat dataset.
 
     The total trace count is
     ``n_simulations * electrode_n_rows * (electrode_n_cols - 1)`` for a
     centered-grid placement.
+
+    ``position_generator`` enables controlled-position cropping (SEP2). The
+    **same** generator instance is handed to every simulation on purpose: it is
+    stateful, so a shared instance advances one stream across the whole run and
+    every trace draws an independent position. Constructing one per simulation
+    would restart the stream and give each simulation the same sequence of
+    positions — a regularity indistinguishable, downstream, from not having
+    varied them at all.
     """
     master_rng = np.random.default_rng(config.master_seed)
     lo, hi = config.fibrosis_density_range
@@ -214,7 +234,10 @@ def generate_dataset(
         edge: Edge = (
             config.fixed_stim_edge if config.fixed_stim_edge is not None else random_edge(sim_rng)
         )
-        activation = PlanarEdgeStimulus(edge=edge)
+        activation = PlanarEdgeStimulus(
+            edge=edge,
+            time_model_units=config.stimulus_delay_ms / config.run_config.ap_time_unit_ms,
+        )
 
         # Sample electrode placement (height drawn inside .sample).
         # The geometry must be a Patch2DGeometry for CenteredGrid2D —
@@ -245,6 +268,7 @@ def generate_dataset(
             backend=backend,
             config=config.run_config,
             rng=sim_rng,
+            position_generator=position_generator,
         )
 
         # Stamp simulation_id into the result's run_metadata for downstream

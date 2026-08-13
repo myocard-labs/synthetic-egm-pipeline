@@ -2,8 +2,10 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 14/37 steps done — **Wave 1 complete; Wave 2 underway**
-**Repo estimate:** **79.5–142 h** active (37 complexity points; cold-start ranges — the
+**Status:** in progress · **Progress:** 16/39 steps done — **Wave 1 complete; Wave 2 underway**
+**Next:** S37 (axis conventions) then S38 (CV recalibration + detection curve) — both block further
+bank generation; see their notes.
+**Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
 
@@ -30,6 +32,7 @@ execution order**, matching the Steps section below.
 | SEP3 | 2 | Absolute noise floor in the mixer (today's SNR is purely relative) | S (2) | 3–6 h | S32 |
 | SEP6 | 2 | Multi-edge `planar_edge` activation variant | S (2) | 3–6 h | S33 |
 | SEP7 | 2 | `point` + `s1s2` activation variants | M (3) | 6–11 h | S34–S35 |
+| CL-169/170 · CL-166/167 | 2 | **Simulator correctness** — one axis convention across stimulus / electrodes / fibres; CV recalibration; one detection curve. *Local steps, not §3 issues.* | M (3) | 6–10 h | S37–S38 |
 | *(phase exit)* | — | **examples/ config-set rework** · roadmap trim · CHANGELOG · architecture.md reconciliation | — | 2–4 h | S36 |
 
 **Cross-repo prerequisites — all met (checked 2026-08-11).** Wave 1 is done here (SEP12 shipped).
@@ -112,6 +115,52 @@ Daniel's four local `configs/` files all set it, so silent-ignore would strand e
 omitted. Standalone `synthegm-mix` is the one exception and cannot emit a synthetic bank — see D3.
 Rewritten into `project/architecture.md` ("Two outputs, different purposes, joined by
 `simulation_id`", replacing "Why not SyntheticBank by default").
+
+### D9 — no back-bounding; window synthetic like IAFDB *(SETTLED — Daniel, 2026-08-12)*
+
+**Decision: we do not constrain the position range to keep the activation early. Synthetic traces are
+windowed the same way IAFDB traces are** — same mechanism, same kind of range — with one expected
+difference: a synthetic trace holds a **single** activation where an IAFDB window is cut from a
+multi-beat record. Nothing else about the framing should differ, because differing framing is itself a
+sim-to-real gap.
+
+**Why the back-bounding argument is dead.** It was reasoned back from a measurement that turned out to
+be an artifact. The chain was:
+
+1. the front-budget probe reported activations at index 54–150 on a 40 mm patch, too early for a
+   centred window needing 96 samples of lead-in;
+2. so the front budget looked physically unbuyable;
+3. research then explained *why* it could not be bought — bipolar rejects far field, so lead-in is
+   inherently flat — and recommended holding `p` low.
+
+Step 3's physics is sound and step 1's number was **not an activation**. CL-167 showed those
+detections cluster on two fractions across all 40 traces: the synchronous stimulus launch and the
+far-boundary extinction. The transpose bug (CL-169) had cancelled the near field, so the detector had
+nothing local to find and locked onto global events. **The constraint was derived from the artifact it
+was meant to work around.**
+
+So back-bounding is a fix for a problem we have not actually observed. It is also expensive: it would
+have put synthetic at `[0.1, 0.35]` against iafdb-pipeline's shipped `[0.4, 0.6]`, leaving the two
+corpora **disjoint in position** — a clean "which corpus is this" cue, which is the sim-to-real gap T1
+exists to close, not widen.
+
+**What replaces it: an empirical check, not a preemptive constraint.** After S37 (axis conventions)
+and S38 (CV recalibration) land, re-run the probe and measure where the *real* local activation
+arrives. Then either a centred range fits at the production geometry, or it does not — and if it does
+not we deal with the actual number rather than a predicted one. Note the fixes push in **opposite**
+directions: the transpose fix should move detections to genuine, later local arrivals, while a correct
+faster CV moves arrivals earlier. Which wins is measurable, not arguable.
+
+**Standing rule from this:** do not introduce a constraint on `p` unless a measurement on
+correctly-simulated traces demands it. If one ever does, the fix is a shared decision with
+iafdb-pipeline so the ranges keep overlapping — never a synthetic-only narrowing.
+
+**Cleanup this implies** (do before committing S14+S15):
+
+- `simulate/sizing.py`'s module docstring argues the back-bounded case as settled rationale. Rewrite:
+  the front/back asymmetry is real, but the conclusion drawn from it is not.
+- the example configs' `activation_position: {low: 0.25, high: 0.75}` should line up with whatever
+  iafdb-pipeline uses (`[0.4, 0.6]` today) rather than being chosen independently here.
 
 ### D8 — one ClassifierBank, one θ bank *(SETTLED — Daniel, 2026-08-11)*
 
@@ -452,7 +501,7 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   backend swapped for `MockBackend` — the plan called for a full-run regression
   precisely because every builder-level test passed while the defect shipped.
 
-### S14 — Position config + size the simulation to the widest `p` (SEP2) ☐ (3–5 h)
+### S14 — Position config + size the simulation to the widest `p` (SEP2) ✅ (3–5 h)
 - **Change:** thread SIG1's `UniformPositionGenerator(low, high)` and `SingleActivationWindower`
   through an `activation_position:` config block. **Much smaller than planned**: SIG1 owns the
   detection curve, the `argmax g` detection, the fractional→index conversion and the crop; this repo
@@ -470,8 +519,77 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   config at the widest `p` produces full-length traces with no padding; an artificially short
   capture raises; a `T` off the 64-grid is rejected at config load.
 - **Depends on:** S12.
+- **⏸ FOLDED INTO S15 (Daniel, 2026-08-11). Written, verified, uncommitted — do not commit alone.**
+  Daniel tested the output banks in egm-studio and saw no windowing, correctly. Measured: with and
+  without an `activation_position` block the banks are **byte-identical**, `(4, 192)` either way.
+  Alone this step ships a config surface that reads as if it controls cropping, changes nothing
+  observable, and makes the solver run ~1.7x longer to discard the extra samples.
+  **This was a bad split by our own rule.** The step-size pass said a feature's config dispatch ships
+  in the feature's own commit, or you get "a commit adding a capability nothing can reach". I applied
+  that at issue *boundaries* and missed it *inside* SEP2, where it is the same shape: S14 is the
+  config, S15 is the feature. The sizing arithmetic having honest verification of its own is what made
+  the split look defensible — and that is not sufficient. **Added clause: a split is also wrong when
+  the earlier half ships a user-facing surface whose effect only arrives in the later half.**
+  Next session starts by wiring the windower (S15) and the two land as one commit; merge them into a
+  single plan step at that point.
+- Two deviations from the step text, both deliberate.
+  (1) **The windower is constructed at its call site in S15, not here.** The step
+  said "thread `UniformPositionGenerator` *and* `SingleActivationWindower`", but a
+  windower nobody calls is dead code, and its `preprocessor` (which detection
+  curve) is a crop-time decision. The generator lands here because the *sizing*
+  genuinely needs it. (2) **This step's "collapsed range yields one realized
+  position" is asserted on the *sampled* positions**, not realized ones —
+  realized positions only exist once a window is cut, which is S15. The plan
+  listed the same check in both steps; the generator-level version belongs here
+  and the bank-level one there.
+  **`activation_position` is opt-in with no default.** Anchored would have made
+  the arm T1 suspects of enabling a positional shortcut the thing a careless run
+  falls into, and a varied range has no natural bounds to assume — so both arms
+  name their range, and `examples/synthegm_v1_anchored.yaml` is the fixed one.
 
-### S15 — Crop per trace, record the realized position, anchoring flag (SEP2 + SEP10) ☐ (3–5 h)
+### S37 — One axis convention across stimulus, electrodes and fibres (CL-169 + CL-170) ☐ (3–5 h)
+- **Discovered mid-wave 2026-08-12**, so it takes the next free number and sits where it happens
+  (the iafdb pattern). **Local step — deliberately not raised to a §3 phase issue** (Daniel): the
+  design doc does not need the churn.
+- **Change:** the repo holds **three** axis maps and they disagree. Ours is `x = j` (axis-1),
+  `y = i` (axis-0) — `simulate/pseudo_egm.py` L102–106 and the edge definitions in `specs.py`.
+  Finitewave's `ECG2DTracker._compute_ecg_2d` reads coordinate column 0 as axis-0, i.e. the
+  **transpose**, so feeding it `positions_mm / dr` reflects the electrode grid across the diagonal.
+  Every pair ends up **perpendicular** to a `left` wavefront, both poles fire together, and the
+  **near** field cancels — the `1.35e-6` "dead healthy tissue" blob.
+  Fix by passing the tracker coordinates in *its* order (swap the x/y columns). Keep the tracker
+  rather than switching to our own `compute_phi_e`: the tracker runs in C alongside the solver
+  instead of over a captured V_m field, which is why it was chosen, and the transpose is a caller
+  bug not a tracker bug. Then audit the **fibre tensor** the same way (`_build_tissue_2d` L199–202
+  sets `fibers[...,0] = cos θ`): if component 0 is axis-0, `fiber_angle_rad = 0` runs fibres along
+  our `y`, not the `x` a reader assumes — the same root cause on a third surface.
+- **Verify:** regression test — a plane wave launched **parallel** to a known pair gives a large
+  biphasic deflection; **perpendicular** gives ≈ 0. That is textbook bipolar directional sensitivity
+  and it is the assertion that would have caught this. Plus: on a uniform density-0 patch the
+  healthy EGM shows a **real local activation**, and per-pair `activation_position` **spreads**
+  across the grid rather than clustering (CL-167's check that the pseudo-EGM is locally dominated).
+  Anisotropy check: a wave ∥ fibres is √3 ≈ 1.73x faster than ⊥ fibres, on the intended axis.
+- **Depends on:** S13. **Blocks S15** — its verification needs trustworthy traces.
+
+### S38 — CV recalibration + one detection curve across corpora (CL-166 + CL-167) ☐ (3–5 h)
+- **Discovered mid-wave 2026-08-12.** Local step, as S37.
+- **Change:** conduction velocity measures **20–23 cm/s** against ~50–100 cm/s for human atrium.
+  Aliev–Panfilov is dimensionless, so physical CV is entirely our `D` / `dr_mm` / `ap_time_unit_ms`
+  choice: `CV ∝ √D`, `CV ∝ dr_mm`, `CV ∝ 1/ap_time_unit_ms` — but **`APD ∝ ap_time_unit_ms`**, so
+  raise `D` (or coarsen `dr_mm`) and **leave `ap_time_unit_ms` alone**, or APD rescales with it.
+  Watch the explicit-scheme stability bound `dt ≤ dr²/(4D)`; a 9x `D` needs ~9x smaller `dt` unless
+  `dr` coarsens, which relaxes it. Measure on the **along-fibre** axis, which is only identifiable
+  after S37.
+  Second half: **unify the detection curve with IAFDB** (CL-167). `cropping.py` currently hardcodes
+  `RectifiedDerivative` with a docstring arguing it is fine for synthetic; CL-167 corrects that —
+  `activation_position` must be the *same measurand* on both corpora, so the curve is a shared
+  choice, not a per-corpus convenience. iafdb-pipeline dispatches all three curves from config, so
+  this needs a decision on which, not just a code change.
+- **Verify:** plane-wave sweep of `D` lands CV in the 50–100 cm/s band on the correct axis; APD
+  unchanged from before the sweep; the solver stays stable; both corpora name the same curve.
+- **Depends on:** S37 (CV must be measured on a correctly-identified axis).
+
+### S15 — Crop per trace, record the realized position, anchoring flag (SEP2 + SEP10) ✅ (3–5 h)
 - **Change:** call the windower per bipolar trace. **Per trace, not per simulation** — the wave sweeps
   the grid so pairs activate at different times; one per-sim offset would leave the position
   uncontrolled for most pairs. Synthetic goes through `window_train` as a **train of one** (CL-134),
@@ -491,7 +609,35 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   column is populated; a Wave-1 bank (absent column) still reads; two configs (anchored / varied)
   produce banks whose realized-position distributions are a point mass and a spread respectively;
   pr_checklist passes.
-- **Depends on:** S14.
+- **Depends on:** S14. **Absorbs S14** — they committed together.
+- **Done 2026-08-12, after two rounds of the same mistake.** The step raised at the shipped geometry
+  and stayed blocked for a day while CL-163→170 tracked the cause. Two corrections worth carrying
+  forward, because they are the *same* error twice:
+  **(1) The front budget.** S14 sized the back and argued the front away, from activation indices
+  that were detection artifacts of the transpose bug (CL-169). The fix is a **stimulus delay**
+  `D = k(p_hi)`, which guarantees the front for any geometry because travel time is non-negative —
+  no CV term, so it survives S38's recalibration untouched.
+  **(2) The travel allowance.** `V` was first set to `T`, justified by a **clean-tissue** conduction
+  velocity. Daniel's 30–60 % fibrosis run broke it (activation at 329, allowance 192): fibrosis
+  slows conduction, so clean tissue is the *fastest* case and the wrong end from which to bound a
+  maximum. Now `2T`, overridable via `run.travel_allowance_ms`, and stress-tested by Daniel on a
+  wide position range at high density.
+  **Both were bounding a worst case with a best-case number.** `V` is still an assumption rather
+  than a bound; deriving it from patch size and a measured CV becomes possible after S38.
+- **⏸ BLOCKED 2026-08-12 on CL-163 — the front budget.** Code is written and works; it raises at the
+  geometry we ship. A window with the activation at `p` needs `round(p·(T−1))` samples **before** it —
+  96 at `p=0.5`. Measured activation arrival on a clean 40 mm patch, left-edge stim, 5×5 grid:
+  **index 54–150**, so the earliest pair has 54 and needs 96. At 10 mm it is 2–34. Not a test artifact.
+  **S14's sizing reasoning was wrong on the front.** It sized the back carefully and assumed the front
+  away ("the front is flat, rely on natural lead-in"). It is not enough at any patch size we run.
+  **A stimulus delay does not fix it** (my first proposal; Daniel caught it). `φ_e ∝ Σ I_m,i/r_i` sums
+  over the whole mesh, so while nothing depolarises the lead-in is flat — a zero-pad the solver
+  generated, reintroducing the regularity S14 deleted the zero-pad to remove.
+  **Daniel's alternative:** enlarge the patch, hold 2 mm spacing — the wave crosses more tissue, so
+  activation lands later *and* the lead-in holds a real approaching wavefront. Open wrinkle raised to
+  research: **bipolar subtraction rejects far field**, so the approach may be weak in bipolar even on a
+  big patch, which would make both options ways of buying flat lead-in and turn this into a study-design
+  question about how back-bounded `p` may be. Cost note: 40→60 mm is ~3x per simulation, a §8 input.
 
 ### S16 — Positional-sensitivity probe bank (SEP13) ☐ (3–6 h)
 - **Change:** a probe generation mode — run **one** simulation, then emit one trace per grid point by
@@ -778,7 +924,8 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
 | SEP6 | pipeline | 2 | 3–6 h | | | |
 | SEP7 | pipeline | 3 | 6–11 h | | | |
 | *(phase exit)* | docs | — | 2–4 h | | | |
-| **Repo total** | | **37** | **79.5–142 h** | | | |
+| CL-169/170 + CL-166/167 | simulator (physics) | 3 | 6–10 h | | | |
+| **Repo total** | | **40** | **85.5–152 h** | | | |
 
 **Estimate basis.** The ledger is empty, so these are reference-class-by-analogy, not
 `points × measured rate`. Anchors used: SEP12 is *the* rubric's L anchor; SEP5 is sized equal to it

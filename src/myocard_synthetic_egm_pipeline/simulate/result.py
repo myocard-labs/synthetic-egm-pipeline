@@ -184,6 +184,13 @@ class SimulationResult:
     electrode_positions_mm: npt.NDArray[np.float64]
     bipolar_pairs: tuple[tuple[int, int], ...]
     specs: SimulationSpecs
+    #: Per-pair **realized** activation position, ``(n_pairs,)`` in [0, 1], or
+    #: ``None`` when the run configured no position policy and the trace is
+    #: simply the leading ``T`` samples. Realized rather than requested: the
+    #: two differ whenever ``p * (T - 1)`` is not an integer, and only the
+    #: realized value describes where the activation actually sits in the
+    #: stored trace. Absent means no crop happened — never a fabricated 0.5.
+    activation_positions: npt.NDArray[np.float64] | None = None
     substrate_realization_metadata: dict[str, Any] = field(default_factory=dict)
     run_metadata: dict[str, Any] = field(default_factory=dict)
 

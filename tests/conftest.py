@@ -414,9 +414,12 @@ class _MockBackend:
         config: Any,
         rng: np.random.Generator,
     ) -> RawSimulationResult:
-        # Capture long enough for the runner to downsample to T; derived from
-        # the config rather than a literal so it tracks the trace duration.
-        n_capture = round(config.trace_duration_ms) * config.capture_oversample
+        # Mirrors the real backend: it simulates the *capture* duration, which
+        # exceeds the trace duration whenever a position policy is configured.
+        # A mock that captured only the trace would make the sizing look
+        # untested — every crop would fit because nothing extra was ever asked
+        # for.
+        n_capture = round(config.effective_capture_duration_ms) * config.capture_oversample
         n_electrodes = electrodes.positions_mm.shape[0]
         unipolar = rng.standard_normal((n_capture, n_electrodes)).astype(np.float64)
         return RawSimulationResult(

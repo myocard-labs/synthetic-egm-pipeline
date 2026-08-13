@@ -57,6 +57,17 @@ run:
   ap_time_unit_ms: 1.97
   capture_oversample: 4
 
+# Controlled-position cropping (SEP2). Omit this block for no cropping.
+# MATCHES iafdb-pipeline's shipped range, deliberately: the two corpora must
+# be windowed the same way or position itself becomes a 'which corpus is
+# this' cue. `high` sets the stimulus delay (D = round(p_hi*(T-1)) = 115 ms)
+# and `low` sets the tail, together giving a 423 ms capture for a 192 ms
+# trace. See docs/simulation_theory.md -> Capture sizing.
+activation_position:
+  low: 0.4
+  high: 0.6
+  # seed: 7                                # default: dataset.master_seed
+
 output:
   classifier_bank: ../banks/synthegm_v1_noise_mixed_small_gd.classifier.h5
   # Persist the pre-mix clean bank too — useful for ablation studies

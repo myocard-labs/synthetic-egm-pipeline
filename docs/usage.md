@@ -174,6 +174,14 @@ run:
   ap_time_unit_ms: 1.97                    # default (calibrated 2026-06-10)
   capture_oversample: 4                    # default; backend captures at 4x output_fs_hz
 
+# Optional controlled-position cropping (SEP2). Omit the block for no
+# cropping. Both bounds are required; use the same value twice for the
+# anchored arm of the position A/B.
+activation_position:
+  low: 0.25                                # smallest position; DRIVES capture length
+  high: 0.75                               # largest position
+  # seed: 7                                # default: dataset.master_seed
+
 output:
   classifier_bank: ../banks/synthegm_v1.classifier.h5   # required
   # clean_intermediate: ../banks/clean.classifier.h5  # optional; omit to skip.
@@ -225,10 +233,13 @@ Per-field reference:
 | `label_policy.type` | `global_density` / `local_density` | `global_density` | Label policy dispatch. |
 | `label_policy.threshold` | float | 0.1 | Density above which a trace is labeled fibrotic. |
 | `label_policy.radius_mm` | float | 2.0 | Used by `local_density` only. |
-| `run.trace_duration_ms` | float | 200.0 | Per-trace length. |
+| `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise (CL-112). With `activation_position` set this is *not* how long the solver runs; see that block. |
 | `run.output_fs_hz` | float | 1000.0 | Output sample rate. |
 | `run.ap_time_unit_ms` | float | 1.97 | AP non-dimensional time → ms calibration. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
+| `activation_position.low` | float 0..1 | (required if block present) | Smallest fractional activation position. **Sizes the capture** — the smaller it is, the more signal a window needs after the activation, so the longer the solver runs. |
+| `activation_position.high` | float 0..1 | (required if block present) | Largest fractional position. Kept below 1: the front cannot be extended, so a far-back position fills the window with flat pre-activation baseline. |
+| `activation_position.seed` | int | `dataset.master_seed` | Seeds the position generator, which is stateful and owns its own stream. |
 | `output.classifier_bank` | path | (required) | Primary output path. |
 | `output.clean_intermediate` | path | omit to skip | Persist the clean bank pre-mix; only meaningful with a mix block. Its `synthetic_bank` partner is written automatically beside it as `<stem>.synthetic.h5`. |
 | `output.synthetic_bank` | path | omit for the sibling default | Where the `synthetic_bank` lands. Sets the **path**, not whether it is written — both banks are written on every run. Default: `<classifier_bank>.synthetic.h5`. |

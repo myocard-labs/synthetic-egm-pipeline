@@ -6,6 +6,64 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Controlled-position cropping, part 2: the crop itself (SEP2 + SEP10).** Each
+  bipolar trace is now cut to a `T`-sample window with its **detected**
+  activation at a position sampled per window, and the realized position is
+  written to the `synthetic_bank`'s `activation_position` column. Per trace, not
+  per simulation — the wavefront sweeps the grid, so one per-simulation offset
+  would control the position for a single pair and leave it uncontrolled for the
+  rest. Routed through egm-signal's `SingleActivationWindower`, which is
+  `window_train` with a train of one: the same function the IAFDB side uses, so
+  the window geometry cannot drift between corpora.
+  **The simulation is now arranged to make that possible**, which is what the
+  step actually turned on. A stimulus delay `D = round(p_high·(T−1))` puts the
+  activation far enough into the capture that a window fits in front of it —
+  guaranteed for any patch size or conduction velocity, since travel time is
+  non-negative. The capture then runs `N = D + V + T − round(p_low·(T−1))`,
+  where `V` is an assumed travel allowance defaulting to `2T` and overridable
+  via the new `run.travel_allowance_ms`. Full derivation in
+  `docs/simulation_theory.md`.
+  `activation_position` ranges now match iafdb-pipeline's `[0.4, 0.6]`:
+  windowing the two corpora differently would make position itself a
+  "which corpus is this" cue.
+  **SEP10 rides along** — the anchored arm is `[0.5, 0.5]`, the same class with
+  its range collapsed, so both arms of the A/B are configuration rather than
+  code paths.
+
+- **Controlled-position cropping, part 1: the position policy and the capture it
+  requires (SEP2).** A new optional `activation_position:` block configures
+  egm-signal's `UniformPositionGenerator`, and the capture is sized from it so a
+  `T`-sample window placed around the activation always has signal behind it.
+  Sizing is driven by the range's **lower** bound — a small `p` puts the
+  activation early in its window and so demands the most signal after it. At the
+  Phase-1.5 defaults (`T = 192`, `p ∈ [0.25, 0.75]`) the solver runs 335 ms to
+  yield a 192 ms trace.
+  The block is **opt-in, with no default**: the position policy sets the
+  positional structure of every bank a run writes, and neither arm of the §8.9
+  A/B is safe to fall into silently. `examples/synthegm_v1_anchored.yaml` shows
+  the fixed arm — the same class with the range collapsed to a point.
+  *Cropping itself is not wired yet;* this step sizes the capture and the trace
+  is still the first `T` samples. The window is cut in the next step.
+
+### Changed
+
+- **A short capture now raises instead of zero-padding.** The old fallback
+  padded "so the bank stays uniform" — uniform in the worst way, since the pad
+  is perfectly flat and always at the tail, giving every short trace exactly the
+  positional regularity that varying the crop position exists to remove. Under
+  correct sizing the case is unreachable; if it fires, the sizing is wrong and
+  manufacturing data would hide that.
+- **`run.trace_duration_ms` must give a sample count that is a multiple of 64**,
+  rejected at config load with the nearest valid lengths named. The alternative
+  is an N-simulation run that completes, writes a bank, and fails only when
+  egm-classifier tries to train on it (CL-112).
+- **`RunConfig` separates the capture from the trace.** `trace_duration_ms` is
+  what lands on disk; `capture_duration_ms` (via `effective_capture_duration_ms`)
+  is how long the solver runs. They were one number until cropping needed them
+  to differ.
+
 ### Fixed
 
 - **A clean intermediate is now joinable (CL-143 + B13).** In an inline-mix run
