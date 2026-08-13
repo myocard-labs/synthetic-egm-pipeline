@@ -618,14 +618,42 @@ For us:
 
 - The integral becomes a sum over mesh cells (we work on a discrete
   mesh).
-- ``I_m`` is approximated by the discrete Laplacian of V_m (consistent
-  with what Finitewave's own ECG tracker does internally; the diffusion
-  step's change in V_m at each cell is the discrete equivalent of
-  $D \nabla^2 V_m$).
-- We deliberately drop the ``1 / (4π σ_e)`` normalisation because the
-  classifier cares about *relative* amplitude across pairs (which
-  carries morphology), not the absolute mV scale. If we ever need
-  absolute mV we can scale this output downstream.
+- ``I_m`` is approximated by the discrete Laplacian of V_m (the
+  diffusion step's change in V_m at each cell is the discrete
+  equivalent of $D \nabla^2 V_m$). Finitewave's own tracker forms the
+  same source term, and we take it straight from the solver's diffusion
+  increment rather than recomputing a stencil.
+- The ``1 / (4π σ_e)`` normalisation **is** applied (σ_e = 1 by
+  default). It is a constant scale, so it changes no morphology and no
+  classification, but keeping it makes our output directly comparable
+  with anything else computing a pseudo-EGM. This reverses an earlier
+  decision to drop it — the saving was nil and the incomparability was
+  a real cost during the CV investigation.
+
+> **The weighting is ``1 / r``, and getting there took a fix.**
+> The exponent is not free: it is *determined* by which of two
+> equivalent formulations you sum. Integrating by parts moves the
+> derivative from V_m onto the kernel, so
+>
+> $$
+> \int \frac{\nabla \cdot (D \nabla V_m)}{r} \, dV
+>   \;=\; -\int D \nabla V_m \cdot \nabla \frac{1}{r} \, dV
+>   \;=\; \int D \nabla V_m \cdot \frac{\hat r}{r^2} \, dV
+> $$
+>
+> **Laplacian source ⇒ ``1/r``. Gradient source ⇒ ``1/r²``.** openCARP
+> takes the gradient route and so uses ``1/r²`` correctly. We take the
+> Laplacian route, so ``1/r`` is ours.
+>
+> Finitewave 0.9.3 mixed them: a Laplacian source term divided by the
+> **squared** grid distance, with no ``sqrt`` anywhere. We shipped that
+> until S40. Upstream has since fixed it the same way on their
+> unreleased ``solvers`` branch. Our kernel now takes the ``sqrt``; the
+> ``distance_power`` argument exists only to reproduce pre-fix banks for
+> comparison and is deliberately not a config field.
+>
+> Full derivation, the cross-simulator survey, and the figures:
+> ``intracardiac-platform/project/investigations/pseudo_egm_axes_and_weighting.md``.
 
 The Okenov 2024 paper applies exactly this forward calc on a similar
 2D Finitewave-driven fibrosis substrate, then trains a CNN on the
@@ -643,6 +671,14 @@ electrode positions). Three properties of φ_e to keep in mind:
    ``LocalDensityLabel`` — a bipolar pair "sees" only a small
    neighbourhood, so its label should be set by that neighbourhood, not
    by the global density.
+   Note the falloff is *gentler* than the ``1/r²`` we shipped before
+   S40, so each electrode's effective neighbourhood is now slightly
+   **wider**, not narrower. In practice the change was small — waveform
+   correlation 0.961 against the old output on clean tissue — because
+   the nearest sources dominated under either exponent. The far-field
+   contamination seen during the CV investigation is a
+   *launch-transient* problem, not a weighting problem, and is not
+   addressed by this change.
 2. **φ_e tracks the rate of change of V_m, not V_m itself.** The
    Laplacian kernel ensures φ_e responds to the *moving wavefront*
    rather than to a static depolarised region. This is why an EGM

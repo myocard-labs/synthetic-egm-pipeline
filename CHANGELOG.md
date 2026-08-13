@@ -82,6 +82,34 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Fixed
 
+- **The distance weighting was `1/r²` where the source term wanted `1/r` (CL-166).**
+  Stock Finitewave 0.9.3 divides by `d`, the **squared** grid distance, and never
+  takes a square root — an inverse-square weight applied to a Laplacian source.
+  That is one term from each of two equivalent formulations: `1/r²` pairs with
+  the *gradient* form `∫∇V_m·∇(1/r)` (what openCARP computes), while the
+  diffusion increment we actually sum is the *Laplacian*, which pairs with `1/r`.
+  Restoring the `sqrt` is the fix. The missing `1/(4πσ_e)` prefactor is now
+  applied as well, in this kernel and in `compute_phi_e`.
+  **Not a judgement call.** Upstream reached the same conclusion independently on
+  their unreleased `solvers` branch — `sqrt` restored, `distance_power` defaulting
+  to 1 — and Finitewave's own class docstring said *"the inverse of the distance"*
+  the whole time.
+  **What it changes.** On clean tissue: amplitude 4.1× smaller (median
+  peak-to-peak `1.08e-01 → 2.62e-02`, mostly the prefactor), waveform correlation
+  with the old output 0.961, detected activation indices unchanged. A scale and a
+  mild re-weighting toward near nodes, not a new morphology — expected for a
+  near-field measurement where the nearest sources already dominate.
+  `distance_power` is exposed (default `1.0`) so pre-fix banks stay reproducible
+  for comparison, and is deliberately **not** a config field: a debugging knob,
+  not a generation mode.
+  **`compute_phi_e` stops being decorative.** It has been thoroughly unit-tested
+  since Wave 1 and never called by the pipeline — which is how two kernels came to
+  disagree on the physics unnoticed. It is now a cross-check against the
+  production kernel, on isotropic unmasked tissue only, since the two form
+  different Laplacians (plain 5-point vs Finitewave's anisotropic, myocardium-
+  masked stencil). A companion test asserts the comparison *fails* at
+  `distance_power = 2`, so it cannot silently stop guarding the exponent.
+
 - **Electrode coordinates and fibre orientation were transposed (CL-169 + CL-170).**
   Finitewave uses "x" for mesh axis-0 throughout; we use it for axis-1. Anything
   handed across that boundary in physical `x`/`y` had to swap, and neither did.

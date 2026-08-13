@@ -2,9 +2,9 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 18/41 steps done — **Wave 1 complete; Wave 2 underway**
-**Next:** S37 (axis conventions) then S38 (CV recalibration + detection curve) — both block further
-bank generation; see their notes.
+**Status:** in progress · **Progress:** 19/41 steps done — **Wave 1 complete; Wave 2 underway**
+**Next:** S38 (CV recalibration + detection curve) — blocks further bank generation; see its notes.
+Then back to the planned Wave-2 order at S16.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
@@ -617,7 +617,7 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   the fast suite by calling both kernels directly, on a non-square mesh so an `i`/`j` mix-up cannot
   hide behind symmetry.
 
-### S40 — Restore the 1/r weighting (CL-166) ☐ (1–2 h)
+### S40 — Restore the 1/r weighting (CL-166) ✅ (1–2 h)
 - **Change:** one `sqrt`. The stock kernel divides by `d`, the **squared** grid distance, giving an
   effective `1/r²`; restoring `sqrt(d)` gives the `1/r` of the Laplacian form we compute the source
   for. Expose `distance_power` (default 1) as upstream's branch does, so the pre-fix `1/r²` banks
@@ -652,6 +652,15 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   **The trap this avoids** is the one that created the situation: `compute_phi_e` was thoroughly
   tested on inputs that never resembled production. Promoting it to a reference without stating what
   it can and cannot reference would repeat exactly that.
+- **Measured, 2026-08-13.** Cross-check agrees to `rtol = 1e-10` on a random field over a
+  non-square grid, with a companion test proving the check fails at `distance_power = 2` — a
+  reference comparison insensitive to the exponent would prove nothing about the weighting.
+  Effect on a 20 mm clean-tissue run: amplitude **4.1× smaller** (median peak-to-peak
+  `1.08e-1 → 2.62e-2`, most of it the `1/(4πσ_e)` prefactor), waveform correlation old-vs-new
+  **0.961**, detected activation indices unchanged (10–15 both ways). So this is a scale and a
+  mild re-weighting toward near nodes, not a new morphology — consistent with a near-field
+  measurement where the nearest sources already dominate. It does **not** rescue the far-field
+  problem on its own, which is why S38 still stands.
 - **Depends on:** S39.
 
 ### S38 — CV recalibration + one detection curve across corpora (CL-166 + CL-167) ☐ (3–5 h)
