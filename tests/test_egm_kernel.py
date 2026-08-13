@@ -40,6 +40,7 @@ from myocard_synthetic_egm_pipeline.simulate import (
     UniformRandomFibrosis,
     run_single,
 )
+from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import compute_phi_e
 from myocard_synthetic_egm_pipeline.simulate.specs import Edge
 
 
@@ -93,7 +94,12 @@ def test_our_tracker_is_the_one_installed() -> None:
     tracker = EGMTracker(measure_coords=np.array([[5.0, 5.0, 0.5]]))
     tracker.initialize(_FakeModel(np.zeros((8, 8))))
 
-    assert tracker._compute is egm_kernel_2d
+    # `_compute` is a closure binding the two physics parameters, so identity
+    # is asserted against the kernel the class declares rather than the bound
+    # wrapper. `kernel` exists for exactly this reason.
+    assert EGMTracker.kernel is egm_kernel_2d
+    assert tracker._compute is not fw.ECGTracker.__dict__.get("_compute")
+    assert tracker.distance_power == 1.0  # 1/r, the corrected weighting
     assert isinstance(tracker, fw.ECGTracker)  # still upstream's plumbing
 
 
@@ -109,24 +115,23 @@ def test_three_dimensional_meshes_are_refused() -> None:
         tracker.initialize(_FakeModel(np.zeros((4, 4, 4))))
 
 
-def test_our_kernel_differs_from_stock_by_exactly_a_transpose() -> None:
-    """S37's byte-identity gate, sharpened for S39 rather than deleted.
+def test_our_kernel_reduces_to_stock_under_the_old_settings() -> None:
+    """The running invariant: our kernel is stock plus *exactly* the known fixes.
 
-    Until S39 our kernel reproduced the stock tracker exactly, and identity was
-    the proof that vendoring changed nothing. S39 changes the axis pairing on
-    purpose, so plain identity can no longer hold — but the *claim* it protected
-    still can, in a stronger form:
+    Carried forward and re-sharpened at each step rather than deleted:
 
-        our kernel given ``(x, y, z)``  ==  stock kernel given ``(y, x, z)``
+    - **S37** — identical to stock, full stop.
+    - **S39** — identical once the coordinates are pre-swapped, proving the
+      change was precisely a transpose.
+    - **S40** — identical once the coordinates are pre-swapped **and** the two
+      new parameters are dialled back to their pre-fix values:
+      ``distance_power = 2`` reinstates ``1/r²``, and
+      ``conductivity = 1/(4 pi)`` cancels the new prefactor.
 
-    exactly. Both then compute ``(y-i)² + (x-j)² + z²``. Holding this proves the
-    change is **precisely** a transpose and nothing else — no weighting drifted,
-    no stray edit rode along. Deleting the test would have given up that
-    guarantee at the moment it became most useful.
-
-    Calls both kernels directly rather than running the solver twice: the claim
-    is about arithmetic, so the inputs may as well be arbitrary, and it keeps
-    the check in the fast suite.
+    Holding this pins the cumulative diff against upstream to a transpose, a
+    square root and a constant — with nothing else having drifted in. That is a
+    far stronger statement than "the tests still pass", and it costs one
+    parametrised call.
     """
     rng = np.random.default_rng(11)
     n_i, n_j = 24, 31  # deliberately non-square, so an i/j mix-up cannot hide
@@ -135,13 +140,35 @@ def test_our_kernel_differs_from_stock_by_exactly_a_transpose() -> None:
     indexes = np.arange(n_i * n_j, dtype=np.int64)
     coords = np.array([[3.0, 17.0, 0.5], [22.5, 4.25, 1.0], [11.0, 11.0, 0.2]])
 
-    ours = egm_kernel_2d(u_tr, u, coords, 0.25, indexes)
+    ours_as_stock = egm_kernel_2d(u_tr, u, coords, 0.25, indexes, 2.0, 1.0 / (4.0 * np.pi))
     stock_swapped = _compute_ecg_2d(u_tr, u, coords[:, [1, 0, 2]], 0.25, indexes)
 
-    assert np.array_equal(ours, stock_swapped), (
-        "our kernel is not a pure transpose of the stock one; something other than "
-        f"the axis pairing changed (max abs diff {np.abs(ours - stock_swapped).max():.3e})"
+    assert np.allclose(ours_as_stock, stock_swapped, rtol=1e-12, atol=0.0), (
+        "our kernel no longer reduces to the stock one under pre-fix settings; "
+        "something beyond the transpose, the sqrt and the prefactor has changed "
+        f"(max rel diff {np.abs(ours_as_stock / stock_swapped - 1).max():.3e})"
     )
+
+
+def test_the_shipped_defaults_are_the_corrected_physics() -> None:
+    """Defaults must be the *right* values, not the reproducible-old ones.
+
+    ``distance_power`` exists to reproduce pre-fix banks for comparison, which
+    is a debugging use. If it ever defaulted to 2 the fix would be silently
+    off in production while every test that passes it explicitly still passed.
+    """
+    rng = np.random.default_rng(5)
+    u = rng.standard_normal((16, 21))
+    u_tr = rng.standard_normal((16, 21))
+    indexes = np.arange(16 * 21, dtype=np.int64)
+    coords = np.array([[7.0, 5.0, 0.5]])
+
+    default = egm_kernel_2d(u_tr, u, coords, 0.25, indexes)
+    explicit_correct = egm_kernel_2d(u_tr, u, coords, 0.25, indexes, 1.0, 1.0)
+    old_behaviour = egm_kernel_2d(u_tr, u, coords, 0.25, indexes, 2.0, 1.0)
+
+    assert np.array_equal(default, explicit_correct)
+    assert not np.allclose(default, old_behaviour)
 
 
 def test_the_transpose_actually_changes_the_answer() -> None:
@@ -278,3 +305,82 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
         f"got along={along_fibres} across={across_fibres}. If reversed, the fibre "
         "components are transposed."
     )
+
+
+# ---------------------------------------------------------------------------
+# S40 — 1/r weighting, cross-checked against the independent reference
+# ---------------------------------------------------------------------------
+
+
+def test_the_production_kernel_agrees_with_compute_phi_e() -> None:
+    """Two independent implementations of the same formula must agree.
+
+    This is where ``compute_phi_e`` stops being decorative. It has been
+    thoroughly unit-tested since Wave 1 and **never called by the pipeline** —
+    which is exactly how two kernels came to disagree on the physics unnoticed:
+    the tested one was irrelevant and the untested one was authoritative.
+
+    **Isotropic, unmasked tissue only, and that is deliberate** (plan S40). The
+    two compute *different Laplacians*: ``compute_phi_e`` applies a plain
+    5-point stencil over every node, while the production path uses
+    Finitewave's **anisotropic**, myocardium-**masked** diffusion kernel. At
+    production settings they must disagree, and an unconstrained ``allclose``
+    would fail for entirely correct reasons. Constraining the tissue keeps the
+    check aimed at what it is for — arithmetic errors in the weighting and the
+    axes, both visible on the simplest possible tissue. The anisotropy and the
+    mask are the solver's business, already covered by the reduces-to-stock
+    invariant above.
+
+    The inputs are matched by construction: our kernel receives the diffusion
+    increment ``u_tr - u``, so feeding it the same physical Laplacian
+    ``compute_phi_e`` computes internally makes the two directly comparable.
+    """
+    rng = np.random.default_rng(19)
+    n_i, n_j, dr = 20, 27, 0.25  # non-square again
+    v = rng.standard_normal((n_i, n_j))
+
+    # The physical Laplacian compute_phi_e forms internally: 5-point, /dr^2,
+    # zero on the boundary ring.
+    lap = np.zeros_like(v)
+    lap[1:-1, 1:-1] = (
+        v[2:, 1:-1] + v[:-2, 1:-1] + v[1:-1, 2:] + v[1:-1, :-2] - 4.0 * v[1:-1, 1:-1]
+    ) / (dr * dr)
+
+    positions_mm = np.array([[3.0, 2.0, 0.5], [1.5, 4.25, 0.8]])
+
+    ours = egm_kernel_2d(
+        v + lap,  # u_tr - u == lap, the same source term
+        v,
+        positions_mm / dr,  # every column in cells, standoff included
+        dr,
+        np.arange(n_i * n_j, dtype=np.int64),
+    )
+    reference = compute_phi_e(v[np.newaxis], electrode_positions_mm=positions_mm, dr_mm=dr)[0]
+
+    assert np.allclose(ours, reference, rtol=1e-10, atol=0.0), (
+        "the production kernel and compute_phi_e disagree on isotropic clean tissue; "
+        f"max rel diff {np.abs(ours / reference - 1).max():.3e}"
+    )
+
+
+def test_the_reference_check_would_catch_a_wrong_exponent() -> None:
+    """The cross-check above must be sensitive to the thing it guards.
+
+    A comparison that passed for any ``distance_power`` would prove nothing
+    about the weighting, which is the defect it exists to detect.
+    """
+    rng = np.random.default_rng(19)
+    n_i, n_j, dr = 20, 27, 0.25
+    v = rng.standard_normal((n_i, n_j))
+    lap = np.zeros_like(v)
+    lap[1:-1, 1:-1] = (
+        v[2:, 1:-1] + v[:-2, 1:-1] + v[1:-1, 2:] + v[1:-1, :-2] - 4.0 * v[1:-1, 1:-1]
+    ) / (dr * dr)
+    positions_mm = np.array([[3.0, 2.0, 0.5]])
+
+    wrong = egm_kernel_2d(
+        v + lap, v, positions_mm / dr, dr, np.arange(n_i * n_j, dtype=np.int64), 2.0, 1.0
+    )
+    reference = compute_phi_e(v[np.newaxis], electrode_positions_mm=positions_mm, dr_mm=dr)[0]
+
+    assert not np.allclose(wrong, reference, rtol=1e-3)
