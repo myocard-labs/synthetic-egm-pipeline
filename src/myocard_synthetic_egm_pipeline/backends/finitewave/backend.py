@@ -220,9 +220,11 @@ def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
     "x" for axis-0 throughout, and we use it for axis-1, so every physical
     ``(x, y)`` handed across the boundary has to swap.
 
-    Because ``anisotropy_ratio = 3`` makes the along-fibre axis conduct
-    ``sqrt(3)`` faster, getting this backwards did not merely mislabel an axis —
-    it put the fast axis at 90 degrees to the intended one.
+    Because the tensor makes the along-fibre axis conduct measurably faster
+    (3.09x at the shipped settings), getting this backwards did not merely
+    mislabel an axis — it put the fast axis at 90 degrees to the intended one,
+    and every conduction-velocity measurement taken before CL-170 was of the
+    transverse axis under a longitudinal label.
     """
     import math
 
@@ -235,29 +237,67 @@ def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
     return tissue
 
 
-def _configure_anisotropy_2d(
-    model: Any, geometry: Patch2DGeometry, base_diffusion: float = 1.0
-) -> None:
-    """Set the AP model's along/across diffusion so CV ratio matches geometry.
+def _configure_anisotropy_2d(model: Any, geometry: Patch2DGeometry) -> None:
+    """Shape the diffusion tensor so the realized CV ratio is the requested one.
 
-    For Aliev-Panfilov in Finitewave's asymmetric stencil, the
-    diffusion-tensor knobs are ``D_al`` (along-fiber) and ``D_ac``
-    (across-fiber). Since :math:`CV \\propto \\sqrt{D}`, setting
-    ``D_al / D_ac = ratio^2`` yields ``CV_al / CV_ac = ratio``. The
-    geometric mean is held at ``base_diffusion`` so the absolute CV
-    magnitude is preserved across different ratios.
+    **The knobs live on the STENCIL, not on the model** (CL-172). Finitewave
+    reads ``self.D_al`` / ``self.D_ac`` inside
+    ``AsymmetricStencil2D.compute_diffusion_components``. Until 2026-08-14 this
+    helper assigned them to the *model*, where Python created two attributes
+    that no reader ever consulted — so ``anisotropy_ratio`` did nothing at all
+    for the life of the project, and the realized ratio was always the
+    stencil's built-in ``D_al = 1, D_ac = 1/9`` (measured 3.093 for requested
+    1.0, 3.0 and 6.0 alike). A silent no-op, because assigning an unknown
+    attribute to a Python object is not an error.
 
-    Earlier (v0.1.0) behavior was to leave the stencil at Finitewave's
-    internal defaults, which produced a measured ratio of ~3.05
-    regardless of ``geometry.anisotropy_ratio``. This helper closes
-    that gap.
+    Why ``ratio ** 2``
+    ------------------
+    :math:`CV \\propto \\sqrt{D}`, so a *diffusion* ratio of :math:`\\rho^2`
+    gives a *velocity* ratio of :math:`\\rho`:
+
+    .. math::
+        \\frac{CV_{\\parallel}}{CV_{\\perp}}
+            = \\sqrt{\\frac{D_{al}}{D_{ac}}}
+            = \\sqrt{\\rho^{2}} = \\rho
+
+    Measured after the fix: requested 1.0 gives 1.000, requested 2.0 gives
+    2.15, requested 3.0 gives 3.093 — the few-percent excess is discretization
+    on a 0.25 mm mesh, not a modelling error.
+
+    Which axis is held fixed, and why it is the along-fibre one
+    ----------------------------------------------------------
+    A ratio only fixes the *quotient*; something else has to pin the scale.
+    We set ``D_al = 1`` and put the whole ratio into ``D_ac``, so **changing
+    the anisotropy leaves the along-fibre velocity untouched and slows the
+    transverse one**. The alternative — holding the geometric mean fixed, which
+    the previous docstring described — would make ``anisotropy_ratio`` shift
+    the along-fibre CV as a side effect, and the along-fibre axis is exactly
+    what the literature quotes and what we calibrate against. A knob that
+    silently moves the quantity you calibrated is the class of surprise this
+    step exists to remove.
+
+    Absolute scale is **not** set here. It belongs to ``model.D_model``, which
+    multiplies the whole tensor. Finitewave already offers three independent
+    multipliers on the same coefficient (``D_model`` x ``D_al`` x
+    ``tissue.conductivity``); this helper deliberately drives only one of them,
+    so the stencil stays a pure *shape* knob and the scale has a single home.
+    The removed ``base_diffusion`` argument was the beginnings of a second one.
+
+    Inert at the shipped default, by construction: ``ratio = 3`` yields exactly
+    ``D_al = 1, D_ac = 1/9``, which is what the stencil already defaults to.
+    Every bank generated at ``anisotropy_ratio = 3.0`` is therefore
+    bit-identical across this change — which is why it ships on its own, ahead
+    of the recalibration that changes everything.
+
+    Full analysis: ``intracardiac-platform/project/investigations/
+    ap_model_calibration.md`` section 3.
     """
-    import math
+    ratio = float(geometry.anisotropy_ratio)
 
-    ratio = geometry.anisotropy_ratio
-    sqrt_ratio = math.sqrt(ratio)
-    model.D_al = float(base_diffusion * sqrt_ratio)
-    model.D_ac = float(base_diffusion / sqrt_ratio)
+    stencil = fw.AsymmetricStencil2D()
+    stencil.D_al = 1.0
+    stencil.D_ac = 1.0 / (ratio * ratio)
+    model.stencil = stencil
 
 
 def _apply_substrate_2d(
