@@ -2,9 +2,11 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 19/41 steps done — **Wave 1 complete; Wave 2 underway**
-**Next:** S38 (CV recalibration + detection curve) — blocks further bank generation; see its notes.
-Then back to the planned Wave-2 order at S16.
+**Status:** in progress · **Progress:** 20/42 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b, hence 42)
+**Next:** **S38b** — the `calibrate(targets)` routine, Tier 1/2 config exposure, model-file
+plumbing and the round-trip test. Unblocked; only its *invocation* at shipped values waits on the
+targets settled in CL-176. See S38 and `investigations/ap_model_calibration.md` §6.4.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
@@ -663,9 +665,117 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   problem on its own, which is why S38 still stands.
 - **Depends on:** S39.
 
-### S38 — CV recalibration + one detection curve across corpora (CL-166 + CL-167) ☐ (3–5 h)
+### S38 — Model calibration + one detection curve across corpora (CL-166 + CL-167 + CL-172/173/174) ☐ (6–10 h)
+- **Re-scoped 2026-08-13/14; NOT blocked.** The premise below was wrong and measuring it first is
+  what found that out. Full write-up, with derivations, measured knob laws, literature and figures:
+  `intracardiac-platform/project/investigations/ap_model_calibration.md`.
+  **What research gates, and it is less than it looks (CL-174, investigation §6.4).** Because the
+  deliverable is a `calibrate(targets) → parameters` routine, the physiological numbers are
+  *arguments*, not inputs to the code. **Both implementation steps are unblocked.** Research gates
+  only the single call that writes the shipped default model file — the APD90 target (~180 ms
+  AF-remodelled vs ~250 ms sinus), the anisotropy ratio (3.0 or 2.0), and ideally the
+  `100u − 80` mV voltage mapping, which wants to ride the *same* regeneration wave rather than
+  force a second one. That call is the last action before bank generation, which was already
+  sequenced after all code in all repos — so the dependency resolves on its own.
+  **Split accordingly:** S38a ✅ (the anisotropy fix) and S38b ☐ (the routine, config exposure,
+  model-file plumbing, round-trip test — gated by nothing; only its *invocation* at shipped values
+  waits).
+
+#### S38a — make `anisotropy_ratio` operative ✅ (2 h) — done 2026-08-14
+- **Change:** `_configure_anisotropy_2d` builds an `AsymmetricStencil2D` with `D_al = 1.0`,
+  `D_ac = 1/ratio²` and assigns it to `model.stencil`. `base_diffusion` removed — absolute scale is
+  `model.D_model`'s job, and the API already has three multipliers on one coefficient.
+  Docstring rewritten; the v0.2.0 "now prescriptive" claim retracted in `constants.py` and
+  `specs.py`; the S39 test's magnitude reasoning corrected (it requested ratio 9 and passed on the
+  stencil default — the *direction* it asserts was always real, so the transpose fix stayed
+  verified, but a test that would not fail if its own input were ignored was proving less than it
+  claimed).
+- **Which axis is held fixed — a deliberate change of meaning.** `D_al` pinned, ratio into `D_ac`,
+  so anisotropy never disturbs the along-fibre velocity. The old docstring's geometric-mean
+  invariant would have made this knob move the axis we calibrate CV on.
+- **Verified 2026-08-14.** Suite + ruff + mypy green. End-to-end via four configs
+  (`configs/aniso_{across,along}_r{1,3}.yaml`) and `configs/compare_banks.py`: the ACROSS pair
+  **differs** (`max|Δ|/max|A| = 0.988`) where before the fix it was byte-identical; the ALONG pair
+  on clean tissue is **exactly identical** (`0.000e+00`), confirming the pinning.
+- **Two things the verification itself taught, both worth carrying:**
+  **(1) The along-fibre invariance is a plane-wave property.** The first draft of the ALONG configs
+  used fibrotic tissue and legitimately failed — the wave diffracts around holes and samples the
+  transverse tensor entry continuously. Measured `1.075` there, *larger* than the across-fibre
+  case. **So ρ = 2.0 in S38b changes every bank, not only transversely-propagating ones.**
+  **(2) `compare_banks.py` shipped a vacuous green** — a missing-bank skip counted as a pass and it
+  reported "all checks passed" against an empty directory. Fixed to return "nothing checked".
+  Precisely the failure mode this whole thread exists to remove, found in the tool built to find it.
+  **(a) CV needs no fix.** Along the fibre axis it measures **81.8 cm/s**; across, 26.5 cm/s. The
+  20–23 cm/s below was the **across**-fibre axis — precisely the confound CL-170 warned about and
+  the reason this step said "measure on the along-fibre axis, only identifiable after S37." Acting
+  on it would have driven the along-fibre velocity to ~245 cm/s.
+  **(b) APD90 is 51 ms** against 200–300 ms, because the 2026-06-10 calibration bought CV by
+  shrinking `ap_time_unit_ms` 12.9 → 1.97 and `APD ∝ K`. **Not cosmetic**: the repolarisation
+  deflection lands *inside* the 192 ms window at **51.2 ± 1.0 ms** after every activation, at 9–21 %
+  of the activation amplitude — a fixed-offset marker present in all synthetic traces and no real
+  ones, i.e. a shortcut feature. That makes this a correctness fix.
+  **(c) `anisotropy_ratio` is a no-op.** `_configure_anisotropy_2d` writes `model.D_al`/`D_ac`;
+  Finitewave reads them off the **stencil**. Realized ratio is 3.093 for requested 1.0, 3.0 and 6.0
+  alike. Since our config always asked for 3.0, **no bank is corrupted** — a documented knob has
+  simply been inert, and the v0.2.0 changelog claim that it was fixed needs retracting.
+  **(d) A fourth knob: `eps`.** Moves APD 1.9× over a 10× range while CV shifts under 2 %, which is
+  what makes both targets reachable at once. Measured candidate: `eps = 0.002` (the published AP
+  value), `K = 4.672`, `D_model = 5.24`, `dt = 0.0028` → **81.2 cm/s, 180.7 ms**, ~1.6× the steps.
+  **ANSWERED by research, CL-176 + CL-178 (2026-08-14):**
+  - **APD90 = ~220 ms, SAMPLED 200–260 per simulation** — not the 180 I proposed. My 180 **failed
+    the rule the fix exists to satisfy**: repolarisation leaves the window iff `APD > T(1−p)`, so
+    `APD ≥ T = 192` is the unconditional bound and 180 needs `p > 0.0625`. Franz *JACC* 1997 gives
+    219–245 ms at CL 800 for AF/flutter; the ~150–180 figures are short-CL rates we do not
+    simulate. **Sample, don't fix — the defect is the *fixed* offset, not repolarisation itself.**
+  - **ρ = 2.0** (Hansson *Eur Heart J* 1998: RA free wall 88 ± 9 cm/s, only weakly
+    direction-dependent; high ratios belong to bundles, not working myocardium). Puts transverse at
+    41 cm/s inside 30–50 where 3.0 forces 26.5, and validates our 81.8 cm/s along-fibre directly.
+  - **Voltage scaling: DON'T** — it is a pure ×100 gain (the −80 cancels in any Laplacian-like
+    difference) and yields no real mV. **Leaves the pre-generation gate entirely**, since a pure
+    scale can be applied post-hoc.
+  - **STU4 searches `(CV_∥, ρ)` only, holding APD and `eps` fixed** — once the shortcut is fixed,
+    APD is unobservable in the window *by construction*, so searching it adds a direction the data
+    cannot speak to. This corrects my §5b.3 proposal.
+  - **CL-178 — assert on the CROPPED trace.** The sim runs far longer than `T` and the window is
+    cut afterwards, so the round-trip "no second deflection" check must run on the cropped
+    192-sample trace at **smallest `p` + largest patch**, not the raw capture.
+  - **New: fibre angle is a degeneracy a point stimulus will NOT fix.** At `fiber_angle_rad = 0`
+    every bipole is exactly parallel to the fibres, and max bipolar delay differs by a factor of ρ
+    between parallel and perpendicular. **Sample `fiber_angle_rad` uniform on `[0, π)`** — after
+    the point stimulus lands, then re-measure.
+  **Still open (not gating):** fibrosis as insulating holes vs graded conductivity (interstitial ⇒
+  graded; an SR item, not Phase 1.5) and a synthetic-vs-real corpus-difference audit (endorsed;
+  wants an FB entry).
+  **Shape once unblocked:** two steps, not one — (1) the anisotropy fix, provably inert at our
+  default and therefore a clean low-risk commit; (2) the recalibration, which changes every future
+  bank. Daniel leaned toward folding them together pending this investigation; the split is
+  recommended because mixing a no-op change with a regenerate-everything change makes the second
+  harder to review. Detection-curve unification (CL-167) is unaffected and can ride with either.
+  **(e) The calibration knobs are hardcoded and must move to config as part of this (CL-173).**
+  Only `ap_time_unit_ms` is config-reachable today; `D_model`, `eps`, `dt`, `dr` and
+  `tissue.conductivity` are module constants or untouched library defaults. Since `D_model` and
+  `eps` change every sample of every trace, the no-hardcoding rule already requires it — and it is
+  what lets STU4 treat them as estimation parameters later. Tiered: physics exposed freely;
+  **`dt`/`dr` derived from the stability bound and hard-errored on violation**, because exceeding
+  it does not raise, it writes a well-formed bank full of a diverged field; AP reaction parameters
+  behind an opt-in that stamps `backend_metadata`. Everything exposed gets stamped, or banks stop
+  being reproducible. See `ap_model_calibration.md` §5b.
+  **(f) The deliverable is a routine, not four constants (CL-174).** Settled with Daniel
+  2026-08-14: parameterise by **physical targets** (CV, APD, anisotropy) and ship
+  `calibrate(targets) → parameters`, called **once** at the agreed targets. In target space the
+  solve is four unknowns from three targets, so it has one free direction, and spending it on
+  minimum cost makes the old "Option A" the argmin rather than a judgement call — Options B and C
+  stop being options at all (B is a worse point on A's family; C is a *constraint*, since the
+  space-scale constant is fixed by cells-per-electrode-spacing). Verified by **round-trip**: solve,
+  simulate, measure, assert the targets come back — the test that would have caught the 2026-06-10
+  error. The routine is also what STU4 needs per proposal, so it is reusable rather than throwaway.
+  **(g) AP parameters live in their own model file** referenced from the main config via the
+  existing `_resolve_path` convention, with standard parameterisations shipped in-package behind
+  short names. Banks record the **resolved contents**, not the path; **no partial overrides**.
+  See `ap_model_calibration.md` §5b.4.
 - **Discovered mid-wave 2026-08-12.** Local step, as S37.
-- **Change:** conduction velocity measures **20–23 cm/s** against ~50–100 cm/s for human atrium.
+- ~~**Change:** conduction velocity measures **20–23 cm/s** against ~50–100 cm/s for human atrium.~~
+  *(superseded — see the block above; retained so the reasoning trail stays readable)*
   Aliev–Panfilov is dimensionless, so physical CV is entirely our `D` / `dr_mm` / `ap_time_unit_ms`
   choice: `CV ∝ √D`, `CV ∝ dr_mm`, `CV ∝ 1/ap_time_unit_ms` — but **`APD ∝ ap_time_unit_ms`**, so
   raise `D` (or coarsen `dr_mm`) and **leave `ap_time_unit_ms` alone**, or APD rescales with it.

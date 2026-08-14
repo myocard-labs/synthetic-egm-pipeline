@@ -26,9 +26,29 @@ DEFAULT_ANISOTROPY_RATIO: float = 3.0
 """Conduction velocity along:across ratio.
 
 Atrial physiology sits in the 2-3:1 range; 3.0 is the project default.
-The value is now prescriptive (vs. the v0.1.0 behavior where it was
-metadata only) — see ``simulate.tissue.configure_anisotropy`` for the
-helper that plumbs the ratio through to Finitewave's diffusion tensor.
+
+**Prescriptive since 2026-08-14, and only since then.** v0.2.0 claimed to have
+made this value prescriptive, but the helper wrote the tensor components to the
+*model* while Finitewave reads them off the **stencil**, so the realized ratio
+was always the stencil's built-in 3.09 no matter what was requested (CL-172).
+The claim is retracted; the fix is in
+``backends.finitewave.backend._configure_anisotropy_2d``.
+
+Because the config has always requested 3.0 and the accidental value was 3.09,
+**no bank generated before the fix is wrong** — the knob was inoperative, not
+mis-set.
+
+**3.0 is not the right target, and this constant becomes 2.0 in S38b** (CL-176).
+Hansson *Eur Heart J* 1998;19:293 measured right-atrial free wall intra-operatively
+in sinus rhythm at 88 ± 9 cm/s and only weakly direction-dependent — 74-81 cm/s
+across four directions. The high ratios belong to **bundles** (crista terminalis,
+pectinate muscles), not to working myocardium, where 2:1 is standard. At 2.0 the
+transverse velocity lands at ~41 cm/s, inside the 30-50 range; at 3.0 it is forced
+to 26.5, below it.
+
+The value stays 3.0 through S38a on purpose: that step makes the knob *operative*
+and must be bit-identical at the shipped setting. Changing the value is a
+regenerate-everything change and belongs with the recalibration.
 """
 
 # ---------------------------------------------------------------------------

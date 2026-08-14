@@ -90,10 +90,15 @@ class Patch2DGeometry:
     fiber_angle_rad
         Fiber orientation in radians (0 = along +x, π/2 = along +y).
     anisotropy_ratio
-        Conduction-velocity ratio CV_along / CV_across. Prescriptive:
-        the backend's adapter configures the model's diffusion tensor so
-        the realized CV ratio matches (since CV ∝ √D, this corresponds
-        to D_along / D_across = anisotropy_ratio²).
+        Conduction-velocity ratio CV_along / CV_across. Prescriptive: the
+        backend's adapter shapes the **stencil's** diffusion tensor so the
+        realized CV ratio matches (since CV ∝ √D, this means
+        D_along / D_across = anisotropy_ratio²). Raising it holds the
+        along-fibre velocity fixed and slows the transverse one, so it does
+        not disturb a conduction-velocity calibration.
+
+        Prescriptive **since 2026-08-14** — before that the adapter wrote to
+        the model rather than the stencil and the knob did nothing (CL-172).
     """
 
     size_mm: float = DEFAULT_PATCH_SIZE_MM

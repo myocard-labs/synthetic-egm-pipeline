@@ -82,6 +82,39 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Fixed
 
+- **`geometry.anisotropy_ratio` had never done anything (CL-172).**
+  `_configure_anisotropy_2d` assigned `D_al` / `D_ac` to the **model**;
+  Finitewave reads them off the **stencil**. Python created two attributes that
+  no reader ever consulted, so the requested ratio was silently discarded and
+  the realized value was always the stencil's built-in `D_al = 1, D_ac = 1/9`.
+  Measured 3.093 for requested 1.0, 3.0 **and** 6.0 alike. The v0.2.0 changelog
+  claimed this helper made the value prescriptive; that claim is **retracted** —
+  the v0.1.0 behaviour it described ("~3.05 regardless") was still exactly what
+  happened.
+  **Nothing generated is wrong.** Every config has always requested 3.0 and the
+  accidental value was 3.09, so the knob was inoperative rather than mis-set,
+  and this fix is **bit-identical at the shipped default** — `D_al = 1,
+  D_ac = 1/ratio²` reproduces the stencil defaults exactly at ratio 3. That is
+  asserted as its own test, since it is the claim the step's safety rests on,
+  and it is why this ships ahead of the recalibration that changes every trace.
+  **Which axis stays fixed is a deliberate change of meaning.** `D_al` is pinned
+  at 1 and the whole ratio goes into `D_ac`, so raising the anisotropy slows the
+  transverse axis and leaves the longitudinal one alone. The old docstring
+  described holding the *geometric mean* fixed, which would have made this knob
+  shift the along-fibre velocity as a side effect — and the along-fibre axis is
+  what the literature quotes and what we calibrate against. The `base_diffusion`
+  argument is gone with it: absolute scale belongs to `model.D_model`, and
+  Finitewave already offers three multipliers on one coefficient without us
+  adding a fourth.
+  **The invariance is a plane-wave property only.** Along-fibre propagation
+  rides a tensor entry that is 1.0 at every ratio, so two banks differing only
+  in the ratio are bit-identical *on homogeneous tissue*. Add fibrosis and the
+  wave diffracts around every hole, sampling the transverse entry continuously —
+  measured on a fibrotic 40 mm patch, along-fibre propagation at ratio 1 vs 3
+  differs by **more** than the same change measured across the fibres. So in the
+  substrate we actually generate, the ratio matters whatever the fibre
+  orientation.
+
 - **The distance weighting was `1/r²` where the source term wanted `1/r` (CL-166).**
   Stock Finitewave 0.9.3 divides by `d`, the **squared** grid distance, and never
   takes a square root — an inverse-square weight applied to a Laplacian source.
