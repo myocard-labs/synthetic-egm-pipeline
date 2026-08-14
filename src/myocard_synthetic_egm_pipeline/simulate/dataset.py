@@ -26,7 +26,7 @@ whole dataset is reproducible.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -49,6 +49,7 @@ from myocard_synthetic_egm_pipeline.constants import (
     DEFAULT_ELECTRODE_SPACING_MM,
     DEFAULT_FIBROSIS_DENSITY_RANGE,
 )
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.label_policy import LabelPolicy
 from myocard_synthetic_egm_pipeline.simulate.result import SimulationResult
 from myocard_synthetic_egm_pipeline.simulate.runner import run_single
@@ -61,6 +62,18 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
     UniformRandomFibrosis,
     random_edge,
 )
+
+
+def _default_cell_model() -> CellModelSpec:
+    """The shipped parameterisation, resolved lazily.
+
+    A default rather than a required field so existing constructions keep
+    working; resolved through the card so the default is the *calibrated*
+    physics and not a constant that can drift away from it.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.model_cards import load_model_card
+
+    return load_model_card("af_remodelled_220ms", dr_mm=0.25, dr_model_units=0.25).solved
 
 
 @dataclass(frozen=True)
@@ -112,6 +125,16 @@ class DatasetConfig:
 
     label_policy: LabelPolicy
     run_config: RunConfig
+    cell_model: CellModelSpec = field(default_factory=lambda: _default_cell_model())
+    """Membrane model for every simulation in the dataset (D2's fifth spec).
+
+    Dataset-level rather than per-simulation for now: at APD 220 > T = 192 the
+    repolarisation marker is already outside the analysis window, so sampling
+    APD per simulation buys physiological variation rather than correctness.
+    When it is scheduled, this becomes a sampled field like ``density_range``
+    — and FB-34 (targets onto ``SubstrateStrategy``) makes that nearly free,
+    because the substrate is already drawn per simulation.
+    """
 
     fibrosis_density_range: tuple[float, float] = DEFAULT_FIBROSIS_DENSITY_RANGE
     fraction_healthy: float = 0.0
@@ -236,7 +259,7 @@ def generate_dataset(
         )
         activation = PlanarEdgeStimulus(
             edge=edge,
-            time_model_units=config.stimulus_delay_ms / config.run_config.ap_time_unit_ms,
+            time_model_units=config.cell_model.ms_to_model_time(config.stimulus_delay_ms),
         )
 
         # Sample electrode placement (height drawn inside .sample).
@@ -266,6 +289,7 @@ def generate_dataset(
             activation=activation,
             electrodes=electrodes,
             backend=backend,
+            cell_model=config.cell_model,
             config=config.run_config,
             rng=sim_rng,
             position_generator=position_generator,

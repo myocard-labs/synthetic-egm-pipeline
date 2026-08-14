@@ -127,6 +127,10 @@ packages = ["src/myocard_synthetic_egm_pipeline"]
 # imports from this package without an ignore-missing-imports override.
 artifacts = [
   "src/myocard_synthetic_egm_pipeline/py.typed",
+  # Shipped model cards. They are data, not code, so hatchling needs telling —
+  # and a config that names a card must resolve it from an installed wheel, not
+  # only from a source checkout.
+  "src/myocard_synthetic_egm_pipeline/models/*.yaml",
 ]
 
 [tool.hatch.build.targets.sdist]

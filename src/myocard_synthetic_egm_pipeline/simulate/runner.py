@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
     from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.cropping import crop_traces
 from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
     bipolar_from_unipolar,
@@ -61,6 +62,7 @@ def run_single(
     substrate: SubstrateStrategy,
     activation: ActivationSource,
     electrodes: ElectrodePlacement,
+    cell_model: CellModelSpec,
     backend: SimulationBackend,
     config: RunConfig,
     rng: np.random.Generator,
@@ -98,6 +100,7 @@ def run_single(
         substrate=substrate,
         activation=activation,
         electrodes=electrodes,
+        cell_model=cell_model,
         config=config,
         rng=rng,
     )

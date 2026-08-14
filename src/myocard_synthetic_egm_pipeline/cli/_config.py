@@ -33,7 +33,6 @@ from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ, UniformPositionGenerator
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig
 from myocard_synthetic_egm_pipeline.constants import (
-    AP_TIME_UNIT_MS,
     DEFAULT_ANISOTROPY_RATIO,
     DEFAULT_ELECTRODE_GRID_COLS,
     DEFAULT_ELECTRODE_GRID_ROWS,
@@ -56,12 +55,27 @@ from myocard_synthetic_egm_pipeline.simulate import (
     LocalDensityLabel,
     Patch2DGeometry,
 )
+from myocard_synthetic_egm_pipeline.simulate.calibration import ModelCard
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
+from myocard_synthetic_egm_pipeline.simulate.model_cards import (
+    ModelCardError,
+    load_model_card,
+)
 from myocard_synthetic_egm_pipeline.simulate.sizing import (
     WINDOW_LENGTH_MULTIPLE,
     required_capture_duration_ms,
     required_stimulus_delay_ms,
     window_length_samples,
 )
+
+DEFAULT_MODEL_CARD = "af_remodelled_220ms"
+"""Model card used when a config names none.
+
+Defaulted rather than optional: a config that omits ``backend.model`` still gets
+the calibrated parameterisation. Falling back to bare constants would silently
+generate uncalibrated physics, which is the failure S38 exists to remove, and
+"the user left out a line" is not a reason to do it.
+"""
 
 
 class ConfigError(ValueError):
@@ -290,6 +304,7 @@ def _build_run_config(
     *,
     position_generator: UniformPositionGenerator | None,
     stimulus_delay_ms: float = 0.0,
+    model_card: ModelCard | None = None,
 ) -> RunConfig:
     """Construct a :class:`RunConfig` from the ``run:`` block.
 
@@ -297,6 +312,12 @@ def _build_run_config(
     solver runs past the end of the trace and a window placed around the
     activation has signal behind it (see
     :mod:`~myocard_synthetic_egm_pipeline.simulate.sizing`).
+
+    When a **model card** is given, the membrane knobs come from its solved
+    block and the ``run:`` block may not restate them. Two sources for one
+    number is how a config ends up disagreeing with the bank it produced; the
+    card wins because it is the thing that carries an identity and a
+    verification (:mod:`~myocard_synthetic_egm_pipeline.simulate.model_cards`).
     """
     block = _optional(doc, "run", default={}) or {}
     trace_duration_ms = float(
@@ -341,12 +362,32 @@ def _build_run_config(
     if capture_duration_ms is None and stimulus_delay_ms > 0:
         capture_duration_ms = trace_duration_ms + stimulus_delay_ms
 
+    # A model card owns every membrane knob, so restating one in `run:` is
+    # refused rather than silently overridden — the whole point of a named
+    # parameterisation is that two banks bearing the name mean the same thing.
+    retired = [
+        key
+        for key in ("ap_time_unit_ms", "diffusion", "membrane_eps", "dt_model_units")
+        if key in block
+    ]
+    if retired:
+        raise ConfigError(
+            f"run.{', run.'.join(retired)} is retired. Membrane parameters are now "
+            "derived from physiological targets and live on a model card named by "
+            f"backend.model (default {DEFAULT_MODEL_CARD!r}) — see "
+            "src/myocard_synthetic_egm_pipeline/models/. Setting them here would "
+            "let two banks claim one parameterisation name with different physics, "
+            "which is the failure the card exists to prevent. To use different "
+            "values, write your own card and point backend.model at it."
+        )
+
     return RunConfig(
         trace_duration_ms=trace_duration_ms,
         output_fs_hz=output_fs_hz,
-        ap_time_unit_ms=float(_optional(block, "ap_time_unit_ms", default=AP_TIME_UNIT_MS)),
         capture_oversample=int(_optional(block, "capture_oversample", default=4)),
         capture_duration_ms=capture_duration_ms,
+        dr_model_units=float(_optional(block, "dr_model_units", default=0.25)),
+        model_card=model_card,
     )
 
 
@@ -405,6 +446,9 @@ class GenerateDatasetCLIConfig:
     # Label policy + run config
     label_policy: LabelPolicy
     run_config: RunConfig
+    cell_model: CellModelSpec
+    """Resolved from ``backend.model``. Held here rather than on ``RunConfig``
+    because it is a strategy spec (D2), not a per-run knob."""
     # Position policy for controlled-position cropping (SEP2). ``None`` means
     # no cropping was configured. Held here rather than folded into RunConfig
     # because it is stateful (it owns an rng) and RunConfig is a frozen value
@@ -499,8 +543,31 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     label_policy = _build_label_policy(doc)
     position_generator = _build_position_generator(doc)
     stimulus_delay_ms = _stimulus_delay_ms(doc, position_generator=position_generator)
+
+    # The card is resolved against the geometry, because verify_solved re-runs
+    # the calibration and the solve depends on the mesh pitch. A card is only
+    # valid for the mesh it was solved for.
+    # Defaulted, not optional. A config that names no card still gets the
+    # calibrated parameterisation rather than falling back to bare constants —
+    # silently generating uncalibrated physics is exactly the failure S38 exists
+    # to remove, and "the user forgot a line" is not a reason to do it.
+    model_reference = _optional(doc, "backend", "model", default=DEFAULT_MODEL_CARD)
+    assert isinstance(geometry, Patch2DGeometry)
+    try:
+        model_card = load_model_card(
+            str(model_reference),
+            config_dir=doc.get("_config_dir"),
+            dr_mm=geometry.dr_mm,
+            dr_model_units=float(_optional(doc, "run", "dr_model_units", default=0.25)),
+        )
+    except ModelCardError as exc:
+        raise ConfigError(str(exc)) from exc
+
     run_config = _build_run_config(
-        doc, position_generator=position_generator, stimulus_delay_ms=stimulus_delay_ms
+        doc,
+        position_generator=position_generator,
+        stimulus_delay_ms=stimulus_delay_ms,
+        model_card=model_card,
     )
 
     # --- substrate block ------------------------------------------------
@@ -617,6 +684,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         electrode_height_mm_range=electrode_height_mm_range,
         label_policy=label_policy,
         run_config=run_config,
+        cell_model=model_card.solved,
         position_generator=position_generator,
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,

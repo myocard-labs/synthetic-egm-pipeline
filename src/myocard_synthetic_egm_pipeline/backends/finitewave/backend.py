@@ -43,6 +43,11 @@ import numpy.typing as npt
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 from myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel import EGMTracker
+from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    AlievPanfilovCellModel,
+    CellModelSpec,
+)
+from myocard_synthetic_egm_pipeline.simulate.model_cards import card_provenance
 from myocard_synthetic_egm_pipeline.simulate.result import RawSimulationResult
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     ActivationSource,
@@ -55,10 +60,19 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
     UniformRandomFibrosis,
 )
 
-# Aliev-Panfilov stability defaults (Finitewave's recommended pair).
+# Aliev-Panfilov step defaults, retained ONLY as RunConfig fallbacks.
+#
+# These were the operative values until S38b; they now live on RunConfig
+# (``dt_model_units`` / ``dr_model_units``) so a generated bank records what
+# produced it. Kept here because the RunConfig defaults have to come from
+# somewhere and this is where the reasoning lives, but nothing reads them
+# during a simulation any more.
 _AP_DT_MODEL_UNITS: float = 0.01
-"""Integration step in AP model time units. 0.01 is Finitewave's
-recommended pairing with ``dr = 0.25`` for stable propagation."""
+"""Finitewave's recommended pairing with ``dr = 0.25`` for stable propagation.
+
+Note this pairing is only stable at ``D_model = 1``. The calibrated defaults
+run ``D_model`` near 8, where the bound is ~8x tighter — which is why ``dt`` is
+derived from the bound rather than defaulted."""
 
 _AP_DR_MODEL_UNITS: float = 0.25
 """AP model's internal dr (non-dimensional). NOT the same as
@@ -86,6 +100,7 @@ class FinitewaveBackend(SimulationBackend):
         substrate: SubstrateStrategy,
         activation: ActivationSource,
         electrodes: ElectrodePlacement,
+        cell_model: CellModelSpec,
         config: RunConfig,
         rng: np.random.Generator,
     ) -> RawSimulationResult:
@@ -99,6 +114,14 @@ class FinitewaveBackend(SimulationBackend):
                 "FinitewaveBackend supports only 'centered_grid_2d' electrode placement; "
                 f"got {electrodes.type!r}."
             )
+        # Refuse an unfamiliar membrane model BY NAME. Duck-typing into one we
+        # have no measured calibration for would produce numbers rather than an
+        # error, which is the worse failure. Courtemanche lands here at SEP5.
+        if not isinstance(cell_model, AlievPanfilovCellModel):
+            raise ValueError(
+                "FinitewaveBackend currently integrates only the Aliev-Panfilov "
+                f"cell model; got {cell_model.type!r}."
+            )
 
         # Strategy types are checked at runtime via the dispatch in the
         # private helpers; isinstance narrows the typing here so the
@@ -107,9 +130,28 @@ class FinitewaveBackend(SimulationBackend):
         assert isinstance(electrodes, CenteredGrid2D)
 
         # --- 2. Build the AP model and the tissue ---------------------------
+        # Every one of these came out of a module constant or a Finitewave
+        # default until S38b. They determine CV and APD, so the no-hardcoding
+        # rule required them in config; they arrive here already solved from
+        # physiological targets by simulate.calibration (CL-173/174).
         model = fw.AlievPanfilov2D()
-        model.dt = _AP_DT_MODEL_UNITS
-        model.dr = _AP_DR_MODEL_UNITS
+        model.dt = cell_model.dt_model_units
+        model.dr = config.dr_model_units
+        model.D_model = cell_model.diffusion
+        model.eps = cell_model.eps
+
+        # The stability bound is a joint property: diffusion is the cell model's,
+        # the grid step is the backend's. Checked here because this is the only
+        # place both are in hand -- and because violating it does not crash, it
+        # writes a well-formed bank full of a diverged field.
+        limit = cell_model.stability_limit(dr_model_units=config.dr_model_units)
+        if cell_model.dt_model_units > limit:
+            raise ValueError(
+                f"dt={cell_model.dt_model_units} exceeds the explicit-scheme bound "
+                f"{limit:.6g} at diffusion={cell_model.diffusion}, "
+                f"dr={config.dr_model_units}. Derive dt with "
+                "simulate.cell_models.calibrate_aliev_panfilov rather than by hand."
+            )
 
         tissue = _build_tissue_2d(geometry)
         _configure_anisotropy_2d(model, geometry)
@@ -133,14 +175,14 @@ class FinitewaveBackend(SimulationBackend):
         # The capture, not the trace: with cropping configured the solver must
         # run past the end of the trace so a window placed around the
         # activation has signal behind it (see simulate.sizing).
-        t_max_model_units = config.effective_capture_duration_ms / config.ap_time_unit_ms
+        t_max_model_units = cell_model.ms_to_model_time(config.effective_capture_duration_ms)
         model.t_max = t_max_model_units
 
         capture_step, fs_capture_hz = _pick_capture_step(
-            dt_model_units=_AP_DT_MODEL_UNITS,
+            dt_model_units=cell_model.dt_model_units,
             output_fs_hz=config.output_fs_hz,
             oversample=config.capture_oversample,
-            ap_time_unit_ms=config.ap_time_unit_ms,
+            ap_time_unit_ms=cell_model.time_unit_ms,
         )
 
         # The tracker takes electrode positions in mesh-index units
@@ -173,14 +215,20 @@ class FinitewaveBackend(SimulationBackend):
         backend_metadata: dict[str, Any] = {
             "backend_name": self.name,
             "finitewave_version_pin": _FINITEWAVE_VERSION_TAG,
-            "ap_dt_model_units": float(_AP_DT_MODEL_UNITS),
-            "ap_dr_model_units": float(_AP_DR_MODEL_UNITS),
-            "ap_time_unit_ms": float(config.ap_time_unit_ms),
+            "ap_dr_model_units": float(config.dr_model_units),
+            "anisotropy_ratio": float(geometry.anisotropy_ratio),
+            # dt / time unit / diffusion / eps are the cell model's to report.
+            **cell_model.to_metadata(),
             "t_max_model_units": float(t_max_model_units),
             "capture_step_integration": int(capture_step),
             "fs_capture_hz": float(fs_capture_hz),
             "model_class": "AlievPanfilov2D",
         }
+        # Physiological provenance: which named parameterisation produced this,
+        # and what it was aiming at. The four solved numbers above are the
+        # mechanism; these are what a reader can check against a paper.
+        if config.model_card is not None:
+            backend_metadata.update(card_provenance(config.model_card))
 
         return RawSimulationResult(
             unipolar_traces=unipolar,

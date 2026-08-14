@@ -24,13 +24,17 @@ dataset:
 
 backend:
   type: finitewave                         # Phase 1: only 'finitewave'
+  # Membrane parameterisation: targets + solved knobs + what they
+  # measured. Naming it here is what stops ap_time_unit_ms and
+  # friends being restated (and going stale) in every config.
+  model: af_remodelled_220ms
 
 geometry:
   type: patch_2d                           # Phase 1: only 'patch_2d'
   size_mm: 40.0                            # 4 cm square (Sánchez 2021 patch scale)
   dr_mm: 0.25                              # 0.25 mm; Finitewave default for AP
   fiber_angle_rad: 0.0                     # fibers along +x
-  anisotropy_ratio: 3.0                    # CV_along / CV_across; atrial ~2-3:1
+  anisotropy_ratio: 2.0                    # CV_along / CV_across; atrial WALL is ~2:1 (Hansson 1998)
 
 substrate:
   type: uniform_random_fibrosis            # Phase 1: only uniform-random
@@ -58,7 +62,6 @@ label_policy:
 run:
   trace_duration_ms: 192.0                 # 192 = 3x64; T must be a multiple of 64 (MobileViT)
   output_fs_hz: 1000.0                     # matches IAFDB so synthetic + real are length-comparable
-  ap_time_unit_ms: 1.97                    # AP non-dimensional time → ms (calibrated 2026-06-10)
   capture_oversample: 4                    # backend captures at 4× output rate; runner downsamples
 
 # Controlled-position cropping (SEP2). Omit this block for no cropping.

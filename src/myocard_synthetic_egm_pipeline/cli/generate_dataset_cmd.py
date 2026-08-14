@@ -63,6 +63,7 @@ def _build_dataset_config(cfg: GenerateDatasetCLIConfig, show_progress: bool) ->
         geometry=cfg.geometry,
         label_policy=cfg.label_policy,
         run_config=cfg.run_config,
+        cell_model=cfg.cell_model,
         fibrosis_density_range=cfg.fibrosis_density_range,
         fraction_healthy=cfg.fraction_healthy,
         fixed_stim_edge=cfg.fixed_stim_edge,

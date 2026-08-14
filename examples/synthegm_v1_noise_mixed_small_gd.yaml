@@ -21,13 +21,17 @@ dataset:
 
 backend:
   type: finitewave
+  # Membrane parameterisation: targets + solved knobs + what they
+  # measured. Naming it here is what stops ap_time_unit_ms and
+  # friends being restated (and going stale) in every config.
+  model: af_remodelled_220ms
 
 geometry:
   type: patch_2d
   size_mm: 40.0
   dr_mm: 0.25
   fiber_angle_rad: 0.0
-  anisotropy_ratio: 3.0
+  anisotropy_ratio: 2.0                    # CV_along / CV_across; atrial WALL is ~2:1 (Hansson 1998)
 
 substrate:
   type: uniform_random_fibrosis
@@ -54,7 +58,6 @@ label_policy:
 run:
   trace_duration_ms: 192.0
   output_fs_hz: 1000.0
-  ap_time_unit_ms: 1.97
   capture_oversample: 4
 
 # Controlled-position cropping (SEP2). Omit this block for no cropping.

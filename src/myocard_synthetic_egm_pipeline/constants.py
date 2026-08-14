@@ -22,7 +22,7 @@ DEFAULT_PATCH_SIZE_MM: float = 40.0
 DEFAULT_PATCH_DR_MM: float = 0.25
 """Spatial step (mm). Finitewave default for phenomenological models like AP."""
 
-DEFAULT_ANISOTROPY_RATIO: float = 3.0
+DEFAULT_ANISOTROPY_RATIO: float = 2.0
 """Conduction velocity along:across ratio.
 
 Atrial physiology sits in the 2-3:1 range; 3.0 is the project default.
@@ -38,17 +38,17 @@ Because the config has always requested 3.0 and the accidental value was 3.09,
 **no bank generated before the fix is wrong** — the knob was inoperative, not
 mis-set.
 
-**3.0 is not the right target, and this constant becomes 2.0 in S38b** (CL-176).
-Hansson *Eur Heart J* 1998;19:293 measured right-atrial free wall intra-operatively
-in sinus rhythm at 88 ± 9 cm/s and only weakly direction-dependent — 74-81 cm/s
-across four directions. The high ratios belong to **bundles** (crista terminalis,
-pectinate muscles), not to working myocardium, where 2:1 is standard. At 2.0 the
-transverse velocity lands at ~41 cm/s, inside the 30-50 range; at 3.0 it is forced
-to 26.5, below it.
+**2.0 since S38b** (CL-176), down from 3.0. Hansson *Eur Heart J* 1998;19:293
+measured right-atrial free wall intra-operatively in sinus rhythm at 88 ± 9 cm/s
+and only weakly direction-dependent — 74-81 cm/s across four propagation
+directions. The high ratios belong to **bundles** (crista terminalis, pectinate
+muscles), not to working myocardium, where 2:1 is standard, and our patch is
+generic working myocardium. At 2.0 the transverse velocity lands near 41 cm/s,
+inside the usual 30-50 range; at 3.0 it was forced to 26.5, below it.
 
-The value stays 3.0 through S38a on purpose: that step makes the knob *operative*
-and must be bit-identical at the shipped setting. Changing the value is a
-regenerate-everything change and belongs with the recalibration.
+The value stayed 3.0 through S38a deliberately: that step made the knob
+*operative* and had to be bit-identical at the shipped setting, so changing the
+number waited for the recalibration that regenerates everything anyway.
 """
 
 # ---------------------------------------------------------------------------
@@ -78,11 +78,26 @@ mixable without resampling."""
 # documentation tree. Re-run the calibration when anything upstream
 # changes (dr, AP diffusion coef, model swap to Courtemanche).
 AP_TIME_UNIT_MS: float = 1.97
-"""Aliev-Panfilov model time-unit → physical ms conversion. Calibrated
-2026-06-10 (was 12.9, the AP 1996 canine fit). Target was 80 cm/s
-longitudinal CV; observed under-K=12.9 was 12.2 cm/s, scaled by
-0.122/0.80 to give K = 1.97. Transverse calibration confirmed the same
-K within rounding."""
+"""**Legacy fallback only. Superseded by model cards (S38b).**
+
+The operative value now comes from a model card's ``solved.time_unit_ms``,
+derived from physiological targets by ``simulate.calibration.calibrate``. This
+constant survives as the default for a ``RunConfig`` built without a card, so
+pre-S38b code keeps meaning what it meant.
+
+**It is also a cautionary tale, which is why the history stays here.** Set
+2026-06-10 (from 12.9, the AP 1996 canine fit) by scaling to hit an 80 cm/s
+longitudinal CV target. The arithmetic was right and the result was wrong: this
+constant appears in the CV expression and the APD expression in *opposite*
+senses, so buying velocity with it sold action potential duration — APD fell
+from ~334 ms to 51 ms, putting a repolarisation deflection inside the analysis
+window at a fixed 51 ms offset after every activation. Two months, and nothing
+could contradict it, because the only artifact was four numbers and a comment.
+
+The measurement that revealed it was itself taken through a broken layer: the
+"12.2 cm/s" above was the *transverse* velocity read under a longitudinal label,
+because the fibre field was transposed (CL-170).
+"""
 
 # ---------------------------------------------------------------------------
 # Electrode grid defaults

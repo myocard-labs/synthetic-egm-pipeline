@@ -3,7 +3,8 @@
 Every concrete simulator (Finitewave today, openCARP / TorchCor in
 future phases) implements the :class:`SimulationBackend` Protocol. The
 Protocol is intentionally small — one ``simulate()`` method that takes
-the four strategy specs + a :class:`RunConfig` and returns a
+the **five** strategy specs (geometry, substrate, activation, electrodes, cell
+model) + a :class:`RunConfig` and returns a
 :class:`~myocard_synthetic_egm_pipeline.simulate.result.RawSimulationResult`.
 
 This subpackage is the **only place in the repo that imports backend
@@ -30,6 +31,8 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from myocard_synthetic_egm_pipeline.simulate.calibration import ModelCard
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.result import RawSimulationResult
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     ActivationSource,
@@ -53,33 +56,60 @@ class RunConfig:
         1000 Hz to match IAFDB. The backend captures at
         ``capture_oversample`` times this rate; the runner then
         downsamples.
-    ap_time_unit_ms
-        Aliev-Panfilov model time-unit → physical ms calibration
-        constant. Used by Finitewave-based backends to translate
-        ``trace_duration_ms`` into model time units. Future backends
-        with non-AP models may ignore this.
     capture_oversample
         Backend captures at ``capture_oversample * output_fs_hz``;
         runner downsamples to ``output_fs_hz``. Phase 1 default 4 —
         4x oversampling is enough margin to avoid aliasing without an
         explicit anti-alias filter at the AP membrane bandwidth.
+
+    **No cell-model parameters live here.** Membrane kinetics, the model-time
+    mapping and the diffusion coefficient ride on a
+    :class:`~myocard_synthetic_egm_pipeline.simulate.cell_models.CellModelSpec`
+    passed to :meth:`SimulationBackend.simulate` alongside the other four specs
+    (design note D2). S38b briefly made them fields here, which would have given
+    a Courtemanche run an ``eps`` field that means nothing to it.
     """
 
     trace_duration_ms: float
     output_fs_hz: float
-    ap_time_unit_ms: float
     capture_oversample: int = 4
     capture_duration_ms: float | None = None
+
+    dr_model_units: float = 0.25
+    """The solver's own space step. **Backend/scheme, not cell model.**
+
+    Presumes a **regular grid** — a future FEM backend has no such quantity,
+    which is why it sits here and not on the cell-model spec. It is also **not**
+    ``geometry.dr_mm`` (millimetres per cell); they merely both happen to be
+    0.25, and that coincidence is what makes a unit error here invisible.
+    """
+
+    model_card: ModelCard | None = None
+    """The named parameterisation the cell model came from. **Provenance only.**
+
+    Deliberately NOT a parameter: every value the backend reads now lives on the
+    :class:`~...simulate.cell_models.CellModelSpec` passed to
+    :meth:`SimulationBackend.simulate`. This field exists so a bank can say
+    *which* parameterisation produced it in physiological terms, rather than only
+    as four solved numbers.
+
+    It is a ``RunConfig`` field rather than a sixth ``simulate`` argument because
+    it is inert — D2's objection was to model-specific **parameters** landing in
+    a shared config object, and a label that nothing computes from is not one.
+    A path would be worthless here (it points into a mutable filesystem), so the
+    resolved card travels.
+    """
 
     def __post_init__(self) -> None:
         if self.trace_duration_ms <= 0:
             raise ValueError("trace_duration_ms must be positive.")
         if self.output_fs_hz <= 0:
             raise ValueError("output_fs_hz must be positive.")
-        if self.ap_time_unit_ms <= 0:
-            raise ValueError("ap_time_unit_ms must be positive.")
         if self.capture_oversample < 1:
             raise ValueError("capture_oversample must be >= 1.")
+        if self.dr_model_units <= 0:
+            raise ValueError("dr_model_units must be positive.")
+
         if self.capture_duration_ms is not None:
             if self.capture_duration_ms <= 0:
                 raise ValueError("capture_duration_ms must be positive.")
@@ -131,6 +161,7 @@ class SimulationBackend(Protocol):
         substrate: SubstrateStrategy,
         activation: ActivationSource,
         electrodes: ElectrodePlacement,
+        cell_model: CellModelSpec,
         config: RunConfig,
         rng: np.random.Generator,
     ) -> RawSimulationResult:
@@ -138,6 +169,9 @@ class SimulationBackend(Protocol):
 
         The backend is responsible for:
 
+        - Refusing a ``cell_model`` it cannot integrate, **by name**. A backend
+          that duck-types its way into an unfamiliar membrane model produces
+          numbers rather than an error, which is the worse failure.
         - Realizing the substrate on its native mesh representation.
         - Configuring anisotropy from ``geometry.anisotropy_ratio``.
         - Installing the activation source.
