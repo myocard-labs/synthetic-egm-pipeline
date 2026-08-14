@@ -1,0 +1,53 @@
+# Atrial substrate for AF ablation mapping — the Phase 1.5 default.
+#
+# Solved by myocard_synthetic_egm_pipeline.simulate.calibration.calibrate at
+# dr_mm = 0.25, dr_model_units = 0.25. The solved block is re-derived and
+# checked every time this card is loaded; if calibrate changes, loading raises
+# rather than silently generating different physics under the same name.
+
+model:
+  name: af_remodelled_220ms
+  type: aliev_panfilov
+
+  # --- what we asked for -------------------------------------------------
+  # Targets are physiology and are what the methods section cites.
+  targets:
+    # Hansson, Eur Heart J 1998;19(2):293 — intra-operative epicardial mapping
+    # of the right atrial free wall in sinus rhythm: 88 +/- 9 cm/s.
+    conduction_velocity_cm_s: 80.0
+
+    # Franz, JACC 1997;30:1785 — human monophasic action potentials at cycle
+    # length 800 ms: APD90 219-245 ms in AF/flutter patients. Our simulation is
+    # a single stimulus into rested tissue, i.e. a long-cycle-length beat, so
+    # the short-cycle 150-180 ms figures do not apply.
+    #
+    # MUST EXCEED trace_duration_ms (192). Repolarisation leaves the cropped
+    # window iff APD > T*(1-p), so APD >= T is the unconditional guarantee over
+    # the whole activation-position range. At 51 ms the repolarisation
+    # deflection sat 51.2 +/- 1.0 ms after every activation at 9-21 % of its
+    # amplitude — a fixed-offset marker present in all synthetic traces and no
+    # real ones, which is a shortcut feature.
+    apd90_ms: 220.0
+
+  # NOTE: anisotropy_ratio is NOT a target here. It is fibre architecture, so it
+  # lives on the geometry spec (geometry.anisotropy_ratio, default 2.0). 2:1 is
+  # the working-myocardium value; the higher ratios in the literature belong to
+  # specialised bundles (crista terminalis, pectinates).
+
+  # --- what calibrate() returned ----------------------------------------
+  # Derived, not chosen. Verified against a fresh solve on every load.
+  solved:
+    time_unit_ms: 5.709836        # K, ms per model time unit
+    diffusion: 7.826387           # model.D_model
+    eps: 0.002                    # the published Aliev-Panfilov value
+    dt_model_units: 0.001797      # 0.9 x the explicit-scheme stability bound
+
+  # --- what a simulation actually produced -------------------------------
+  # The closed form ignores discretization, which widens the upstroke relative
+  # to the mesh and lands conduction velocity a few percent high. Recorded
+  # rather than hidden: a few percent is irrelevant against a literature spread
+  # of 88 +/- 9 cm/s, but reporting the target as though it were the achieved
+  # value would not be. Refreshed by the round-trip test.
+  measured:
+    conduction_velocity_cm_s: 83.3
+    apd90_ms: 219.8
