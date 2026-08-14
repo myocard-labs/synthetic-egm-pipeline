@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(timeout 3000 pytest -q)",
+      "Bash(timeout 3000 pytest -q -m slow)",
+      "Bash(ruff check *)",
+      "Bash(ruff format *)",
+      "Bash(mypy)"
+    ]
+  }
+}
