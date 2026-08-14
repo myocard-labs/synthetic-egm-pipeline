@@ -41,8 +41,21 @@ from myocard_synthetic_egm_pipeline.simulate import (
     UniformRandomFibrosis,
     run_single,
 )
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import compute_phi_e
 from myocard_synthetic_egm_pipeline.simulate.specs import Edge
+
+
+def _shipped_cell_model() -> CellModelSpec:
+    """The calibrated parameterisation, for tests that do not vary it.
+
+    ``run_single`` requires a cell model rather than defaulting to one: it is a
+    policy value, and the project rule is that libraries ship no defaults for
+    policy values. Tests that are about something else get it from here.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.model_cards import load_model_card
+
+    return load_model_card("af_remodelled_220ms", dr_mm=0.25, dr_model_units=0.25).solved
 
 
 class _FakeModel:
@@ -65,7 +78,6 @@ def _inputs() -> tuple[Patch2DGeometry, CenteredGrid2D, RunConfig]:
     config = RunConfig(
         trace_duration_ms=192.0,
         output_fs_hz=1000.0,
-        ap_time_unit_ms=1.97,
         capture_oversample=4,
     )
     return geometry, electrodes, config
@@ -78,6 +90,7 @@ def _run(backend: FinitewaveBackend) -> npt.NDArray[np.float32]:
         substrate=UniformRandomFibrosis(density=0.2),
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
+        cell_model=_shipped_cell_model(),
         config=config,
         backend=backend,
         rng=np.random.default_rng(7),
@@ -226,10 +239,10 @@ def _directional_run(edge: Edge, *, anisotropy_ratio: float = 1.0) -> npt.NDArra
         substrate=UniformRandomFibrosis(density=0.0),
         activation=PlanarEdgeStimulus(edge=edge),
         electrodes=electrodes,
+        cell_model=_shipped_cell_model(),
         config=RunConfig(
             trace_duration_ms=192.0,
             output_fs_hz=1000.0,
-            ap_time_unit_ms=1.97,
             capture_oversample=4,
         ),
         backend=FinitewaveBackend(),
@@ -303,19 +316,30 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
     """
     ratio = 3.0  # ~3x along vs across, comfortably outside numerical noise
 
-    def clearing_sample(edge: Edge) -> int:
-        traces = _directional_run(edge, anisotropy_ratio=ratio)
-        envelope = np.abs(traces).max(axis=0)
-        live = np.flatnonzero(envelope > 0.01 * envelope.max())
-        return int(live.max())
+    def mean_arrival_sample(edge: Edge) -> float:
+        """Mean activation index across pairs — *arrival*, not clearing.
 
-    along_fibres = clearing_sample("left")  # propagates +x = fibre direction
-    across_fibres = clearing_sample("top")  # propagates +y
+        The original proxy was the **last** sample above 1 % of peak, i.e. when
+        the trace went quiet. That worked at APD 51 ms and stopped working the
+        moment S38b lengthened APD to 220 ms: the window is 192 ms, so the trace
+        is still repolarising at the final sample in **both** directions and the
+        proxy saturates at 191 for each. It failed for the right reason — the
+        calibration fix doing exactly what it was meant to.
+
+        Arrival time is the quantity the test was always reaching for, and it
+        does not saturate: a faster axis activates earlier regardless of how
+        long repolarisation then takes.
+        """
+        traces = _directional_run(edge, anisotropy_ratio=ratio)
+        return float(np.mean([int(np.argmax(np.abs(np.gradient(t)))) for t in traces]))
+
+    along_fibres = mean_arrival_sample("left")  # propagates +x = fibre direction
+    across_fibres = mean_arrival_sample("top")  # propagates +y
 
     assert along_fibres < across_fibres, (
-        "a wave along the fibres should clear the mesh sooner than one across them; "
-        f"got along={along_fibres} across={across_fibres}. If reversed, the fibre "
-        "components are transposed."
+        "a wave along the fibres should arrive sooner than one across them; "
+        f"got along={along_fibres:.1f} across={across_fibres:.1f}. If reversed, "
+        "the fibre components are transposed."
     )
 
 

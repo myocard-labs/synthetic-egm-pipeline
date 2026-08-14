@@ -2,11 +2,11 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 20/42 steps done — **Wave 1 complete; Wave 2 underway**
-(S38 split into S38a/S38b, hence 42)
-**Next:** **S38b** — the `calibrate(targets)` routine, Tier 1/2 config exposure, model-file
-plumbing and the round-trip test. Unblocked; only its *invocation* at shipped values waits on the
-targets settled in CL-176. See S38 and `investigations/ap_model_calibration.md` §6.4.
+**Status:** in progress · **Progress:** 22/43 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b/S38c, hence 43)
+**Next:** back to the planned Wave-2 order at **S16**. The pseudo-EGM / calibration cluster
+(S37 · S39 · S40 · S38a · S38b · S38c) is **complete and round-trip verified**; CL-167's
+detection-curve unification still rides with a later step.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
@@ -677,9 +677,127 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   `100u − 80` mV voltage mapping, which wants to ride the *same* regeneration wave rather than
   force a second one. That call is the last action before bank generation, which was already
   sequenced after all code in all repos — so the dependency resolves on its own.
-  **Split accordingly:** S38a ✅ (the anisotropy fix) and S38b ☐ (the routine, config exposure,
-  model-file plumbing, round-trip test — gated by nothing; only its *invocation* at shipped values
-  waits).
+  **Split accordingly:** S38a ✅ (the anisotropy fix) and S38b ✅ (the routine, config exposure,
+  model-file plumbing, round-trip test, shipped values).
+
+#### S38b — `calibrate(targets)`, model cards, config exposure, ρ 2.0 ✅ (6–9 h) — 2026-08-15
+- **Shipped as ONE step at Daniel's call**, against my proposed split: *"if we don't put the hooks
+  into the code I can't test the whole processing chain."* That is the S14 lesson restated — a
+  surface whose effect only arrives later is untestable — and it applies here more than it did
+  there, because the deliverable is a config path.
+- **`simulate/calibration.py`** — `ModelTargets → calibrate() → SolvedParameters`, analytic.
+  `eps` is *held* at the published 0.002, not solved: it is the free direction in a
+  4-unknowns-from-3-targets system, and spending it on staying citable is the cheapest option
+  (largest APD* ⇒ smallest K ⇒ smallest D ⇒ largest dt). Solving away from the measured `eps`
+  raises rather than silently using constants measured elsewhere.
+- **`simulate/model_cards.py`** — three-block cards (`targets` / `solved` / `measured`), resolved
+  by shipped name or by path beside the config. **`verify_solved` re-runs the solve on every
+  load** and raises on drift; the solve is analytic *precisely so* that guard is affordable
+  per-load rather than CI-only. **No partial overrides** — restating a card-owned key under `run:`
+  is an error, since a name that means two things is worse than no name.
+- **`backends/finitewave/measure.py`** — CV and APD90 measured off V_m via the activation-time and
+  action-potential trackers, not off the EGM: routing a conduction measurement through the
+  electrode model is how a transpose masqueraded as a physics problem for two days.
+- **RunConfig** gains `diffusion`, `membrane_eps`, `dt_model_units`, `dr_model_units` and the
+  resolved `model_card`, with a **stability-bound check that raises** — an over-large `dt` does not
+  crash, it writes a well-formed bank full of a diverged field. Defaults reproduce pre-S38b
+  behaviour so existing constructions still mean what they meant.
+- **Shipped card `af_remodelled_220ms`**: CV 80 cm/s, APD90 220 ms, ρ 2.0 → K 5.7098,
+  D 7.8264, dt 0.001797. Roughly **1.9× the integration steps** of the old settings.
+- **All six example configs restated `ap_time_unit_ms` and `anisotropy_ratio`**, so changing the
+  constants alone would have been cosmetic — the identical trap to S12's `trace_duration_ms`.
+  They now name the card and omit the ratio.
+- **Verify:** round-trip (solve → simulate → measure → assert targets); realized anisotropy at
+  2.0; **no second deflection inside the CROPPED window at the smallest `p`** (CL-178 — the
+  original 51 ms finding was measured on the raw capture and left the window arithmetic implicit);
+  plus card drift, rounding tolerance, unstable-`dt` refusal and card/RunConfig disagreement.
+- **⚠ ABSTRACTION AUDIT (Daniel, 2026-08-15) — S38b put cell-model parameters on the wrong
+  objects, and D2 had already ruled on it.** Written up below because the mapping matters more than
+  the fix: Courtemanche arrives at SEP5, and a parameter in the wrong home is a migration later.
+
+  **The rule: a parameter belongs to the *narrowest* thing that can change it independently.**
+  Four axes vary independently in this repo, so there are four homes:
+
+  | Axis | Varies when… | Home | Examples |
+  |---|---|---|---|
+  | **Physiology** | never — it is what we are trying to reproduce | `simulate/` targets, backend- and model-agnostic | `conduction_velocity_cm_s`, `apd90_ms` |
+  | **Tissue structure** | the patch changes | `GeometrySpec` | `anisotropy_ratio`, `fiber_angle_rad`, `dr_mm` |
+  | **Cell model** | AP → Courtemanche | **`CellModelSpec`** (D2) | `eps`, `time_unit_ms`, the AP measured constants, the AP solve |
+  | **Backend / scheme** | Finitewave → TorchCor | `RunConfig` + backend | `dt`, `dr_model_units`, `capture_oversample` |
+
+  **Why each of those boundaries is real, not taxonomic:**
+  - *Physiology vs cell model.* "APD90 = 220 ms" is a fact about atrium. `eps = 0.002` is an
+    artifact of one phenomenological model — Courtemanche has no `eps` at all, and being
+    **dimensional** it has no `time_unit_ms` either. A target survives a model swap; a knob does
+    not. That is the test for which side of the line something sits on.
+  - *Cell model vs backend.* Courtemanche runs on Finitewave **and** on TorchCor, so cell model is
+    orthogonal to backend rather than nested under it. Hence `simulate/cell_models.py`, importing no
+    backend library, and **not** `backends/finitewave/`.
+  - *Tissue vs cell model.* Anisotropy is fibre architecture, not membrane kinetics. It already
+    lives on `Patch2DGeometry`.
+  - *Backend.* `dr_model_units` presumes a **regular grid**; a TorchCor FEM backend has no such
+    quantity. `dt` is the price of an explicit scheme, not a property of tissue.
+
+  **What S38b got wrong, measured against that table:**
+  1. `RunConfig.membrane_eps`, `.diffusion`, `.dt_model_units` — cell-model parameters on the
+     **shared** backend config. D2 forbids exactly this: *"would put model-specific parameters …
+     into a config object that has no place for them."* A Courtemanche run would carry an `eps`
+     field that means nothing.
+  2. `MODEL_UNIT_APD90`, `MODEL_UNIT_CV`, `AP_EPS_PUBLISHED`, `SolvedParameters` and `calibrate()`
+     in `simulate/calibration.py` — AP-specific measurements and an AP-specific solve, sitting in a
+     module whose name claims universality. `calibrate`'s arithmetic (`K = APD/APD*`) only exists
+     because AP is dimensionless; for Courtemanche the same function is a different equation.
+  3. `ModelTargets.anisotropy_ratio` — **a duplicate** of `Patch2DGeometry.anisotropy_ratio`, with
+     nothing reconciling the two, and `calibrate()` never reads it. Two homes for one number.
+  4. `RunConfig.model_card` — the card names a *cell-model* parameterisation, so it should hang off
+     the cell-model spec.
+
+  **What is correctly placed, and why:** `ModelTargets` / `MeasuredValues` / `ModelCard` as
+  *concepts* are genuinely universal — every cell model targets a conduction velocity and an APD,
+  and every one of them benefits from a named, verified parameterisation. Only the **payload** of
+  `solved` is model-specific, so the card stays generic over it. `measure.py` is correctly under
+  `backends/finitewave/` because measuring requires integrating (Guardrail 1) — although what it
+  measures is universal, so a second backend gets its own `measure` and the round-trip test becomes
+  backend-parameterised.
+
+  **Fixed in S38c ✅ (2026-08-15)** — D2's `CellModelSpec` implemented, pulling part
+  of SEP5 forward because it was cheaper than migrating after banks exist.
+  - `simulate/cell_models.py` — `CellModelSpec` Protocol + `AlievPanfilovCellModel`,
+    carrying `time_unit_ms`, `diffusion`, `eps`, `dt_model_units`, plus the AP
+    measured constants and `calibrate_aliev_panfilov`. **Not** under `backends/`:
+    Courtemanche runs on Finitewave *and* TorchCor, so cell model is orthogonal to
+    backend, and this module imports no solver.
+  - **`ms_to_model_time()` is the seam that lets Courtemanche join.** Callers wrote
+    `duration_ms / ap_time_unit_ms` — an Aliev-Panfilov idiom leaking into the
+    runner, and simply wrong for a dimensional model. Asking the model instead
+    means Courtemanche answers *the same number* and nothing upstream changes.
+  - `RunConfig` keeps only trace/capture timing and `dr_model_units`; the Protocol
+    takes `cell_model` as the fifth spec, and `FinitewaveBackend` **refuses an
+    unfamiliar model by name** — duck-typing into one would return numbers instead
+    of an error. The stability check moved to the backend, the one place where the
+    model's `diffusion` and the backend's `dr` are both in hand.
+  - `ModelTargets` lost `anisotropy_ratio` (a duplicate of the geometry's, never
+    read by the solve).
+- **Verified end-to-end 2026-08-15, first clean run:** targets CV 80 cm/s /
+  APD90 220 ms → **measured 83.3 cm/s, 219.8 ms**, now recorded in the card's
+  `measured:` block. **APD lands 0.09 % off**, which is the separability the
+  two-target solve depends on — had `eps` and `K` been entangled, this is where it
+  would have shown. **CV runs 4.1 % high**, the discretization excess predicted as
+  "~1.5 % at D≈5, 8 % at D≈10"; the shipped `D` is 7.83, so the prediction held.
+  83.3 also sits inside Hansson's 88 ± 9 cm/s, so the *achieved* value is arguably
+  closer to atrium than the target asked for.
+- **Cost of getting there, worth recording for the retrospective.** S38c took
+  **six review round-trips**, almost all import errors, stale `type: ignore`
+  comments and lint ordering — the class a local `pytest`/`ruff`/`mypy` catches in
+  seconds. It was written blind in the Cowork sandbox, whose 45 s-per-call ceiling
+  cannot run the solver. Claude Code was authenticated on 2026-08-15 and closed it
+  in one pass. **The write-run-fix loop belongs there; design and investigation
+  stay in Cowork.** `CLAUDE.md` now carries the conventions so it starts warm.
+- **Left for later, deliberately:** per-simulation APD *sampling* over 200–260 ms. At 220 > T = 192
+  the marker is already outside the window, so sampling buys physiological variation rather than
+  correctness — and it needs a fifth per-simulation strategy spec through the backend Protocol,
+  which is its own step. Same for `fiber_angle_rad` sampling, which CL-176 wants **after** the
+  point stimulus lands so the distributions can be re-measured first.
 
 #### S38a — make `anisotropy_ratio` operative ✅ (2 h) — done 2026-08-14
 - **Change:** `_configure_anisotropy_2d` builds an `AsymmetricStencil2D` with `D_al = 1.0`,

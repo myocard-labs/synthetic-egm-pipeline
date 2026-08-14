@@ -272,7 +272,6 @@ def small_dataset_config() -> DatasetConfig:
         run_config=RunConfig(
             trace_duration_ms=DEFAULT_TRACE_DURATION_MS,
             output_fs_hz=1000.0,
-            ap_time_unit_ms=1.97,
         ),
         fibrosis_density_range=(0.0, 0.5),
         fraction_healthy=0.3,
@@ -411,6 +410,7 @@ class _MockBackend:
         substrate: Any,
         activation: Any,
         electrodes: Any,
+        cell_model: Any,
         config: Any,
         rng: np.random.Generator,
     ) -> RawSimulationResult:
@@ -442,9 +442,9 @@ class _MockBackend:
             backend_metadata={
                 "backend_name": self.name,
                 "finitewave_version_pin": "0.9.3",
-                "ap_dt_model_units": 0.01,
-                "ap_dr_model_units": 0.25,
-                "ap_time_unit_ms": float(config.ap_time_unit_ms),
+                "ap_dt_model_units": float(cell_model.dt_model_units),
+                "ap_dr_model_units": float(config.dr_model_units),
+                "ap_time_unit_ms": float(cell_model.time_unit_ms),
                 "capture_step_integration": 4,
                 "fs_capture_hz": float(config.output_fs_hz * config.capture_oversample),
                 "model_class": "AlievPanfilov2D",

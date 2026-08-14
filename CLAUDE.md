@@ -1,0 +1,106 @@
+# synthetic-egm-pipeline — working agreements
+
+Generates synthetic intracardiac EGMs (Finitewave / Aliev–Panfilov) for a CNN that
+flags fibrotic ablation targets in AF. The deliverable is a **white paper**, so
+reproducibility and honest provenance outrank convenience everywhere below.
+
+## Verify before claiming
+
+**Run the gate. Never report work as done without it.**
+
+```
+pytest -q && pytest -q -m slow && ruff check . && ruff format --check . && mypy
+```
+
+- `-m slow` runs the real solver. **A green fast suite is not a green suite** —
+  regressions hide there routinely.
+- `ruff format`, not just `ruff check`. A pre-commit hook otherwise reformats and
+  fails the commit.
+- Generation runs: `synthegm-generate-dataset configs/<name>.yaml --overwrite`.
+
+**Measure, don't restate.** Before designing around any inherited claim about
+behaviour or performance, measure it. This project has twice built work on a
+number that turned out to be measured through a broken layer — a conduction
+velocity read off the wrong axis, and an activation index that was a detection
+artifact. A quantity measured through an unverified layer is evidence about the
+layer, not the quantity.
+
+**Never filter verification output to where you expect errors.** Read all of it.
+
+## Tests must fail for the reason they claim
+
+Three tests in this repo have passed or failed for reasons unrelated to their
+stated purpose. Each time the cause was a **proxy that stopped tracking the thing
+it stood for**:
+
+- an anisotropy test that requested ratio 9 and passed on a stencil default,
+  because the knob was a silent no-op;
+- a "wave clears the mesh sooner" proxy that saturated once APD lengthened;
+- a bank-comparison script that reported "all checks passed" against an **empty
+  directory**, because a skip counted as a pass.
+
+When writing a test, ask what would happen if its own input were ignored. If it
+would still pass, it is measuring something else.
+
+## Architecture
+
+Five strategy specs — geometry, substrate, activation, electrodes, **cell model**
+— are pure data with a `type` discriminator the backend dispatches on. Declare
+`type` as a read-only `@property` in the Protocol; the bare `type: str` form
+demands a settable attribute and frozen dataclasses then fail to satisfy it.
+
+**A parameter belongs to the narrowest thing that can change it independently:**
+
+| Axis | Home | Examples |
+|---|---|---|
+| Physiology (survives every swap) | `simulate/calibration.py` targets | `conduction_velocity_cm_s`, `apd90_ms` |
+| Tissue structure | `GeometrySpec` | `anisotropy_ratio`, `fiber_angle_rad`, `dr_mm` |
+| Cell model (AP → Courtemanche) | `simulate/cell_models.py` | `eps`, `time_unit_ms`, `diffusion`, `dt` |
+| Backend / scheme | `RunConfig` | `dr_model_units`, `capture_oversample` |
+
+The test is *does this survive a cell-model swap?* `apd90_ms` does; `eps` does not
+(Courtemanche has none), and `time_unit_ms` does not (only a dimensionless model
+needs a mapping to ms).
+
+**Guardrail 1:** `backends/` is the only place that may import a solver library.
+**Guardrail 3:** if the runner needs something the backend Protocol lacks, extend
+the Protocol rather than smuggling it through `RunConfig`.
+
+**No hardcoded generation parameters.** Anything a generated bank depends on lives
+in config or a model card. Membrane knobs come from a named card
+(`src/.../models/*.yaml`), verified against a fresh solve on every load.
+
+## Working style
+
+- **One step at a time, one repo at a time.** Stop after each step for review.
+  Review attention is the bottleneck, not typing.
+- **Do not hand over git commands until asked.** Review first.
+- Commits: `[Type] Subject` + `*` bullets. Separate commits for feature / docs /
+  tests. **No backticks, `$`, backslash or `!` in the message** — it is passed as
+  a double-quoted shell string and backticks open command substitution.
+- Daniel opens and merges PRs in the GitHub web UI. Supply plain `git` commands,
+  no `gh` CLI, one command per code block, no `cd` prefix.
+- `GIT_OPTIONAL_LOCKS=0` on any git read; never `stash`/`add` from an agent.
+- Every repo has `project/` (internal) and `docs/` (external). `/configs/` is
+  gitignored scratch; shared configs live in `examples/`.
+
+## Traps that have already cost time
+
+- **Scripted bulk edits.** A regex stripping a keyword from one constructor ate
+  the same keyword inside another. A `replace()` that silently matched nothing
+  left two definitions of one constant. **Verify the result after every scripted
+  edit**, not when something downstream breaks.
+- **Moving a symbol between modules.** Grep *every* reference immediately,
+  including imports buried inside function bodies — fixing only the one in the
+  traceback cost three round-trips.
+- **Example configs restate defaults.** Changing a constant in `constants.py` is
+  often cosmetic because all six examples set the value explicitly. Check them.
+- Finitewave's `D_al`/`D_ac` live on the **stencil**, not the model; assigning to
+  the model creates a dead attribute and fails silently.
+
+## Where the reasoning lives
+
+`project/phase_1_5_plan.md` is the implementation plan (steps, status, design
+notes D1–D9). Cross-repo decisions and their evidence live in
+`../intracardiac-platform/project/investigations/` and the phase coordination log
+(`CL-NNN` references throughout the code point there).

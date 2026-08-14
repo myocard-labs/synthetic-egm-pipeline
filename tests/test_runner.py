@@ -22,10 +22,23 @@ from myocard_synthetic_egm_pipeline.simulate import (
     UniformRandomFibrosis,
     run_single,
 )
+from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.sizing import (
     required_capture_duration_ms,
     window_length_samples,
 )
+
+
+def _shipped_cell_model() -> CellModelSpec:
+    """The calibrated parameterisation, for tests that do not vary it.
+
+    ``run_single`` requires a cell model rather than defaulting to one: it is a
+    policy value, and the project rule is that libraries ship no defaults for
+    policy values. Tests that are about something else get it from here.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.model_cards import load_model_card
+
+    return load_model_card("af_remodelled_220ms", dr_mm=0.25, dr_model_units=0.25).solved
 
 
 def _build_run_inputs() -> tuple[Patch2DGeometry, CenteredGrid2D, RunConfig]:
@@ -35,7 +48,6 @@ def _build_run_inputs() -> tuple[Patch2DGeometry, CenteredGrid2D, RunConfig]:
     config = RunConfig(
         trace_duration_ms=DEFAULT_TRACE_DURATION_MS,
         output_fs_hz=1000.0,
-        ap_time_unit_ms=1.97,
         capture_oversample=4,
     )
     return geometry, electrodes, config
@@ -50,6 +62,7 @@ def test_run_single_output_shape(mock_backend: SimulationBackend) -> None:
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -66,6 +79,7 @@ def test_run_single_pinned_to_exact_duration(mock_backend: SimulationBackend) ->
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -82,6 +96,7 @@ def test_run_single_midpoints_shape(mock_backend: SimulationBackend) -> None:
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -97,6 +112,7 @@ def test_run_single_run_metadata_keys(mock_backend: SimulationBackend) -> None:
         activation=PlanarEdgeStimulus(edge="bottom"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -128,6 +144,7 @@ def test_run_single_substrate_mask_forwarded(mock_backend: SimulationBackend) ->
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -144,6 +161,7 @@ def test_run_single_electrode_row_per_pair(mock_backend: SimulationBackend) -> N
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -174,6 +192,7 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
         activation=activation,
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -204,6 +223,7 @@ def test_run_metadata_join_key_is_simulation_id(mock_backend: SimulationBackend)
         activation=PlanarEdgeStimulus(edge="top"),
         electrodes=electrodes,
         backend=mock_backend,
+        cell_model=_shipped_cell_model(),
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -252,6 +272,7 @@ def test_sized_capture_yields_full_length_traces_with_no_padding(
         substrate=UniformRandomFibrosis(density=0.2),
         activation=PlanarEdgeStimulus(edge="left"),
         electrodes=electrodes,
+        cell_model=_shipped_cell_model(),
         config=sized,
         backend=mock_backend,
         rng=np.random.default_rng(0),
@@ -282,6 +303,7 @@ def test_a_short_capture_raises_instead_of_padding(mock_backend: SimulationBacke
             substrate=UniformRandomFibrosis(density=0.2),
             activation=PlanarEdgeStimulus(edge="left"),
             electrodes=electrodes,
+            cell_model=_shipped_cell_model(),
             config=config,
             backend=_ShortBackend(mock_backend, shortfall=64),  # type: ignore[arg-type]
             rng=np.random.default_rng(0),
@@ -298,6 +320,7 @@ def test_short_capture_error_points_at_the_sizing_knob(mock_backend: SimulationB
             substrate=UniformRandomFibrosis(density=0.2),
             activation=PlanarEdgeStimulus(edge="left"),
             electrodes=electrodes,
+            cell_model=_shipped_cell_model(),
             config=config,
             backend=_ShortBackend(mock_backend, shortfall=64),  # type: ignore[arg-type]
             rng=np.random.default_rng(0),
@@ -314,9 +337,14 @@ def test_stimulus_delay_moves_the_activation_later(mock_backend: SimulationBacke
     so the delay is recoverable from the artifact.
     """
     delay_ms = 40.0
-    ap_time_unit_ms = 1.97
-    activation = PlanarEdgeStimulus(edge="left", time_model_units=delay_ms / ap_time_unit_ms)
+    # Converted through the cell model, not by dividing by a constant. That
+    # division was an Aliev-Panfilov idiom leaking into the runner and is simply
+    # wrong for a dimensional model like Courtemanche; asking the model is the
+    # seam that lets it join (D2).
+    cell_model = _shipped_cell_model()
+    expected = cell_model.ms_to_model_time(delay_ms)
+    activation = PlanarEdgeStimulus(edge="left", time_model_units=expected)
 
-    assert activation.time_model_units == pytest.approx(delay_ms / ap_time_unit_ms)
+    assert activation.time_model_units == pytest.approx(expected)
     # Default is fire-at-zero, so an unset delay cannot shift anything.
     assert PlanarEdgeStimulus(edge="left").time_model_units == 0.0

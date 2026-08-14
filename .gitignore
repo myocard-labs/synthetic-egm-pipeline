@@ -48,6 +48,20 @@ coverage.xml
 .DS_Store
 
 # --------------------------------------------------------------------
+# AI coding assistants
+# CLAUDE.md IS committed -- it is project convention, the agent-facing
+# counterpart to CONTRIBUTING.md, and it is worth exactly as much as it is
+# shared. What gets ignored is the per-developer and per-tool state:
+#   * .claude/settings.local.json -- personal permissions/overrides
+#   * CLAUDE.local.md             -- personal notes, the documented local variant
+#   * editor-side assistant state -- same rule as .vscode/ above (no IDE files)
+# .claude/settings.json (shared, deliberate) stays trackable.
+# --------------------------------------------------------------------
+.claude/settings.local.json
+.claude/*.local.json
+CLAUDE.local.md
+
+# --------------------------------------------------------------------
 # Notebooks (committed clean; nbstripout enforces this via pre-commit)
 # --------------------------------------------------------------------
 .ipynb_checkpoints/

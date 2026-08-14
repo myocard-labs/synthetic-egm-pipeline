@@ -63,7 +63,6 @@ def _config_doc(*, out_dir: Path, noise_bank: Path, clean_intermediate: bool) ->
         "run": {
             "trace_duration_ms": 192.0,
             "output_fs_hz": 1000.0,
-            "ap_time_unit_ms": 1.97,
             "capture_oversample": 4,
         },
         "output": {

@@ -715,7 +715,7 @@ def test_wave_1_equivalence_against_the_real_backend(tmp_path: Path) -> None:
         n_simulations=2,
         geometry=Patch2DGeometry(size_mm=10.0, dr_mm=0.25, anisotropy_ratio=3.0),
         label_policy=LocalDensityLabel(radius_mm=2.0, threshold=0.1),
-        run_config=RunConfig(trace_duration_ms=40.0, output_fs_hz=1000.0, ap_time_unit_ms=1.97),
+        run_config=RunConfig(trace_duration_ms=40.0, output_fs_hz=1000.0),
         fibrosis_density_range=(0.0, 0.4),
         electrode_n_rows=3,
         electrode_n_cols=3,

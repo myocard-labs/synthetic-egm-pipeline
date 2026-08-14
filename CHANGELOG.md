@@ -8,6 +8,30 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Added
 
+- **Model parameters are solved from physiological targets, not hardcoded
+  (S38b, CL-173/174/176/178).** `simulate.calibration.calibrate` takes a
+  conduction velocity, an APD90 and an anisotropy ratio and returns the four
+  knobs the solver eats. The knobs were previously module constants and
+  untouched Finitewave defaults — a standing violation of the rule that any
+  parameter a generated bank depends on lives in config, and the reason the
+  June calibration could be wrong for two months with nothing to contradict it.
+  **Named model cards** (`backend.model: af_remodelled_220ms`) carry three
+  blocks: the physiological `targets`, the `solved` knobs, and what a
+  simulation `measured`. Loading one **re-runs the solve and raises** if the
+  recorded knobs no longer match — so a future change to `calibrate` cannot
+  quietly put two different physics under one parameterisation name. The solve
+  is analytic precisely so that guard can run on every load rather than only in
+  CI. Cards resolve by shipped name or by path beside the config, and **partial
+  overrides are refused**: setting `run.ap_time_unit_ms` alongside a card is an
+  error, because the whole value of a name is that it means one thing.
+  Banks record the **resolved contents**, not the path.
+  **Verified by round-trip** — solve, simulate, measure, assert the measurement
+  returns the targets. That test would have failed in June. A companion check
+  asserts no secondary deflection survives **inside the cropped 192-sample
+  window at the smallest activation position** (CL-178), which is where the
+  defect actually lived; the original measurement was taken on the raw capture
+  and left the window arithmetic implicit.
+
 - **Our own pseudo-EGM kernel** (`backends/finitewave/egm_kernel.py`), replacing
   Finitewave's `ECG2DTracker` in the production path. **`egm`, not `ecg`** — this
   computes the extracellular potential at *intracardiac* electrode positions,
@@ -64,6 +88,26 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
   is still the first `T` samples. The window is cut in the next step.
 
 ### Changed
+
+- **`anisotropy_ratio` default 3.0 -> 2.0, and APD90 51 ms -> 220 ms (CL-176).**
+  Atrial working myocardium is only weakly direction-dependent — Hansson 1998
+  measures the right-atrial free wall at 88 +/- 9 cm/s with 74-81 cm/s across
+  four propagation directions — and the high ratios in the literature belong to
+  specialised bundles. At 2.0 the transverse velocity lands near 41 cm/s, inside
+  the usual 30-50; at 3.0 it was forced to 26.5, below it.
+  The APD target is **220 ms and must exceed the 192 ms trace duration**:
+  repolarisation leaves the cropped window only if `APD > T(1-p)`, so `APD >= T`
+  is the unconditional guarantee across the position range. An earlier proposal
+  of 180 ms — plausible from the AF literature, which quotes short-cycle rates
+  we do not simulate — fails that rule for any `p < 0.0625`.
+  **Every generated bank changes.** In fibrotic tissue the anisotropy ratio
+  affects propagation regardless of fibre orientation, because the wave
+  diffracts around every hole; the along-fibre invariance that holds for a plane
+  wave does not survive a substrate.
+  All six example configs restated `ap_time_unit_ms` and `anisotropy_ratio`
+  explicitly, so changing the constants alone would have been cosmetic — the
+  same trap as the `trace_duration_ms` default in S12. They now name a card
+  instead.
 
 - **A short capture now raises instead of zero-padding.** The old fallback
   padded "so the bank stays uniform" — uniform in the worst way, since the pad

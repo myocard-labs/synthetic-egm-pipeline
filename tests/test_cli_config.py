@@ -386,7 +386,6 @@ def _minimal_generate_doc(tmp_path: Path) -> dict[str, object]:
         "run": {
             "trace_duration_ms": 192.0,
             "output_fs_hz": 1000.0,
-            "ap_time_unit_ms": 1.97,
         },
         "output": {"classifier_bank": "out.classifier.h5"},
     }
