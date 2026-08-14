@@ -29,6 +29,7 @@ from finitewave.cpuwave.tracker.ecg_tracker import _compute_ecg_2d
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig
 from myocard_synthetic_egm_pipeline.backends.finitewave import FinitewaveBackend
+from myocard_synthetic_egm_pipeline.backends.finitewave import backend as backend_module
 from myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel import (
     EGMTracker,
     egm_kernel_2d,
@@ -285,11 +286,22 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
 
     ``specs.Patch2DGeometry`` says *"0 = along +x"*. Finitewave stores fibre
     component 0 against mesh axis-0, which is our **y** — so writing
-    ``fibers[..., 0] = cos(theta)`` put the fast axis 90 degrees off. With
-    ``anisotropy_ratio``, conduction along the fibres is ``sqrt(ratio)`` faster,
-    so the wave clears the mesh sooner in the fibre direction.
+    ``fibers[..., 0] = cos(theta)`` put the fast axis 90 degrees off, and the
+    wave clears the mesh sooner along whichever axis the fibres actually run.
+
+    **The magnitude reasoning here used to be wrong, and the test passed anyway**
+    (CL-172). It requested ``anisotropy_ratio = 9`` and argued conduction was
+    ``sqrt(9) = 3x`` faster along the fibres. In fact the request did nothing —
+    ``anisotropy_ratio`` was a no-op until S38a — and the 3x came from the
+    stencil's built-in default. What the test genuinely checks is the
+    **direction**, which is set by the fibre field and was always real, so the
+    S39 transpose fix stayed verified throughout. But a test that would not have
+    failed if its own input were ignored was proving less than it claimed, so
+    the ratio is now a plain 3.0 and the *magnitude* claim lives in
+    :func:`test_the_requested_anisotropy_is_the_realized_one`, which does fail
+    if the knob is ignored.
     """
-    ratio = 9.0  # sqrt(9) = 3x, comfortably outside numerical noise
+    ratio = 3.0  # ~3x along vs across, comfortably outside numerical noise
 
     def clearing_sample(edge: Edge) -> int:
         traces = _directional_run(edge, anisotropy_ratio=ratio)
@@ -384,3 +396,134 @@ def test_the_reference_check_would_catch_a_wrong_exponent() -> None:
     reference = compute_phi_e(v[np.newaxis], electrode_positions_mm=positions_mm, dr_mm=dr)[0]
 
     assert not np.allclose(wrong, reference, rtol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# S38a — anisotropy_ratio is operative (CL-172)
+# ---------------------------------------------------------------------------
+
+
+def _cv_model_units(edge: Edge, ratio: float) -> float:
+    """Plane-wave conduction velocity in model units, straight from V_m.
+
+    Measured off ``ActivationTime2DTracker`` rather than off the EGM, because
+    conduction velocity is a property of the propagating field and routing it
+    through the electrode model would fold in the pseudo-EGM's own behaviour.
+    """
+    geometry = Patch2DGeometry(size_mm=12.0, dr_mm=0.25, anisotropy_ratio=ratio)
+    model = fw.AlievPanfilov2D()
+    model.dt = backend_module._AP_DT_MODEL_UNITS
+    model.dr = backend_module._AP_DR_MODEL_UNITS
+    tissue = backend_module._build_tissue_2d(geometry)
+    backend_module._configure_anisotropy_2d(model, geometry)
+    backend_module._apply_substrate_2d(
+        tissue=tissue,
+        strategy=UniformRandomFibrosis(density=0.0),
+        rng=np.random.default_rng(0),
+    )
+    model.cardiac_tissue = tissue
+    backend_module._install_activation_2d(
+        model=model, source=PlanarEdgeStimulus(edge=edge), tissue=tissue
+    )
+    model.t_max = 200.0
+
+    tracker = fw.ActivationTime2DTracker()
+    tracker.threshold = 0.5
+    sequence = fw.TrackerSequence()
+    sequence.add_tracker(tracker)
+    model.tracker_sequence = sequence
+    model.run()
+
+    # Average out the transverse direction, then fit activation time against
+    # index over the middle 40 % — away from the stimulus and the far boundary.
+    activation = np.asarray(tracker.act_t)
+    axis = 1 if edge == "left" else 0
+    profile = activation.mean(axis=1 - axis)
+    lo, hi = int(0.3 * len(profile)), int(0.7 * len(profile))
+    index = np.arange(lo, hi)
+    reached = profile[lo:hi] > 0
+    assert reached.sum() > 5, f"wave never crossed the fit window for edge={edge!r}"
+    slope = np.polyfit(index[reached], profile[lo:hi][reached], 1)[0]
+    return float(geometry.dr_mm / slope)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("ratio", [1.0, 2.0])
+def test_the_requested_anisotropy_is_the_realized_one(ratio: float) -> None:
+    """``anisotropy_ratio`` must actually reach the solver.
+
+    Until 2026-08-14 it did not. ``_configure_anisotropy_2d`` assigned ``D_al``
+    and ``D_ac`` to the **model**, while Finitewave reads them off the
+    **stencil** — so Python created two attributes nobody consulted and the
+    realized ratio was the stencil's built-in 3.09 whatever was requested.
+    Measured 3.093 for requested 1.0, 3.0 and 6.0 alike (CL-172).
+
+    **Ratio 1.0 is the load-bearing case** — it is the one the old code could
+    not produce, so a test at 3.0 alone would have passed against the bug.
+    2.0 is the value S38b ships (CL-176), covered here so the knob is exercised
+    at its intended setting before that step depends on it. 3.0 is deliberately
+    absent: it is covered exactly, not approximately, by
+    :func:`test_the_default_ratio_reproduces_the_stencil_defaults_exactly`.
+
+    Tolerance is 10 %: the realized ratio carries a few percent of
+    discretization excess on a 0.25 mm mesh (2.0 measures ~2.15), which is a
+    property of the grid rather than of the tensor.
+    """
+    along = _cv_model_units("left", ratio)  # +x, the fibre direction
+    across = _cv_model_units("top", ratio)  # +y
+    realized = along / across
+
+    assert realized == pytest.approx(ratio, rel=0.10), (
+        f"requested anisotropy_ratio={ratio} but measured CV ratio {realized:.3f} "
+        f"(along {along:.4f}, across {across:.4f}). A realized ~3.09 at every "
+        "requested value means D_al/D_ac is being set somewhere nothing reads."
+    )
+
+
+@pytest.mark.slow
+def test_the_shipped_ratio_leaves_the_along_fibre_velocity_alone() -> None:
+    """Changing the anisotropy must not move the axis we calibrate against.
+
+    ``D_al`` is pinned at 1 and the whole ratio goes into ``D_ac``, so raising
+    the anisotropy slows the transverse axis and leaves the longitudinal one
+    untouched. The rejected alternative — holding the geometric mean fixed —
+    would make this knob shift the along-fibre CV as a side effect, which is
+    the quantity every calibration and every published number refers to.
+
+    **This invariance is a property of a planar wave in homogeneous tissue, and
+    only of that.** ``_cv_model_units`` uses ``density = 0`` for exactly that
+    reason. With ``fiber_angle_rad = 0`` the tensor is
+    ``diag(D_ac, D_al) = diag(1/ratio**2, 1)``, so the entry a wave travelling
+    along the fibres rides is 1.0 at every ratio — it never samples the
+    anisotropy. Add fibrosis and the wave diffracts around every hole, sampling
+    the transverse entry continuously, and the invariance stops holding. That is
+    correct behaviour, not a leak: measured on a fibrotic 40 mm patch, along-fibre
+    propagation at ratio 1 vs 3 differs by more than the same change measured
+    across the fibres. The practical consequence is for S38b, not here — in the
+    substrate we actually generate, the ratio changes every bank whatever the
+    fibre orientation.
+    """
+    isotropic = _cv_model_units("left", 1.0)
+    anisotropic = _cv_model_units("left", 3.0)
+
+    assert anisotropic == pytest.approx(isotropic, rel=0.02), (
+        f"along-fibre CV moved from {isotropic:.4f} to {anisotropic:.4f} when only "
+        "the anisotropy changed; the ratio is leaking into the absolute scale."
+    )
+
+
+def test_the_default_ratio_reproduces_the_stencil_defaults_exactly() -> None:
+    """At ``anisotropy_ratio = 3.0`` this change must be a no-op, bit for bit.
+
+    ``D_al = 1, D_ac = 1/9`` is precisely what ``AsymmetricStencil2D`` already
+    defaults to, so every bank generated at the shipped ratio is unchanged.
+    That is what lets this fix ship on its own, ahead of the recalibration that
+    changes every trace — and it is worth an explicit test rather than an
+    explicit comment, because it is the claim the step's safety rests on.
+    """
+    model = fw.AlievPanfilov2D()
+    backend_module._configure_anisotropy_2d(model, Patch2DGeometry(anisotropy_ratio=3.0))
+    stock = fw.AsymmetricStencil2D()
+
+    assert model.stencil.D_al == stock.D_al
+    assert model.stencil.D_ac == stock.D_ac
