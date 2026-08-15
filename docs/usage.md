@@ -137,13 +137,18 @@ dataset:
 
 backend:
   type: finitewave                         # default 'finitewave' (Phase 1: only option)
+  # Membrane parameterisation, as a shipped card name or a path to your own
+  # YAML. Omit it and you still get the calibrated card — a run never falls
+  # back to bare constants, because uncalibrated physics that looks like a
+  # normal run is the failure S38 exists to remove.
+  model: af_remodelled_220ms               # default; targets CV 80 cm/s, APD90 220 ms
 
 geometry:
   type: patch_2d                           # default 'patch_2d' (Phase 1: only option)
   size_mm: 40.0                            # default
   dr_mm: 0.25                              # default
   fiber_angle_rad: 0.0                     # default
-  anisotropy_ratio: 3.0                    # default
+  anisotropy_ratio: 2.0                    # default (2.0, NOT 3.0 — changed in S38b)
 
 substrate:
   type: uniform_random_fibrosis            # default (Phase 1: only option)
@@ -153,6 +158,11 @@ substrate:
 activation:
   type: planar_edge                        # default (Phase 1: only option)
   fixed_edge: null                         # default: randomise per sim; or 'top'/'bottom'/'left'/'right'
+  # How long the solver runs before the stimulus fires. Leave it out when
+  # `activation_position` is set and it is DERIVED as k(high) — the smallest
+  # delay that guarantees signal in front of the activation. Without a crop it
+  # defaults to 0. Raise it if the crop reports a window running off the FRONT.
+  # stimulus_delay_ms: 115.0
 
 electrodes:
   type: centered_grid_2d                   # default (Phase 1: only option)
@@ -171,8 +181,19 @@ label_policy:
 run:
   trace_duration_ms: 192.0                 # default (192 = 3x64; T must be a multiple of 64)
   output_fs_hz: 1000.0                     # default (matches IAFDB)
-  ap_time_unit_ms: 1.97                    # default (calibrated 2026-06-10)
   capture_oversample: 4                    # default; backend captures at 4x output_fs_hz
+  dr_model_units: 0.25                     # default; the solver's own space step
+  # Upper bound on how long the wave may take to reach a pair, which sizes the
+  # capture. Default 2 x trace_duration_ms (384 ms at T=192). THIS IS AN
+  # ASSUMPTION, NOT A BOUND: it is sized for a substrate slower than any
+  # measured, and a dense one can still exceed it. Raise it when the crop
+  # reports a window running off the BACK. See the sizing note below.
+  # travel_allowance_ms: 500.0
+
+  # RETIRED — ap_time_unit_ms, diffusion, membrane_eps and dt_model_units used
+  # to live here. They are now solved from physiological targets and live on the
+  # model card named by `backend.model`. Setting any of them here is an ERROR,
+  # not an override.
 
 # Optional controlled-position cropping (SEP2). Omit the block for no
 # cropping. Both bounds are required; use the same value twice for the
@@ -181,6 +202,18 @@ activation_position:
   low: 0.25                                # smallest position; DRIVES capture length
   high: 0.75                               # largest position
   # seed: 7                                # default: dataset.master_seed
+  # The curve the crop anchors each window on. Omit for rectified_derivative,
+  # which is what every bank before this knob existed was windowed with. It
+  # nests here, not under `activation:`, because it is part of the crop rather
+  # than part of how the wave is launched.
+  detection:
+    curve: rectified_derivative            # default; or 'teager_kaiser' / 'botteron_envelope'
+    # Botteron's two knobs, shown commented because setting them beside any
+    # other curve is an ERROR, not an override — they would otherwise be a
+    # deliberate setting silently ignored. Uncomment them WITH
+    # `curve: botteron_envelope`.
+    # botteron_band_hz: [40.0, 250.0]      # default, Botteron 1995
+    # botteron_lowpass_hz: 20.0            # default; read at run.output_fs_hz
 
 output:
   classifier_bank: ../banks/synthegm_v1.classifier.h5   # required
@@ -216,16 +249,21 @@ Per-field reference:
 | `dataset.master_seed` | int | 0 | Master RNG seed; per-sim seeds derive from this. |
 | `dataset.show_progress` | bool | true | tqdm bar over the simulator loop. |
 | `backend.type` | `finitewave` | `finitewave` | Backend dispatch. Phase 1 only has finitewave. |
+| `backend.model` | shipped card name or path | `af_remodelled_220ms` | **Membrane parameterisation.** Names a card under `src/myocard_synthetic_egm_pipeline/models/`, or a path to your own. The card states physiological *targets* (CV, APD90) and the *solved* Aliev-Panfilov knobs that reach them; the solve is re-run and checked against the recorded values on **every load**, so a card cannot drift from the routine that produced it. Not optional-with-a-fallback: omitting it still loads the default card, because a run producing uncalibrated physics that looks normal is the failure this replaced. To change the physics, write a card — do not look for knobs in `run:`. |
 | `geometry.type` | `patch_2d` | `patch_2d` | Geometry dispatch. Phase 1 only has patch_2d. |
 | `geometry.size_mm` | float | 40.0 | Patch edge length. |
 | `geometry.dr_mm` | float | 0.25 | Spatial step (mesh cell size). |
-| `geometry.fiber_angle_rad` | float | 0.0 | Fiber orientation. |
-| `geometry.anisotropy_ratio` | float | 3.0 | CV_along / CV_across; atrial ~2-3:1. |
+| `geometry.fiber_angle_rad` | float | 0.0 | Fiber orientation. With the default 0.0 **every bipole is parallel to the fibres**, since pairs are grid-x separated and fibres run along x — so the anisotropy ratio has less effect on bipolar morphology than it looks. |
+| `geometry.anisotropy_ratio` | float | **2.0** | CV_along / CV_across. 2:1 is the standard atrial-wall value (Hansson 1998: RA free wall 88 ± 9 cm/s, only weakly direction-dependent); higher ratios belong to bundles, not working myocardium. **Was 3.0 before S38b** — at 3.0 the transverse velocity falls below the physiological range. Had no effect at all before S38a, when the knob was a silent no-op. |
 | `substrate.type` | `uniform_random_fibrosis` | `uniform_random_fibrosis` | Substrate dispatch. |
 | `substrate.density_range` | `[lo, hi]` | `[0.0, 0.5]` | Per-sim density sampled uniformly. |
 | `substrate.fraction_healthy` | float [0, 1] | 0.0 | Fraction of sims forced to density=0 exactly. |
 | `activation.type` | `planar_edge` | `planar_edge` | Activation dispatch. |
 | `activation.fixed_edge` | str/null | null | If set, every sim fires from this edge. |
+| `activation.stimulus_delay_ms` | float >= 0 | derived, else 0.0 | Solver time before the stimulus fires. With `activation_position` set and this omitted, it is **derived** as `k(high)` — the smallest delay guaranteeing signal in front of the activation at the largest position. Without a crop it is 0. Raise it when the crop reports a window off the **FRONT**. It buys *resting* lead-in only: phi_e sums membrane current over the whole mesh, so while nothing is depolarising the lead-in is flat. |
+| `activation_position.detection.curve` | `rectified_derivative` / `teager_kaiser` / `botteron_envelope` | `rectified_derivative` | Detection curve the crop anchors each window on. Same three names iafdb-pipeline uses, so the two corpora can be windowed the same way. **Not recorded in either bank; see below.** |
+| `activation_position.detection.botteron_band_hz` | `[lo, hi]` | `[40.0, 250.0]` | Band-pass before rectification (Botteron 1995). `botteron_envelope` only — setting it beside another curve is rejected rather than ignored. |
+| `activation_position.detection.botteron_lowpass_hz` | float | 20.0 | Envelope smoothing cutoff. `botteron_envelope` only. Interpreted at `run.output_fs_hz`, not the capture rate: the runner downsamples before it crops. |
 | `electrodes.type` | `centered_grid_2d` | `centered_grid_2d` | Electrode dispatch. |
 | `electrodes.n_rows` / `n_cols` | int | 5 / 5 | Grid shape; 20 bipolar pairs per sim for 5x5. |
 | `electrodes.spacing_mm` | float | 2.0 | Intra-row + inter-row spacing. |
@@ -234,9 +272,10 @@ Per-field reference:
 | `label_policy.threshold` | float | 0.1 | Density above which a trace is labeled fibrotic. |
 | `label_policy.radius_mm` | float | 2.0 | Used by `local_density` only. |
 | `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise (CL-112). With `activation_position` set this is *not* how long the solver runs; see that block. |
-| `run.output_fs_hz` | float | 1000.0 | Output sample rate. |
-| `run.ap_time_unit_ms` | float | 1.97 | AP non-dimensional time → ms calibration. |
+| `run.output_fs_hz` | float | 1000.0 | Output sample rate. Shared with IAFDB by decision, not coincidence — catch22 lag features depend on it — so changing it is a both-sides-or-neither call. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
+| `run.dr_model_units` | float | 0.25 | The solver's own space step, in the backend's units. Backend/scheme, not physiology: it is paired with the model card's `dt` through the explicit-scheme stability bound `dt <= dr^2 / (2 · dim · D)`. |
+| `run.travel_allowance_ms` | float > 0 | `2 × trace_duration_ms` (384 ms at T=192) | **Assumed upper bound** on stimulus-to-pair travel time; sizes the capture via `N = D + V + T - k(low)`. Raise it when the crop reports a window off the **BACK**. **This is an assumption, not a bound** — the true value is distance/CV, and neither term is known at config time. It has already been too small twice: originally `T`, which failed on a fibrosis run; now `2T`, which failed at density 0.5 (measured travel 414 ms). Heavy fibrosis conducts far slower than a clean patch, so **a dense substrate needs a larger allowance**, and because density is drawn per simulation the failure is a *tail event* — a config that ran fine yesterday can fail today on a different draw. Over-estimating costs solver time; under-estimating costs the run. FB-36 replaces it with a derived value. |
 | `activation_position.low` | float 0..1 | (required if block present) | Smallest fractional activation position. **Sizes the capture** — the smaller it is, the more signal a window needs after the activation, so the longer the solver runs. |
 | `activation_position.high` | float 0..1 | (required if block present) | Largest fractional position. Kept below 1: the front cannot be extended, so a far-back position fills the window with flat pre-activation baseline. |
 | `activation_position.seed` | int | `dataset.master_seed` | Seeds the position generator, which is stateful and owns its own stream. |
@@ -251,7 +290,86 @@ Per-field reference:
 | `mix.snr_db_range` | `[lo, hi]` | `[10.0, 25.0]` | Per-trace SNR sampled uniformly. |
 | `mix.bandpass_clean` | bool | true | Filter clean to bipolar band before mixing. |
 | `mix.band_hz` | `[lo, hi]` | `[30.0, 300.0]` | Bandpass band. |
-| `mix.master_seed` | int | 0 | Mixer RNG seed. |
+| `mix.master_seed` | int | 0 | Mixer RNG seed. Independent of `dataset.master_seed`. |
+| `mix.show_progress` | bool | true | Progress bar over the mixing loop. |
+| `mix.description` | str | `""` | Stamped into the mixed bank's metadata. |
+
+#### Retired keys — these error rather than being ignored
+
+Each was removed because leaving it accepted-but-inert is how a config comes to
+read as though it asked for something it did not get. The loader names the
+replacement in the error.
+
+| Retired key | Replaced by | Why |
+|---|---|---|
+| `run.ap_time_unit_ms`, `run.diffusion`, `run.membrane_eps`, `run.dt_model_units` | `backend.model` (a model card) | These are *solved* from physiological targets, not chosen. `time_unit_ms` in particular sets CV and APD90 in **opposite** directions, so hand-tuning it to fix one silently breaks the other — which is exactly what happened between June and August 2026. Two configs setting them independently would let two banks claim one parameterisation with different physics. |
+| `activation.detection` | `activation_position.detection` | Shipped one level too high in S16a. Here `activation:` is the activation *source* — how the wave is launched — while detection belongs to the crop: `crop_traces` builds one windower from the preprocessor and the position generator. (iafdb-pipeline nests it under `activation:` because there that block *means* activation-based windowing; this side matches its curve and parameter names, not its block path.) |
+| `output.also_emit_synthetic_bank` | nothing — both banks are always written | The `synthetic_bank` is not an optional extra; it carries the per-simulation generation config the ClassifierBank deliberately does not. `output.synthetic_bank` sets **where** it lands, never **whether**. |
+
+#### When the crop says a window "does not fit"
+
+The crop refuses rather than sliding the window, because sliding it would change
+the realized position without saying so. The message names which end failed, and
+**the two ends take different knobs** — reaching for the wrong one is the common
+mistake:
+
+```
+pair 0: a window of 192 samples at realized position 0.2408 does not fit
+inside a 653-sample capture. It runs off the BACK by 22 samples ...
+(activation at 529)
+```
+
+- **off the FRONT** — the activation arrived *earlier* than the stimulus delay
+  allowed for. Raise `activation.stimulus_delay_ms`. `run.travel_allowance_ms`
+  does nothing here.
+- **off the BACK** — the wave took longer to reach the pair than the travel
+  allowance covers. Raise `run.travel_allowance_ms`, past
+  `activation index − stimulus delay`.
+
+**Reproduce before you conclude it is fixed.** Fibrosis density is drawn *per
+simulation*, so a back failure is usually a **tail event**: the run that failed
+drew an unusually slow substrate. Changing the seed, `n_simulations` or the
+density range redraws every substrate and the tail case simply does not recur —
+which looks like a fix and is not. The hazard is a long generation run dying
+partway through with the solver time already spent.
+
+**A back failure is also worth reading as physics, not only as sizing.** Divide
+the stimulus-to-pair distance by `activation index − stimulus delay` to get the
+effective conduction velocity. If that lands far below the card's target — the
+example above works out to 4-6 cm/s against a calibrated 83 cm/s — the substrate
+is close to percolation rather than merely fibrotic, and raising the allowance
+buys a bank of tissue that conducts an order of magnitude slower than diseased
+atrium. Fibrosis is modelled as **insulating holes** (replacement scar), so
+`substrate.density_range` values near the 0.5 cap remove enough myocardium to
+nearly disconnect the mesh. See FB-36.
+
+#### The detection curve is not recorded in the bank (FB-35)
+
+`activation_position.detection.curve` decides **where each window is cut**, so it changes
+the stored waveform — and neither `ClassifierBank` nor `synthetic_bank` has a
+field to record it in. Recording it properly is an egm-contracts change flowing
+into most of the constellation, which ships as its own wave (FB-35); it is
+deliberately *not* stuffed into `backend_metadata`, which describes the
+simulator's capture and would read as authoritative about something it does not
+know.
+
+**Until FB-35 lands, `output.description` is the record, maintained by hand.**
+Two banks generated with different curves are otherwise indistinguishable from
+their contents. The run summary prints the resolved curve for exactly this
+reason — paste it into the description:
+
+```
+Wrote classifier bank:    ../banks/synthegm_v1.classifier.h5
+Wrote synthetic bank:     ../banks/synthegm_v1.synthetic.h5
+  N simulations:          100
+  N traces:               2000
+  Label policy:           global_density
+  Detection curve:        botteron_envelope
+  By label:               healthy=812, fibrotic=1188
+```
+
+A run with no `activation_position` block does not crop, so it has no curve and
+the summary has no such line.
 
 ### `synthegm-mix` config
 
@@ -429,7 +547,12 @@ config = DatasetConfig(
     n_simulations=10,
     geometry=Patch2DGeometry(),
     label_policy=GlobalDensityLabel(threshold=0.1),
-    run_config=RunConfig(trace_duration_ms=200.0, output_fs_hz=1000.0, ap_time_unit_ms=1.97),
+    # Membrane parameters are NOT on RunConfig — they are solved from
+    # physiological targets and live on a cell model. Omitting `cell_model`
+    # loads the default card (af_remodelled_220ms); pass one explicitly with
+    #   from myocard_synthetic_egm_pipeline.simulate.model_cards import load_model_card
+    #   cell_model=load_model_card("af_remodelled_220ms", dr_mm=0.25, dr_model_units=0.25).solved
+    run_config=RunConfig(trace_duration_ms=192.0, output_fs_hz=1000.0),
     fibrosis_density_range=(0.0, 0.5),
     fraction_healthy=0.3,
     master_seed=42,

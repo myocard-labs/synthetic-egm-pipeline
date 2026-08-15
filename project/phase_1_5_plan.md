@@ -2,8 +2,9 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 22/43 steps done — **Wave 1 complete; Wave 2 underway**
-(S38 split into S38a/S38b/S38c, hence 43)
+**Status:** in progress · **Progress:** 23/44 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b/S38c and S16 into S16a/S16b, hence 44; **S17 absorbed by S38c**, which
+does not reduce the total — it is a step accounted for, not a step deleted)
 **Next:** back to the planned Wave-2 order at **S16**. The pseudo-EGM / calibration cluster
 (S37 · S39 · S40 · S38a · S38b · S38c) is **complete and round-trip verified**; CL-167's
 detection-curve unification still rides with a later step.
@@ -25,7 +26,7 @@ execution order**, matching the Steps section below.
 | SEP2 | 2 | Controlled-position crop — call SIG1's `SingleActivationWindower`; **this repo owns the sizing response + wiring + provenance**, not the crop math | S (2) | 7–12 h | S12 · S14–S15 |
 | CL-143 **+ B13** | 2 | **One ClassifierBank, one θ bank** — the clean intermediate gets its own id base (B13) and its own θ bank, so the join stops refusing it | S (2) | 2–4 h | S13 |
 | SEP10 | 2 | Anchoring opt-in flag — `UniformPositionGenerator(p, p)` is the fixed arm; config-only | XS (1) | *(absorbed)* | S15 |
-| SEP13 | 2 | Positional-sensitivity probe bank — one sim, crop offset swept on a grid, morphology/seed held constant | S (2) | 3–6 h | S16 |
+| SEP13 **+ CL-167 half** | 2 | Positional-sensitivity probe bank — one sim, crop offset swept on a grid, morphology/seed held constant. **Plus the configurable detection curve** folded in 2026-08-16: `crop_traces` always accepted a `preprocessor` the runner never passed, so the seam was unreachable from config | M (3) | 4–8 h | S16a · S16b |
 | SEP5 | 2 | Courtemanche 1998 human-atrial cell model alongside Aliev–Panfilov | L (5) | 11–20 h | S17–S20 |
 | B12 | 2 | Resource / CPU cap on a generation run | S (2) | 2–4 h | S21 |
 | SEP11 | 2 | θ-sweep harness + `generation_params` writer + pluggable sampler (OAT first, then LHS/grid) — one capability, run twice per §8.2 | L (5) | 12–20 h | S22–S25 |
@@ -235,9 +236,42 @@ itself noisy, the jitter blurs the curve the study exists to measure, and the an
 difference gets harder to see for a reason that has nothing to do with the models.
 
 So the probe detects **once** on the source trace and then places the activation by exact integer
-shift per grid point. Realized position equals requested position by construction, the x-axis is
-exact, and it is cheaper (one detection, not N). The verification is correspondingly stricter: assert
-the emitted `activation_position` column *reproduces the grid*, not that it approximates it.
+shift per grid point. The x-axis carries no detector jitter, and it is cheaper (one detection, not N).
+The verification is correspondingly stricter: assert the emitted `activation_position` column
+*reproduces the grid*, not that it approximates it.
+
+**Amended 2026-08-16 — "exact" needs the grid to live on the sample lattice.** The original wording
+("realized position equals requested position by construction") is unachievable for a grid stated in
+fractions, and the arithmetic says so plainly. The crop places the window at
+`s = round(t_a − p(T−1))` and reports `realized = (t_a − s)/(T−1)`, so realized equals requested
+**iff `p(T−1)` is an integer**. At `T = 192`, `T − 1 = 191`, which is **prime** — the only
+representable positions are `j/191`, and a natural grid lands on none of them:
+
+| requested | 0.1 | 0.2 | 0.3 | … | 0.9 |
+|---|---|---|---|---|---|
+| `k = round(p·191)` | 19 | 38 | 57 | | 172 |
+| realized | 0.099476 | 0.198953 | 0.298429 | | 0.900524 |
+
+Worst-case error is half a sample — sub-sample by construction, i.e. below what the axis can
+represent at all.
+
+**Resolution (Daniel, 2026-08-16): fractions in, snapped grid of record.** The config states the grid
+in fractions, matching the `activation_position: low/high` idiom already shipped; each point is
+immediately snapped to `k = round(p(T−1))`, and **the snapped value is the grid** — what the sweep
+requests, what the bank stores, and what the verify asserts against. So D6's guarantee survives in
+the form that was always the real one: *the probe's x-axis is a sample lattice, and every point on it
+is hit exactly.* The requested-vs-snapped difference is reported once at config time, not per trace.
+
+Two consequences worth stating, because both are places this could go quietly wrong:
+
+- **Snapping can collide.** A grid finer than the lattice maps two requested fractions to one `k`,
+  which would emit the same crop twice under two different labels. That **errors**, naming the
+  colliding pair — it is a mis-specified study, not something to silently deduplicate. `T = 192`
+  admits at most 192 distinct points.
+- **The column is `float32`.** `k/191` is exact in float64 on both sides (same integer division), but
+  the bank stores float32. The equality assert therefore compares **in float32** — `np.float32(k/191)`
+  against the column — rather than comparing a float64 grid to a float32 round-trip and discovering
+  a tolerance is needed.
 
 ### D5 — `T` is now fixed at **192 ms**; `𝒫` still comes from study §8.1 *(external input)*
 
@@ -960,34 +994,172 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   big patch, which would make both options ways of buying flat lead-in and turn this into a study-design
   question about how back-bounded `p` may be. Cost note: 40→60 mm is ~3x per simulation, a §8 input.
 
-### S16 — Positional-sensitivity probe bank (SEP13) ☐ (3–6 h)
+### S16 — Positional-sensitivity probe bank + configurable detection curve (SEP13) ☐ (4–8 h)
 - **Change:** a probe generation mode — run **one** simulation, then emit one trace per grid point by
   cropping that same simulation output at each offset, morphology and seed held constant. Reuses
   S14's sizing rule (the sim must reach the widest grid point) and SEP12's writer; **no schema
   change** — the grid value lands in the existing `activation_position` column. Ships with its
   `probe:` config block (grid bounds, n points, which pairs) + CLI wiring, and a `docs/usage.md`
   probe section explaining what the bank is *for* (it is not training data); CHANGELOG.
-- **Crop exactly, don't re-detect (see D6):** detect the activation **once** on the source trace, then
-  place it by exact integer shift per grid point, so the realized position equals the requested one.
-- **Verify:** a probe bank's `activation_position` column reproduces the requested grid exactly (not
-  approximately); every trace in one sweep has identical `simulation_id` + `seed`; the signal at two
-  grid points is the same waveform at different offsets (assert by cross-correlation peak, not
-  eyeball); the example probe config runs end-to-end and yields a bank STU8 can read; config tests
-  cover a grid that would exceed the sim's sizing (must error, not silently clip).
-- **Depends on:** S15.
 
-### S17 — `CellModelSpec` Protocol + `AlievPanfilov` concrete (SEP5 · D2) ☐ (2–4 h)
-- **Change:** fifth spec Protocol in `simulate/specs.py` + the `AlievPanfilov` concrete carrying
-  `ap_time_unit_ms`; `SimulationBackend.simulate()` gains `cell_model`; `FinitewaveBackend` and the
-  test `MockBackend` adopt it. Pure refactor — Aliev–Panfilov behavior unchanged. Record the
-  Protocol extension + its Guardrail-3 rationale in architecture.md.
-- **Verify:** full suite green with no numeric change to any existing test fixture; `RunConfig` no
-  longer carries `ap_time_unit_ms`.
-- **Not merged into S18 on purpose:** a behavior-preserving refactor earns its own commit precisely
-  because its whole verification is *"nothing changed numerically"*. Fold the new cell model in and
-  that check stops being meaningful — every fixture delta becomes ambiguous between the refactor and
-  Courtemanche.
-- **Depends on:** S10.
+**Folded in 2026-08-16 (Daniel): make the detection curve configurable.** `crop_traces` has always
+taken a `preprocessor`, and `run_single` has never passed one — so every synthetic bank in the
+project's history was windowed with `RectifiedDerivative` and no config could say otherwise. Same
+family as the `anisotropy_ratio` no-op, though milder: that one silently ignored a value the config
+*asked for*; this one cannot be asked at all, so no bank is wrong — the seam is simply unreachable.
+
+**Why it belongs in this step rather than its own.** The probe detects too. Shipping S16 with the
+curve hardcoded and making it configurable later means writing the probe's detection call twice — and
+worse, the probe must inherit **the run's** curve rather than defaulting independently, or a sweep
+would characterise a bank it does not share a detector with. One wiring, done once.
+
+**What it unblocks:** train a model on synthetic windowed with curve X, evaluate against an IAFDB
+bank windowed with curve Y, and measure whether matched-vs-mismatched windowing moves the result.
+That is the evidence CL-167's unification ruling currently lacks — it was decided on the argument
+that `activation_position` *must* be the same measurand on both corpora, never measured.
+
+**Match iafdb-pipeline's vocabulary exactly — this is the load-bearing detail.** It already
+dispatches all three curves through `build_preprocessor(cfg, *, fs_hz)`:
+
+```yaml
+activation:
+  detection:
+    curve: botteron_envelope     # | rectified_derivative | teager_kaiser
+    botteron_band_hz:    [40.0, 250.0]
+    botteron_lowpass_hz: 20.0
+```
+
+Same block, same curve names, same parameter names. A different spelling on the synthetic side would
+put a translation step inside every cross-corpus comparison, which is where the mistakes go.
+**Default stays `rectified_derivative`**, so every shipped config and every existing test is
+unchanged and the absence of the block still means today's behaviour.
+
+**Copy the curve subset, NOT iafdb's whole `DetectionConfig`.** Theirs also carries
+`threshold_rule` / `threshold_c` / `threshold_lam` / `threshold_q` / `min_prominence` /
+`refractory_ms` / `refine_curve` / `refine_radius_ms`, because IAFDB runs
+`detect_activation_train` — preprocess → threshold → select → suppress → refine. The synthetic side
+runs `detect_activation`, which is `argmax g` on a trace with **exactly one activation by
+construction**: no threshold, no candidate selection, no refractory rule. Accepting those keys here
+would add config surface that provably does nothing — which is the same unreachable-seam defect this
+step exists to remove, freshly minted. Take `curve`, `botteron_band_hz`, `botteron_lowpass_hz`, and
+**reject the rest by name** with a message saying they belong to multi-activation detection.
+
+**`BotteronEnvelope(fs=...)` takes `output_fs_hz`, not the capture rate.** The runner downsamples
+(step 2) before it crops (step 5), so the trace the detector sees is already at the output rate.
+Passing `fs_capture_hz` would mis-scale the band and low-pass by the oversample factor and still run
+without complaint — a wrong number, not an error.
+
+**Provenance is deliberately deferred — FB-35.** The curve changes *where the window is cut*, so it
+changes the stored waveform, and neither bank schema has anywhere to record it. Recording it properly
+is an egm-contracts change flowing into most of the constellation, which per the schema-migration
+rule ships as its own wave. **Daniel's call (2026-08-16): not now.** Phase 1.5 has grown a lot during
+implementation and getting to the studies outranks complete provenance. **Until FB-35 lands, the
+bank's `description` is the record of which curve produced it, maintained by hand.** `docs/usage.md`
+must say so plainly, next to the config block, rather than leaving a reader to discover it.
+**Do not route the curve into `simulations/backend` as a workaround** — that object is the
+simulator's capture knobs, and a wrong home reads as authoritative in a way that no home does not.
+
+*Small assist, veto if it is scope creep:* `_format_result` already prints a run summary, so add the
+resolved curve to it. Zero schema impact, and it puts the string on screen at the moment the
+description is being written.
+- **Crop exactly, don't re-detect (see D6):** detect the activation **once** per pair on the source
+  trace, then place it by exact integer shift per grid point. Grid stated in fractions, **snapped to
+  the sample lattice**, snapped value is the grid of record — see D6's 2026-08-16 amendment for why
+  a fractional grid cannot be hit exactly and what "exact" means instead.
+
+**egm-signal already carries the seam.** `window_train(signal, activation_train, *, ...)` is public
+and its docstring names this exact caller — *"a probe sweeping crop offsets over one simulation,
+which must detect once on the source rather than re-detect per crop."* So the probe calls
+`detect_activation` once per pair and then `window_train` per grid point with a point-collapsed
+`UniformPositionGenerator(p, p)`. **Not a hand-rolled slice**: routing through the shared path is
+what keeps probe windows and training windows the same geometry (CL-134), and it hands back
+`in_bounds` and the bounds diagnostics for free rather than reimplementing them.
+
+**No egm-signal change is needed** — checked, not assumed: `window_train`, `detect_activation` and
+`UniformPositionGenerator` are all in `myocard_egm_signal.__all__`, and `detect_activation(signal, *,
+preprocessor)` is the same call `SingleActivationWindower._detect` makes internally. Handing it
+`cropping.default_preprocessor()` makes probe detection identical to training detection by
+construction rather than by matching two configurations. **S16 is a single-repo step.**
+
+**The trace axis becomes (pair × grid point), and that has to be audited, not assumed.** The probe is
+the first thing in this repo to emit more traces than there are electrode pairs, which quietly
+splits three quantities that have been interchangeable all along. Each array has exactly one correct
+length, and getting one wrong is silent — a mislabelled x-axis or a label attached to the wrong
+midpoint, both of which survive every current test:
+
+| Length | Arrays | Why |
+|---|---|---|
+| **per trace** (`n_pairs · n_grid`) | `bipolar_traces`, `bipolar_pair_midpoints_mm`, `activation_positions`, `DatasetResult.labels` / `.simulation_ids` / `.pair_indices` | `LabelPolicy.apply` indexes `midpoints[i] for i in range(result.n_pairs)`, and `n_pairs` is *derived from* `bipolar_traces.shape[0]` — so midpoints must be tiled with the traces or labels silently attach to the wrong location |
+| **per electrode pair** (`n_pairs`) | `bipolar_pairs`, `run_metadata["electrode_row_per_pair"]` | provenance about the *hardware*, which the sweep does not multiply |
+| **per simulation** (scalar) | `substrate_mask`, `electrode_positions_mm`, `specs`, `sim_seed` | one simulation is the whole point |
+
+- **One widening to `SimulationResult`: `pair_index_per_trace`.** `generate_dataset` currently builds
+  the bank's `pair_index` column as `np.arange(result.n_pairs)`, which is right only while traces and
+  pairs are the same axis. Under a probe it would emit `0…799` into a column the schema defines as a
+  **foreign key into that simulation's `electrodes.pairs` list** (20 entries) — every value past 19
+  an orphan reference. So the result carries the mapping explicitly, defaulting to `None` → today's
+  `arange`. Same Guardrail-2 category as D1's `specs` field: a widening of the concrete result, no
+  Protocol touched, one producer changed.
+- **`run_single` needs the capture, not the trace.** Without a position generator it truncates to the
+  leading `T` samples, so the probe cannot reuse that path as-is — the sweep needs the full sized
+  capture to cut from. The probe grid goes in through the same parameter slot as the position
+  generator and is **mutually exclusive with it**: two ways to set one trace's position is the
+  two-sources-for-one-number trap `_build_run_config` already refuses for the model card. Likewise
+  `probe:` with `n_simulations > 1` errors rather than quietly running one.
+- **Sizing needs no new arithmetic.** Front is bought by `D = k(p_hi)` and back by
+  `N = D + V + T − k(p_lo)`; feeding the grid's snapped max/min in as `p_hi`/`p_lo` is exactly the
+  existing call. The grid is fixed rather than sampled, which makes the bound tighter, not different.
+- **Verify — the curve (S16a):** setting `detection.curve` changes **the stored signal**, asserted on
+  a bank-to-bank diff, not on the config object; the three curve names all dispatch and an unknown
+  name errors listing the valid ones; the Botteron parameters reach the constructed preprocessor;
+  **omitting the block reproduces the existing bank byte-for-byte**, which is what makes the default
+  claim checkable rather than asserted.
+- **Verify — the probe (S16b):** the `activation_position` column equals the snapped grid **exactly,
+  compared in float32**, tiled in the documented order; colliding grid points error, naming the pair;
+  a grid point outside the sim's sizing errors with the existing front/back diagnostic rather than
+  clipping; every trace in one sweep carries identical `simulation_id` and `sim_seed`; `pair_index`
+  stays within `[0, n_pairs)` and resolves against the simulation's `electrodes.pairs`; the signal at
+  two grid points is the same waveform at different offsets (**cross-correlation peak at exactly the
+  expected sample lag**, not eyeball, not "looks similar"); a probe run inherits the run's configured
+  curve rather than the default; the example probe config runs end-to-end and yields a bank STU8 can
+  read.
+- **Guard against the vacuous pass.** Three tests in this repo have passed for the wrong reason, all
+  proxies that stopped tracking their referent. Two to watch here, and both are the *natural* way to
+  write the test:
+  - a cross-correlation assert comparing a trace **to itself** passes at lag 0 whatever the sweep
+    did. The lag must be asserted to *be the grid difference*, non-zero, read from a genuinely
+    different grid point.
+  - a curve test that asserts `cfg.preprocessor.name == "botteron_envelope"` passes **with the
+    runner still ignoring it** — which is the exact bug being fixed. The assert has to be on the
+    emitted signal.
+- **Split into S16a (curve) then S16b (probe) — reconsidered after folding.** The original entry
+  argued one step, because a probe sweep with no config path cannot run end to end. Adding the curve
+  seam changes that: it is independently observable — a Botteron-windowed bank generated end to end —
+  and has its own distinct verification, so it now passes the split test that the probe halves did
+  not. Two further reasons to put the **curve first**: the probe must inherit an already-configurable
+  curve, so building in this order writes that wiring once; and the curve seam is the half that
+  unblocks the windowing study, so shipping it first reaches a study sooner, which is the stated
+  priority. Collapse them into one commit if the review overhead is not worth it.
+- **Depends on:** S15. Single-repo throughout; no egm-contracts change (FB-35).
+
+### S17 — `CellModelSpec` Protocol + `AlievPanfilov` concrete (SEP5 · D2) ✅ **absorbed by S38c**
+- **Shipped 2026-08-15 as part of S38c**, ahead of schedule and for a different reason: S38b had put
+  `eps` / `diffusion` / `dt_model_units` / `ap_time_unit_ms` on `RunConfig` — exactly what D2 rules
+  against — and the correction *is* this step. Every element landed: the `CellModelSpec` Protocol,
+  the `AlievPanfilovCellModel` concrete, `SimulationBackend.simulate()` gaining `cell_model`, both
+  implementors adopting it, and `RunConfig` losing `ap_time_unit_ms`.
+- **One deviation from the entry as written:** the Protocol lives in `simulate/cell_models.py`, not
+  `simulate/specs.py`. A cell model carries a *solve* and measured model-unit constants, which the
+  other four specs do not; keeping it beside them would have pulled that arithmetic into the module
+  that is otherwise pure data. The Protocol shape is unchanged, so the D2 decision stands.
+- **Its "nothing changed numerically" verification was NOT available**, and that cost is worth
+  recording: the entry argued for a separate commit precisely so the refactor could be checked
+  against unchanged fixtures. Arriving inside S38c, the refactor landed in the same wave as a
+  recalibration that moved every number deliberately, so the check had to be replaced by the
+  round-trip test. **S18 therefore opens without the clean baseline this step was meant to leave
+  behind** — the Courtemanche numbers get compared against published human-atrial ranges, not
+  against a known-good prior fixture.
+- **Depends on:** S10. **Total stays 43** — this is a step accounted for, not a step deleted.
 
 ### S18 — `Courtemanche` concrete + backend dispatch + config block (SEP5) ☐ (4–7 h)
 - **Change:** `Courtemanche` spec (curated conductance scalings as a params dict, so SEP11 can
@@ -1182,7 +1354,34 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   conduction slowing at short coupling intervals; config tests; example config runs.
 - **Depends on:** S34.
 
-### S36 — Docs + phase exit ☐ (2–4 h)
+### S36 — Docs + phase exit ☐ (3–5 h)
+
+**`docs/simulation_theory.md` carries retired numbers — found 2026-08-16 during the S16a doc pass.**
+The whole `docs/` tree fell out of step with S15 and S38 and nobody noticed until a config key
+(`run.travel_allowance_ms`) turned out to be undocumented. `usage.md` and `README.md` were corrected
+in S16a; **the theory doc was not**, because it needs re-derivation rather than a find-and-replace.
+Both of its worked examples are computed with **`V = T`** (retired in S15, now `2T`) and
+**`K = 1.97`** (retired in S38b, now `5.709836`), so every downstream number is wrong. Corrected
+values, computed so the fix is mechanical:
+
+| Location | Doc says | Correct now |
+|---|---|---|
+| §"four lengths" preamble (~L96) | `ap_time_unit_ms: 1.97` listed among "shipped production settings" | not a config key at all — it is `backend.model` → the card's solved `time_unit_ms` |
+| table row 2, capture (~L103) | 335 ms | **671 ms** (`D=143`, `V=2T=384`, `k(0.25)=48`) — 335 is `D=0, V=T`, i.e. pre-S15 |
+| table row 3, solver time | 170.05 model units | **117.52** |
+| table row 4, capture samples | 1309 @ 3905 Hz | **2684 @ 4000 Hz** |
+| second worked example (~L1135) | `N = 115 + 192 + 192 − 76 = 423` | **`N = 115 + 384 + 192 − 76 = 615`** |
+| its solver clock (~L1139) | `423 / 1.97 = 214.7` | **`615 / 5.709836 = 107.7`** |
+
+**Do NOT bulk-replace `anisotropy_ratio = 3` or `ap_time_unit_ms` across this file.** Several
+occurrences are **historical narrative** — L257's account of the fibre-transpose bug reasons about
+the ratio that was in force *at the time*, and rewriting it to 2.0 would make the story wrong.
+Same class of error as the regex that ate a constructor argument in S38c. Fix the *worked examples*;
+leave the *history* alone, adding a forward pointer where a reader might mistake one for the other.
+
+**The habit this exposes:** a step that adds, retires or recalibrates a config key is not done until
+`docs/` moves with it. S38a/b/c changed the config surface substantially and shipped no doc change.
+
 - **Change:** **rework the `examples/` config set** — it has drifted (Daniel, 2026-08-01: new configs
   added ad hoc during the phase) and is no longer a good cross-section of the runs we actually want
   to demonstrate. Decide the set deliberately — one clean baseline, one noise-mixed, one calibration,

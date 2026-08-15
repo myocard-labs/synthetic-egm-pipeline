@@ -106,7 +106,10 @@ config = DatasetConfig(
     n_simulations=10,
     geometry=Patch2DGeometry(),
     label_policy=GlobalDensityLabel(threshold=0.1),
-    run_config=RunConfig(trace_duration_ms=200.0, output_fs_hz=1000.0, ap_time_unit_ms=1.97),
+    # Membrane parameters are not RunConfig knobs — they are solved from
+    # physiological targets onto a cell model. Omitting `cell_model` loads the
+    # calibrated default card (af_remodelled_220ms).
+    run_config=RunConfig(trace_duration_ms=192.0, output_fs_hz=1000.0),
     fibrosis_density_range=(0.0, 0.5),
     fraction_healthy=0.3,
     master_seed=42,
