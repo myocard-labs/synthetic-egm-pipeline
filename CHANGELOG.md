@@ -8,6 +8,51 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Added
 
+- **The detection curve is configurable (S16a, CL-167).** `crop_traces` has
+  always taken a `preprocessor` and `run_single` never passed one, so every
+  synthetic bank in the project's history was windowed with
+  `RectifiedDerivative` and no config could say otherwise — the seam existed and
+  was unreachable. `activation_position.detection` now reaches it:
+
+  ```yaml
+  activation_position:
+    low: 0.4
+    high: 0.6
+    detection:
+      curve: botteron_envelope     # | rectified_derivative | teager_kaiser
+      botteron_band_hz:    [40.0, 250.0]
+      botteron_lowpass_hz: 20.0
+  ```
+
+  **Nested inside the position block, not under `activation:`.** In this repo
+  `activation:` is the activation *source* — how the wave is launched — while
+  the curve is part of the **crop**: `crop_traces` builds one windower out of
+  the preprocessor and the position generator, so they are one decision. It also
+  makes the mismatch unrepresentable, where a sibling block would accept a curve
+  for a run that never crops and silently ignore it. (iafdb-pipeline nests
+  detection under `activation:` because there that block *means* activation-based
+  windowing; a config carrying the old path is rejected with the new one named.)
+  **Same curve names and parameter names as iafdb-pipeline**, deliberately: a
+  different spelling would put a translation step inside every cross-corpus
+  comparison. That is what this unblocks — train on synthetic windowed with curve X,
+  evaluate against an IAFDB bank windowed with curve Y, and measure whether
+  mismatched windowing moves the result. CL-167's unification ruling was decided
+  on the argument that `activation_position` must be the same measurand on both
+  corpora, never measured.
+  **The curve subset only.** iafdb's `threshold_*` / `min_prominence` /
+  `refractory_ms` / `refine_*` parameterise `detect_activation_train` over a
+  multi-beat record; synthetic detection is `argmax g` on a trace with exactly
+  one activation, so those are **refused by name** rather than accepted as
+  config that provably does nothing.
+  **Default unchanged** — `rectified_derivative`, and an absent block reproduces
+  the existing bank byte-for-byte, which is asserted on the written signals
+  rather than claimed.
+  **Known gap: the curve is not recorded in either bank (FB-35).** It changes
+  where the window is cut and so the stored waveform, but no schema has a field
+  for it, and adding one is an egm-contracts change that ships as its own wave.
+  Until then the bank's `description` is the record; the run summary prints the
+  resolved curve so there is something to copy. See `docs/usage.md`.
+
 - **Model parameters are solved from physiological targets, not hardcoded
   (S38b, CL-173/174/176/178).** `simulate.calibration.calibrate` takes a
   conduction velocity, an APD90 and an anisotropy ratio and returns the four

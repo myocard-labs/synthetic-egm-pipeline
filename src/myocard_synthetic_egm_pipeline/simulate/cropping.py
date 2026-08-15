@@ -32,32 +32,93 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 from myocard_egm_signal import (
+    DEFAULT_BOTTERON_BAND_HZ,
+    DEFAULT_BOTTERON_LOWPASS_HZ,
     ActivationPositionGenerator,
+    BotteronEnvelope,
     ConstantSignalError,
     DetectionPreprocessor,
     RectifiedDerivative,
     SingleActivationWindower,
+    TeagerKaiser,
+)
+
+#: The curve names ``activation_position.detection.curve`` accepts, spelled
+#: exactly as iafdb-pipeline spells them (``cli/_config.py::DetectionCurve``
+#: there). A different spelling on this side would put a translation step inside
+#: every cross-corpus comparison, which is where the mistakes go. The *names*
+#: match; the block path deliberately does not — see the config builder.
+DETECTION_CURVES: tuple[str, ...] = (
+    "rectified_derivative",
+    "teager_kaiser",
+    "botteron_envelope",
 )
 
 
 def default_preprocessor() -> DetectionPreprocessor:
-    """The detection curve used for synthetic traces.
+    """The detection curve used when a config names none.
 
     ``RectifiedDerivative`` — ``g[i] = |x[i] - x[i-1]|``, the ``dV/dt``-max
     convention.
 
-    **Provisional, pending S38.** The original rationale here was that a clean
-    simulated trace has no need of the smoothed Botteron envelope, which exists
-    for the noise on real recordings. CL-167 corrected that framing:
-    ``activation_position`` has to be the *same measurand* on both corpora, so
-    the curve is a shared decision with iafdb-pipeline rather than a per-corpus
-    convenience. iafdb-pipeline dispatches all three curves from config, so
-    unifying needs a choice made once, not a default asserted twice. Research
-    also measured that on a clean trace ``dV/dt``-max and the Botteron envelope
-    land at the same index, so this is not expected to move any number — it is
-    about the two sides agreeing by construction rather than by coincidence.
+    The original rationale was that a clean simulated trace has no need of the
+    smoothed Botteron envelope, which exists for the noise on real recordings.
+    CL-167 corrected that framing: ``activation_position`` has to be the *same
+    measurand* on both corpora, so the curve is a shared decision with
+    iafdb-pipeline rather than a per-corpus convenience — and a decision that
+    can only be made once the two sides can be *set* to the same value.
+    :func:`build_preprocessor` is that seam (S16a); this stays the default so
+    an absent ``activation_position.detection`` block means exactly what it
+    meant before it existed.
     """
     return RectifiedDerivative()
+
+
+def build_preprocessor(
+    *,
+    curve: str,
+    fs_hz: float,
+    botteron_band_hz: tuple[float, float] = DEFAULT_BOTTERON_BAND_HZ,
+    botteron_lowpass_hz: float = DEFAULT_BOTTERON_LOWPASS_HZ,
+) -> DetectionPreprocessor:
+    """Map a curve name onto an egm-signal preprocessor.
+
+    The synthetic-side twin of iafdb-pipeline's
+    ``export/activation_extract.py::build_preprocessor`` — same three names,
+    same two Botteron parameters. Only the curve subset is mirrored: IAFDB runs
+    ``detect_activation_train`` (preprocess → threshold → select → suppress →
+    refine) while this side runs ``detect_activation``, which is ``argmax g``
+    on a trace holding exactly one activation by construction. Its threshold /
+    prominence / refractory knobs would be config that provably does nothing
+    here, so they are refused at the config layer rather than accepted.
+
+    Parameters
+    ----------
+    curve
+        One of :data:`DETECTION_CURVES`.
+    fs_hz
+        Sampling rate **of the traces the detector will see** — i.e. the
+        *output* rate, not the capture rate. Only ``botteron_envelope`` reads
+        it, and it reads it to turn Hz cutoffs into filter coefficients: the
+        runner downsamples before it crops, so passing ``fs_capture_hz`` would
+        mis-scale the band and the low-pass by the oversample factor and still
+        run without complaint — a wrong number, not an error.
+    botteron_band_hz, botteron_lowpass_hz
+        Botteron only; ignored by the two sample-domain curves, which is why
+        the config layer rejects them alongside another curve rather than
+        silently dropping them.
+    """
+    if curve == "rectified_derivative":
+        return RectifiedDerivative()
+    if curve == "teager_kaiser":
+        return TeagerKaiser()
+    if curve == "botteron_envelope":
+        return BotteronEnvelope(
+            fs=fs_hz,
+            band_hz=botteron_band_hz,
+            lowpass_hz=botteron_lowpass_hz,
+        )
+    raise ValueError(f"Unknown detection curve {curve!r}; expected one of {DETECTION_CURVES}.")
 
 
 class CroppedTraces:
@@ -107,6 +168,10 @@ def crop_traces(
         ``T``.
     preprocessor
         Detection-curve transform; :func:`default_preprocessor` when omitted.
+        A run's curve comes from ``activation_position.detection`` via
+        :func:`build_preprocessor` — nested there because this function builds
+        one windower out of the preprocessor and the position generator, so the
+        two are one decision.
 
     Raises
     ------
@@ -189,4 +254,10 @@ def crop_traces(
     )
 
 
-__all__ = ["CroppedTraces", "crop_traces", "default_preprocessor"]
+__all__ = [
+    "DETECTION_CURVES",
+    "CroppedTraces",
+    "build_preprocessor",
+    "crop_traces",
+    "default_preprocessor",
+]

@@ -64,6 +64,7 @@ def _build_dataset_config(cfg: GenerateDatasetCLIConfig, show_progress: bool) ->
         label_policy=cfg.label_policy,
         run_config=cfg.run_config,
         cell_model=cfg.cell_model,
+        detection_preprocessor=cfg.detection_preprocessor,
         fibrosis_density_range=cfg.fibrosis_density_range,
         fraction_healthy=cfg.fraction_healthy,
         fixed_stim_edge=cfg.fixed_stim_edge,
@@ -98,6 +99,16 @@ def _format_result(
     lines.append(f"  N simulations:          {len(dataset_result.results)}")
     lines.append(f"  N traces:               {dataset_result.labels.size}")
     lines.append(f"  Label policy:           {cfg.label_policy.name}")
+    # Printed because nothing else records it: the curve decides where each
+    # window was cut, and neither bank schema has a field for it until FB-35
+    # lands. This is the string to paste into output.description.
+    #
+    # Absent from the summary when the run did not crop, which is the only case
+    # where there is no curve — the config nests it inside activation_position,
+    # so a run without that block has none. Printing one anyway would report a
+    # window placement that never happened.
+    if cfg.detection_preprocessor is not None:
+        lines.append(f"  Detection curve:        {cfg.detection_preprocessor.name}")
     keys, counts = _unique_counts(dataset_result.labels)
     label_counts = {int(k): int(v) for k, v in zip(keys, counts, strict=False)}
     label_descrs = ", ".join(

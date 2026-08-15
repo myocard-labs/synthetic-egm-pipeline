@@ -26,10 +26,17 @@ from typing import Any, Literal
 
 import yaml
 
-# egm-signal owns the bandpass default (mixer block) and the position policy
-# (SEP2). The generator is SIG1's type, not a local one — see
-# _build_position_generator for why it is constructed rather than wrapped.
-from myocard_egm_signal import DEFAULT_BIPOLAR_BAND_HZ, UniformPositionGenerator
+# egm-signal owns the bandpass default (mixer block), the position policy
+# (SEP2) and the detection curves (S16a). The generator is SIG1's type, not a
+# local one — see _build_position_generator for why it is constructed rather
+# than wrapped.
+from myocard_egm_signal import (
+    DEFAULT_BIPOLAR_BAND_HZ,
+    DEFAULT_BOTTERON_BAND_HZ,
+    DEFAULT_BOTTERON_LOWPASS_HZ,
+    DetectionPreprocessor,
+    UniformPositionGenerator,
+)
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig
 from myocard_synthetic_egm_pipeline.constants import (
@@ -57,6 +64,11 @@ from myocard_synthetic_egm_pipeline.simulate import (
 )
 from myocard_synthetic_egm_pipeline.simulate.calibration import ModelCard
 from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
+from myocard_synthetic_egm_pipeline.simulate.cropping import (
+    DETECTION_CURVES,
+    build_preprocessor,
+    default_preprocessor,
+)
 from myocard_synthetic_egm_pipeline.simulate.model_cards import (
     ModelCardError,
     load_model_card,
@@ -253,6 +265,150 @@ def _build_position_generator(doc: dict[str, Any]) -> UniformPositionGenerator |
     return UniformPositionGenerator(
         low=low, high=high, seed=master_seed if seed is None else int(seed)
     )
+
+
+#: Keys iafdb-pipeline's ``DetectionConfig`` carries that this side refuses, in
+#: both the nested (``threshold: {rule: ...}``) and flat (``threshold_rule``)
+#: spellings, so a block copied across fails whichever way it was written.
+#:
+#: They parameterise ``detect_activation_train`` — preprocess, threshold,
+#: select, suppress, refine — over a multi-beat record. A synthetic trace holds
+#: exactly one activation by construction and is detected with
+#: ``detect_activation``, which is ``argmax g``: no threshold, no candidate
+#: selection, no refractory rule. Accepting them would add config surface that
+#: provably does nothing, which is the unreachable-seam defect S16a exists to
+#: remove, freshly minted.
+_MULTI_ACTIVATION_DETECTION_KEYS: tuple[str, ...] = (
+    "threshold",
+    "threshold_rule",
+    "threshold_c",
+    "threshold_lam",
+    "threshold_q",
+    "min_prominence",
+    "refractory_ms",
+    "refine",
+    "refine_curve",
+    "refine_radius_ms",
+)
+
+
+def _reject_retired_activation_detection_block(doc: dict[str, Any]) -> None:
+    """Refuse a config carrying ``activation.detection``.
+
+    S16a shipped the block one level too high, under the ``activation:`` spec.
+    In this repo ``activation:`` is the :class:`ActivationSource` — *how the
+    wave is launched* — while detection is part of the **crop**, so the block
+    now lives beside the position range it is used with.
+
+    Erroring rather than ignoring: the old path silently falls back to the
+    default curve, which is precisely the class of failure S16a existed to
+    remove. A config written against the first spelling would keep running and
+    keep producing ``rectified_derivative`` banks while reading as though it had
+    asked for something else.
+    """
+    if _optional(doc, "activation", "detection", default=None) is not None:
+        raise ConfigError(
+            "activation.detection has moved to activation_position.detection. "
+            "In this repo `activation:` is the activation *source* — how the wave "
+            "is launched — and the detection curve is part of the crop: "
+            "crop_traces builds one windower out of the preprocessor and the "
+            "position generator, so they belong in one block. (iafdb-pipeline "
+            "nests detection under `activation:` because there that block means "
+            "activation-based windowing; this side matches its curve names and "
+            "parameter names, not its block path.) Move the block down one level: "
+            "activation_position: {low: ..., high: ..., detection: {curve: ...}}."
+        )
+
+
+def _build_detection_preprocessor(
+    doc: dict[str, Any],
+    *,
+    position_generator: UniformPositionGenerator | None,
+    output_fs_hz: float,
+) -> DetectionPreprocessor | None:
+    """Construct the detection curve from ``activation_position.detection:``.
+
+    Nested inside the position block rather than beside it, because the two are
+    one decision: :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.crop_traces`
+    builds a single ``SingleActivationWindower`` out of the preprocessor and the
+    position generator. Nesting also makes the mismatch unrepresentable — a
+    curve configured for a run that never crops cannot be written down, where
+    the first spelling accepted it and ignored it.
+
+    Same curve names and same parameter names as iafdb-pipeline
+    (``cli/_config.py::DetectionConfig`` there), which is the part that has to
+    match: a different spelling would put a translation step inside every
+    cross-corpus comparison, and comparing the two corpora on a curve each was
+    windowed with is the point of making it configurable at all (CL-167). The
+    *path* deliberately differs — their ``activation:`` block means
+    activation-based windowing, ours means the activation source.
+
+    ``None`` when no position policy is configured: no crop, so nothing is
+    detected and there is no curve to resolve. An absent ``detection`` sub-block
+    inside a present ``activation_position`` gives
+    :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.default_preprocessor`,
+    so every config written before the knob existed keeps its meaning.
+
+    ``output_fs_hz``, **not** the capture rate: the runner downsamples before it
+    crops, so the trace the detector sees is already at the output rate. Passing
+    ``fs_capture_hz`` would mis-scale Botteron's band and low-pass by the
+    oversample factor and still run without complaint.
+    """
+    if position_generator is None:
+        return None
+    block = _optional(doc, "activation_position", "detection", default=None)
+    if block is None:
+        return default_preprocessor()
+    if not isinstance(block, dict):
+        raise ConfigError(
+            f"activation_position.detection must be a mapping of keys; got {block!r}."
+        )
+
+    refused = [key for key in _MULTI_ACTIVATION_DETECTION_KEYS if key in block]
+    if refused:
+        raise ConfigError(
+            f"activation_position.detection does not accept {', '.join(refused)}: those keys "
+            "belong to multi-activation detection. iafdb-pipeline needs them because "
+            "an IAFDB window is cut from a multi-beat record, so its chain is "
+            "preprocess -> threshold -> select -> suppress -> refine. A synthetic "
+            "trace holds exactly one activation by construction and is detected with "
+            "argmax over the curve, so they would have no effect here. This side "
+            "accepts curve, botteron_band_hz and botteron_lowpass_hz only."
+        )
+
+    curve = str(_optional(block, "curve", default="rectified_derivative"))
+    if curve not in DETECTION_CURVES:
+        raise ConfigError(
+            f"activation_position.detection.curve must be one of {DETECTION_CURVES}; got {curve!r}."
+        )
+
+    # Botteron's band and low-pass describe that curve alone. Accepting them
+    # beside another curve would silently ignore a deliberate setting.
+    botteron_keys = [k for k in ("botteron_band_hz", "botteron_lowpass_hz") if k in block]
+    if curve != "botteron_envelope" and botteron_keys:
+        raise ConfigError(
+            f"activation_position.detection sets {', '.join(botteron_keys)} alongside "
+            f"curve={curve!r}, but those apply only to curve='botteron_envelope'. "
+            "The other two curves are pure sample-domain arithmetic and read no "
+            "frequencies, so the setting would be silently ignored."
+        )
+
+    band_hz = _expect_range(
+        _optional(block, "botteron_band_hz", default=list(DEFAULT_BOTTERON_BAND_HZ)),
+        field_path="activation_position.detection.botteron_band_hz",
+    )
+    lowpass_hz = float(_optional(block, "botteron_lowpass_hz", default=DEFAULT_BOTTERON_LOWPASS_HZ))
+    try:
+        return build_preprocessor(
+            curve=curve,
+            fs_hz=output_fs_hz,
+            botteron_band_hz=band_hz,
+            botteron_lowpass_hz=lowpass_hz,
+        )
+    except ValueError as exc:
+        # egm-signal validates the band against itself (0 < low < high) and the
+        # low-pass; surface that at config load rather than mid-run.
+        raise ConfigError(f"activation_position.detection: {exc}") from exc
 
 
 def _stimulus_delay_ms(
@@ -455,6 +611,19 @@ class GenerateDatasetCLIConfig:
     # object the backend receives — a generator on it would make two runs
     # sharing a RunConfig silently share a random stream.
     position_generator: UniformPositionGenerator | None
+    detection_preprocessor: DetectionPreprocessor | None
+    """Detection curve the crop anchors on, from ``activation_position.detection`` (S16a).
+
+    ``None`` exactly when ``position_generator`` is ``None``: the curve lives
+    *inside* the position block, so "a curve for a run that never crops" is not
+    a config that can be written. Present, it is always a concrete
+    preprocessor — an absent ``detection`` sub-block resolves to
+    ``RectifiedDerivative`` here rather than being left for a downstream default,
+    so the CLI can report which curve produced a bank without a "defaulted"
+    branch. That report matters more than usual: **FB-35 leaves the curve out of
+    both bank schemas**, so until it lands the run summary and the hand-written
+    ``output.description`` are the only record of it.
+    """
 
     # Output
     classifier_bank_output: Path
@@ -541,6 +710,9 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     # --- strategies + policy --------------------------------------------
     geometry = _build_geometry(doc)
     label_policy = _build_label_policy(doc)
+    # Checked before the model card is solved, so a config written against the
+    # first spelling fails in milliseconds rather than after the calibration.
+    _reject_retired_activation_detection_block(doc)
     position_generator = _build_position_generator(doc)
     stimulus_delay_ms = _stimulus_delay_ms(doc, position_generator=position_generator)
 
@@ -568,6 +740,17 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         position_generator=position_generator,
         stimulus_delay_ms=stimulus_delay_ms,
         model_card=model_card,
+    )
+    # Built from the resolved RunConfig rather than by re-reading `run:`, so
+    # there is one source for the rate the detector is told about. Botteron
+    # turns it into filter coefficients, and the trace it sees is already
+    # downsampled — see _build_detection_preprocessor. The position generator
+    # goes in for the same reason: it is what decides whether this run crops at
+    # all, and asking it beats re-deriving the answer from the doc.
+    detection_preprocessor = _build_detection_preprocessor(
+        doc,
+        position_generator=position_generator,
+        output_fs_hz=run_config.output_fs_hz,
     )
 
     # --- substrate block ------------------------------------------------
@@ -686,6 +869,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         run_config=run_config,
         cell_model=model_card.solved,
         position_generator=position_generator,
+        detection_preprocessor=detection_preprocessor,
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,
         synthetic_bank_output=synthetic_bank_output,

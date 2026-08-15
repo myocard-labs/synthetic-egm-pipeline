@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     # runtime would close the cycle backends → simulate.result →
     # simulate → simulate.dataset → backends. ``from __future__ import
     # annotations`` makes all annotations strings so this is safe.
-    from myocard_egm_signal import ActivationPositionGenerator
+    from myocard_egm_signal import ActivationPositionGenerator, DetectionPreprocessor
 
     from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 
@@ -113,6 +113,10 @@ class DatasetConfig:
     run_config
         Per-run knobs forwarded to the backend through
         :func:`run_single`.
+    detection_preprocessor
+        Detection curve the crop anchors on, for every simulation in the run.
+        ``None`` means
+        :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.default_preprocessor`.
     master_seed
         Master RNG seed; per-sim seeds derived from this.
     show_progress
@@ -134,6 +138,22 @@ class DatasetConfig:
     When it is scheduled, this becomes a sampled field like ``density_range``
     — and FB-34 (targets onto ``SubstrateStrategy``) makes that nearly free,
     because the substrate is already drawn per simulation.
+    """
+
+    detection_preprocessor: DetectionPreprocessor | None = None
+    """Detection curve every crop in this run anchors on (S16a).
+
+    ``None`` keeps ``cropping.default_preprocessor()`` — ``RectifiedDerivative``
+    — so a run that names no curve behaves exactly as every run before the knob
+    existed. Read only when ``generate_dataset`` is given a position generator:
+    with no crop there is nothing to detect for.
+
+    Stateless, unlike the position generator, so one instance is shared across
+    the whole run rather than being a per-simulation object.
+
+    **Not recorded in either bank (FB-35).** It changes where the window is cut
+    and therefore the stored waveform, but no schema has a field for it; until
+    FB-35, the bank's ``description`` is the record.
     """
 
     fibrosis_density_range: tuple[float, float] = DEFAULT_FIBROSIS_DENSITY_RANGE
@@ -225,6 +245,10 @@ def generate_dataset(
     would restart the stream and give each simulation the same sequence of
     positions — a regularity indistinguishable, downstream, from not having
     varied them at all.
+
+    The curve those positions are measured against is
+    ``config.detection_preprocessor``; it rides on the config rather than
+    alongside it here precisely because it is stateless.
     """
     master_rng = np.random.default_rng(config.master_seed)
     lo, hi = config.fibrosis_density_range
@@ -293,6 +317,7 @@ def generate_dataset(
             config=config.run_config,
             rng=sim_rng,
             position_generator=position_generator,
+            detection_preprocessor=config.detection_preprocessor,
         )
 
         # Stamp simulation_id into the result's run_metadata for downstream

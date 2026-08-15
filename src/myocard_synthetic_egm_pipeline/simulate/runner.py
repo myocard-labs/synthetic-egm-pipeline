@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     # runtime would close the cycle backends → simulate.result →
     # simulate → simulate.runner → backends. ``from __future__ import
     # annotations`` makes all annotations strings so this is safe.
-    from myocard_egm_signal import ActivationPositionGenerator
+    from myocard_egm_signal import ActivationPositionGenerator, DetectionPreprocessor
 
     from myocard_synthetic_egm_pipeline.backends import RunConfig, SimulationBackend
 
@@ -67,6 +67,7 @@ def run_single(
     config: RunConfig,
     rng: np.random.Generator,
     position_generator: ActivationPositionGenerator | None = None,
+    detection_preprocessor: DetectionPreprocessor | None = None,
 ) -> SimulationResult:
     """Run one simulation and return a finished :class:`SimulationResult`.
 
@@ -94,6 +95,22 @@ def run_single(
         (it owns an rng) while ``RunConfig`` is a frozen value object handed to
         the backend, so putting it there would let two runs sharing a config
         silently share one random stream.
+    detection_preprocessor
+        The detection curve the crop anchors on (S16a);
+        :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.default_preprocessor`
+        when ``None``. Read only when ``position_generator`` is set — with no
+        crop there is nothing to detect for.
+
+        ``crop_traces`` has always taken this and the runner never passed it,
+        so every bank in the project's history was windowed with
+        ``RectifiedDerivative`` and no config could say otherwise.
+
+        **Not recorded in either bank — FB-35.** The curve decides *where the
+        window is cut*, so it changes the stored waveform, and neither schema
+        has anywhere to put it. Until FB-35 lands the bank's ``description`` is
+        the record, maintained by hand; it is deliberately not smuggled into
+        ``backend_metadata``, which describes the simulator's capture and would
+        read as authoritative about something it does not know.
     """
     raw = backend.simulate(
         geometry=geometry,
@@ -155,6 +172,7 @@ def run_single(
             traces=captured,
             position_generator=position_generator,
             window_length_samples=target_samples,
+            preprocessor=detection_preprocessor,
         )
         bipolar_traces = cropped.signals
         activation_positions = cropped.realized_positions
