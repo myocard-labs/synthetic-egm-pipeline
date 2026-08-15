@@ -999,8 +999,40 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   cropping that same simulation output at each offset, morphology and seed held constant. Reuses
   S14's sizing rule (the sim must reach the widest grid point) and SEP12's writer; **no schema
   change** — the grid value lands in the existing `activation_position` column. Ships with its
-  `probe:` config block (grid bounds, n points, which pairs) + CLI wiring, and a `docs/usage.md`
-  probe section explaining what the bank is *for* (it is not training data); CHANGELOG.
+  config block + CLI wiring, and a `docs/usage.md` probe section explaining what the bank is *for*
+  (it is not training data); CHANGELOG.
+
+**Where the grid lives — settled 2026-08-16 (Daniel), and it moved.** The entry originally put the
+grid in a **top-level `probe:` block, mutually exclusive with `activation_position:`**. S16a
+invalidated that: the detection curve now lives *inside* `activation_position:`, so a probe run that
+excluded that block would have nowhere to read its curve from, while this entry also requires the
+probe to inherit the run's curve. Both could not hold.
+
+The grid is therefore an **optional sub-block of `activation_position:`**, mutually exclusive with
+`low`/`high`:
+
+```yaml
+activation_position:
+  detection:                 # shared by both modes, for free
+    curve: botteron_envelope
+  grid:                      # OR low/high, never both
+    low: 0.2
+    high: 0.8
+    n_points: 13
+    pair_indices: [0, 5, 10]   # optional; default is every pair
+```
+
+One home for *how the activation is positioned in the window* — a probe grid is a **deterministic**
+position policy where `low`/`high` is a random one. The mutual exclusion becomes structural instead
+of a cross-block check, and the curve is shared without duplicating the detection schema. This is
+the same argument that moved `detection:` in S16a; applying it once rather than repeating the error
+one step later.
+
+**Exactly one example config, and it is new (Daniel).** A probe bank is an occasional diagnostic,
+not part of a normal run, so the grid must **not** be sprinkled through the existing examples —
+they stay untouched. One new `examples/synthegm_probe.yaml` is the single place it is demonstrated.
+That also lands part of S36's deliberate example set ("one probe (SEP13)") early; **fold that row
+of S36 into this step rather than leaving it to be redone.**
 
 **Folded in 2026-08-16 (Daniel): make the detection curve configurable.** `crop_traces` has always
 taken a `preprocessor`, and `run_single` has never passed one — so every synthetic bank in the
@@ -1081,31 +1113,46 @@ preprocessor)` is the same call `SingleActivationWindower._detect` makes interna
 `cropping.default_preprocessor()` makes probe detection identical to training detection by
 construction rather than by matching two configurations. **S16 is a single-repo step.**
 
-**The trace axis becomes (pair × grid point), and that has to be audited, not assumed.** The probe is
-the first thing in this repo to emit more traces than there are electrode pairs, which quietly
-splits three quantities that have been interchangeable all along. Each array has exactly one correct
-length, and getting one wrong is silent — a mislabelled x-axis or a label attached to the wrong
-midpoint, both of which survive every current test:
+**REWORKED 2026-08-16 after the first probe bank — one grid point is one `simulation_id`.**
 
-| Length | Arrays | Why |
-|---|---|---|
-| **per trace** (`n_pairs · n_grid`) | `bipolar_traces`, `bipolar_pair_midpoints_mm`, `activation_positions`, `DatasetResult.labels` / `.simulation_ids` / `.pair_indices` | `LabelPolicy.apply` indexes `midpoints[i] for i in range(result.n_pairs)`, and `n_pairs` is *derived from* `bipolar_traces.shape[0]` — so midpoints must be tiled with the traces or labels silently attach to the wrong location |
-| **per electrode pair** (`n_pairs`) | `bipolar_pairs`, `run_metadata["electrode_row_per_pair"]` | provenance about the *hardware*, which the sweep does not multiply |
-| **per simulation** (scalar) | `substrate_mask`, `electrode_positions_mm`, `specs`, `sim_seed` | one simulation is the whole point |
+The first implementation made the trace axis `(pair × grid point)` inside a single simulation, tiled
+the per-trace arrays, and added a `pair_index_per_trace` field to carry the mapping. Daniel generated
+a bank and found `pair_index` running **0–59 against 20 real pairs**. His reading was the right one:
+`pair_index` had been shoehorned into doing *trace-identity* work it was never defined for.
 
-- **One widening to `SimulationResult`: `pair_index_per_trace`.** `generate_dataset` currently builds
-  the bank's `pair_index` column as `np.arange(result.n_pairs)`, which is right only while traces and
-  pairs are the same axis. Under a probe it would emit `0…799` into a column the schema defines as a
-  **foreign key into that simulation's `electrodes.pairs` list** (20 entries) — every value past 19
-  an orphan reference. So the result carries the mapping explicitly, defaulting to `None` → today's
-  `arange`. Same Guardrail-2 category as D1's `specs` field: a widening of the concrete result, no
-  Protocol touched, one producer changed.
+**It is not a matter of taste — the invariant is enforced downstream.**
+`egm-studio/loaders/synthetic_bank.py` matches ClassifierBank traces to their θ companion on
+`(simulation_id, pair_index)` "rather than by position", and **raises if either side's key is
+non-unique**. So `(simulation_id, pair_index)` is the de-facto composite primary key of the bank
+pair, and the tiled probe bank is unloadable by the one consumer it exists to serve (STU8).
+
+**The fix — and it deletes code rather than adding it.** A probe emits **N logical simulations that
+differ only in crop offset**, computed efficiently by reusing one solve. The single solve is an
+implementation detail, not the unit of identity. Consequences, all simplifications:
+
+- every `SimulationResult` has `n_pairs` traces again, so `pair_index` means 0–19 and nothing tiles;
+- `bipolar_pair_midpoints_mm`, `activation_positions` and the label array go back to per-pair length,
+  so `LabelPolicy.apply` needs no thought at all;
+- **`pair_index_per_trace` is deleted.** It was the wrong shape — a widening bought to support a
+  layout that should not have existed;
+- the sweep is identified by the **shared `seed`**, which the schema already carries per simulation
+  and does not require to be unique.
+- **Cost, to be stated in `docs/usage.md`:** the bank reports N simulations where the config asked
+  for one, and patient-aware splitting would treat grid points as separate patients. Harmless — a
+  probe bank is never training data — but it must be written down, not discovered.
+
+**Collapse the duplicate `pair_index` computation while here.** The 0–59 values came from
+`builders.py:238` building the ClassifierBank with `for pair_idx in range(result.n_pairs)` while the
+θ path used `dataset_result.pair_indices`: **one quantity, two computations, only one updated.**
+After this rework `range(result.n_pairs)` becomes correct again — which means the symptom disappears
+on its own and the landmine stays armed. Make both banks read the *same* array.
 - **`run_single` needs the capture, not the trace.** Without a position generator it truncates to the
   leading `T` samples, so the probe cannot reuse that path as-is — the sweep needs the full sized
-  capture to cut from. The probe grid goes in through the same parameter slot as the position
-  generator and is **mutually exclusive with it**: two ways to set one trace's position is the
-  two-sources-for-one-number trap `_build_run_config` already refuses for the model card. Likewise
-  `probe:` with `n_simulations > 1` errors rather than quietly running one.
+  capture to cut from. The grid goes in through the same parameter slot as the position generator,
+  which is what makes them mutually exclusive by construction: two ways to set one trace's position
+  is the two-sources-for-one-number trap `_build_run_config` already refuses for the model card.
+  A grid with `n_simulations > 1` errors rather than quietly running one — a probe answers a
+  question about *one* substrate, so a second simulation is a mis-specified study, not extra data.
 - **Sizing needs no new arithmetic.** Front is bought by `D = k(p_hi)` and back by
   `N = D + V + T − k(p_lo)`; feeding the grid's snapped max/min in as `p_hi`/`p_lo` is exactly the
   existing call. The grid is fixed rather than sampled, which makes the bound tighter, not different.
@@ -1115,14 +1162,17 @@ midpoint, both of which survive every current test:
   **omitting the block reproduces the existing bank byte-for-byte**, which is what makes the default
   claim checkable rather than asserted.
 - **Verify — the probe (S16b):** the `activation_position` column equals the snapped grid **exactly,
-  compared in float32**, tiled in the documented order; colliding grid points error, naming the pair;
-  a grid point outside the sim's sizing errors with the existing front/back diagnostic rather than
-  clipping; every trace in one sweep carries identical `simulation_id` and `sim_seed`; `pair_index`
-  stays within `[0, n_pairs)` and resolves against the simulation's `electrodes.pairs`; the signal at
-  two grid points is the same waveform at different offsets (**cross-correlation peak at exactly the
-  expected sample lag**, not eyeball, not "looks similar"); a probe run inherits the run's configured
-  curve rather than the default; the example probe config runs end-to-end and yields a bank STU8 can
-  read.
+  compared in float32**, one value per logical simulation; colliding grid points error, naming the
+  pair; a grid point outside the sim's sizing errors with the existing front/back diagnostic rather
+  than clipping; **`(simulation_id, pair_index)` is unique across the bank** — asserted directly,
+  because egm-studio raises on a duplicate and this repo cannot import it to find out; every trace in
+  one sweep carries the identical `sim_seed` while `simulation_id` runs `0…n_grid−1`; `pair_index`
+  stays within `[0, n_pairs)` **and the ClassifierBank and θ bank agree on it trace for trace** — the
+  defect that prompted the rework was the two disagreeing, which no single-bank assert would catch;
+  the signal at two grid points is the same waveform at different offsets (**cross-correlation peak
+  at exactly the expected sample lag**, not eyeball, not "looks similar"); a probe run inherits the
+  run's configured curve rather than the default; the example probe config runs end-to-end and yields
+  a bank STU8 can read.
 - **Guard against the vacuous pass.** Three tests in this repo have passed for the wrong reason, all
   proxies that stopped tracking their referent. Two to watch here, and both are the *natural* way to
   write the test:
@@ -1381,6 +1431,26 @@ leave the *history* alone, adding a forward pointer where a reader might mistake
 
 **The habit this exposes:** a step that adds, retires or recalibrates a config key is not done until
 `docs/` moves with it. S38a/b/c changed the config surface substantially and shipped no doc change.
+
+**`project/architecture.md` says "four strategy Protocols" and there are five — found 2026-08-16.**
+`CellModelSpec` landed in S38c (as absorbed S17, whose entry explicitly required "record the Protocol
+extension + its Guardrail-3 rationale in architecture.md" — that half did not ship). The phrase
+recurs **nine times**, including in Guardrail 2's own heading. S16b corrected the module map and
+added the trace-key invariant; **this reconciliation was left for here on purpose.**
+
+**It is not a find-and-replace, and treating it as one will introduce errors.** The occurrences do
+not all mean the same thing:
+
+- `SimulationSpecs` genuinely bundles **four** — geometry, substrate, activation, electrodes.
+  `CellModelSpec` is *not* a member. That "four" is **correct**; changing it breaks the doc.
+- `specs.py` genuinely ships four Protocols; the fifth lives in `cell_models.py`. Technically true,
+  actively misleading, so it needs rewording rather than a number swap.
+- `run_single` takes **five** specs now. That one is simply wrong.
+- The `## The five Protocols` heading counts four strategy specs **plus** `SimulationBackend`, so it
+  is now six on its own terms — the two counts in this file were never the same count.
+
+Read each in context. Same class as the regex that ate a constructor argument in S38c, and the
+same class as the `anisotropy_ratio = 3` passages in `simulation_theory.md` above.
 
 - **Change:** **rework the `examples/` config set** — it has drifted (Daniel, 2026-08-01: new configs
   added ad hoc during the phase) and is no longer a good cross-section of the runs we actually want

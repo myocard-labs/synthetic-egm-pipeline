@@ -94,6 +94,10 @@ The shipped examples cover the three common scenarios:
 - `examples/synthegm_calibration.yaml` — 4-sim deterministic run
   (fixed edge, fixed density, pinned electrode height) for verifying
   CV calibration or eyeballing bipolar morphology before scaling up.
+- `examples/synthegm_probe.yaml` — **positional-sensitivity probe**: one solve
+  emitted as one simulation per crop offset. A diagnostic bank, not training
+  data — see [The positional-sensitivity
+  probe](#the-positional-sensitivity-probe).
 
 Run one with:
 
@@ -214,6 +218,14 @@ activation_position:
     # `curve: botteron_envelope`.
     # botteron_band_hz: [40.0, 250.0]      # default, Botteron 1995
     # botteron_lowpass_hz: 20.0            # default; read at run.output_fs_hz
+  # Positional-sensitivity probe (SEP13) — mutually exclusive with low/high
+  # above, and requires dataset.n_simulations: 1 (which counts SOLVES: the run
+  # writes one simulation per grid point). See "The positional-sensitivity
+  # probe" below; it is a diagnostic bank, not training data.
+  # grid:
+  #   low: 0.2                             # smallest offset; sizes the capture
+  #   high: 0.8                            # largest offset; buys the stimulus delay
+  #   n_points: 13                         # snapped to the sample lattice
 
 output:
   classifier_bank: ../banks/synthegm_v1.classifier.h5   # required
@@ -264,6 +276,8 @@ Per-field reference:
 | `activation_position.detection.curve` | `rectified_derivative` / `teager_kaiser` / `botteron_envelope` | `rectified_derivative` | Detection curve the crop anchors each window on. Same three names iafdb-pipeline uses, so the two corpora can be windowed the same way. **Not recorded in either bank; see below.** |
 | `activation_position.detection.botteron_band_hz` | `[lo, hi]` | `[40.0, 250.0]` | Band-pass before rectification (Botteron 1995). `botteron_envelope` only — setting it beside another curve is rejected rather than ignored. |
 | `activation_position.detection.botteron_lowpass_hz` | float | 20.0 | Envelope smoothing cutoff. `botteron_envelope` only. Interpreted at `run.output_fs_hz`, not the capture rate: the runner downsamples before it crops. |
+| `activation_position.grid.low` / `.high` | float 0..1 | (required if `grid` present) | Ends of the swept offset range, in fractions. **Snapped** to the sample lattice; the snapped values are what sizes the capture. |
+| `activation_position.grid.n_points` | int >= 2 | (required if `grid` present) | Points in the sweep, spaced linearly over `[low, high]` before snapping. Two points snapping to one sample offset is an error. **Each point becomes one `simulation_id`**, so the bank holds `n_points x n_pairs` traces. |
 | `electrodes.type` | `centered_grid_2d` | `centered_grid_2d` | Electrode dispatch. |
 | `electrodes.n_rows` / `n_cols` | int | 5 / 5 | Grid shape; 20 bipolar pairs per sim for 5x5. |
 | `electrodes.spacing_mm` | float | 2.0 | Intra-row + inter-row spacing. |
@@ -368,8 +382,85 @@ Wrote synthetic bank:     ../banks/synthegm_v1.synthetic.h5
   By label:               healthy=812, fibrotic=1188
 ```
 
+A probe run adds two lines, reporting the snap once and stating plainly how
+many simulations the bank ended up with:
+
+```
+  Probe grid:             13 offsets, 38..153 samples (p 0.1990..0.8010), snapped by at most 0.0026
+  Probe simulations:      13 (one per offset, shared seed)
+```
+
 A run with no `activation_position` block does not crop, so it has no curve and
 the summary has no such line.
+
+#### The positional-sensitivity probe
+
+`activation_position.grid` switches the run into **probe mode**: one solve,
+emitted as **one logical simulation per crop offset**. Ships as
+`examples/synthegm_probe.yaml`.
+
+**It is a diagnostic bank, not training data.** It answers one question — how
+much does a model's output move when the *only* thing that changes is where the
+activation sits in the window? Every simulation in a sweep shares one substrate
+draw, one electrode height and one seed, which is what makes the resulting curve
+attributable to the offset rather than to a different draw. The corollary is
+that the traces are near-duplicates of one another by construction: train on
+them and the model sees one simulation repeated `n_points` times, so **do not
+mix a probe bank into a training corpus.**
+
+> **The bank reports N simulations where the config asked for one.**
+> `dataset.n_simulations: 1` counts **solves**; a 13-point grid writes 13
+> `simulation_id` values, all carrying the same `seed`. Two consequences to know
+> before you read one:
+>
+> - **The shared `seed` is what identifies a sweep.** The schema carries it per
+>   simulation and does not require it to be unique, so equal seeds across
+>   consecutive `simulation_id`s is the signature of one probe run.
+> - **Patient-aware splitting would treat each grid point as a separate
+>   patient.** `patient_id` is `str(simulation_id)`, so a splitter would happily
+>   put offset 0.2 in train and offset 0.3 in test — the same waveform either
+>   side of the split. Harmless *because a probe bank is never training data*,
+>   and stated here so it is known rather than discovered.
+>
+> The alternative — one simulation holding every offset — was tried first and is
+> not available: `pair_index` is a foreign key into that simulation's
+> `electrodes.pairs`, and egm-studio's loader joins the ClassifierBank to its
+> theta companion on `(simulation_id, pair_index)` and **raises when either
+> side's key repeats**. A bank with 260 traces under 20 pair indices is
+> unloadable by the one consumer it exists for.
+
+Four things worth knowing before you read one:
+
+- **The grid is snapped to the sample lattice, and the snapped value is the
+  grid of record.** A window is placed at `s = round(t_a - p(T-1))`, so the
+  realized position equals the requested one only when `p(T-1)` is an integer.
+  At `T = 192` the divisor is 191, which is prime — a grid stated in round
+  fractions lands on none of the representable positions. So each point is
+  snapped to `k = round(p(T-1))` at config load, and `k/(T-1)` is what the
+  sweep requests and what the `activation_position` column stores. The
+  requested-versus-snapped difference is under half a sample. Two points that
+  snap to one `k` are an error naming the pair, not a silent de-duplication.
+- **Detection runs once per pair, not once per grid point.** Re-detecting per
+  window would put the detector's jitter onto the axis the study reads off. The
+  probe detects once on the source trace and places every offset by exact
+  integer shift from it — so two grid points hold the same waveform at a known
+  sample lag.
+- **The probe inherits the run's detection curve** (`activation_position.detection`),
+  never a private default. A sweep characterising a bank through a different
+  detector would be measuring two things at once.
+- **Every pair is swept, and the trace axis is ordinary.** Each grid point is a
+  complete simulation of `n_pairs` traces, so `pair_index` runs `0..n_pairs-1`
+  and `activation_position` is one value per simulation. There is no
+  pair-subset knob: selecting pairs would need a per-trace pair mapping, which
+  is what made the first version of this bank unloadable. Select pairs when you
+  analyse the bank instead.
+
+Sizing needs no special handling: the capture is bought from the grid's smallest
+snapped offset and the stimulus delay from its largest, which is the ordinary
+rule with a fixed range instead of a sampled one. A grid point that does not fit
+raises the usual FRONT/BACK diagnostic naming the grid point, rather than
+clipping — a clipped point would put a kink in the study's x-axis that nothing
+in the bank explains.
 
 ### `synthegm-mix` config
 

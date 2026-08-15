@@ -78,9 +78,15 @@ src/myocard_synthetic_egm_pipeline/
 ├── simulate/
 │   ├── __init__.py               ← re-exports public API
 │   ├── specs.py                  ← 4 strategy Protocols + concretes (pure data)
+│   ├── cell_models.py            ← CellModelSpec, the FIFTH strategy spec (D2) + the AP solve
+│   ├── calibration.py            ← physiological targets, measured values, ModelCard
+│   ├── model_cards.py            ← load/verify a named parameterisation
 │   ├── bank_config.py            ← specs → synthetic_bank 2.0 per-sim config
 │   ├── result.py                 ← RawSimulationResult, SimulationResult
 │   ├── pseudo_egm.py             ← Okenov 2024 forward + bipolar pairing
+│   ├── sizing.py                 ← how long the solver must run for a T-window to fit
+│   ├── cropping.py               ← controlled-position crop via egm-signal's windower
+│   ├── probe.py                  ← positional-sensitivity sweep: one solve → N logical sims
 │   ├── label_policy.py           ← LabelPolicy Protocol + concretes
 │   ├── runner.py                 ← run_single orchestrator
 │   ├── dataset.py                ← generate_dataset (N-sim)
@@ -263,6 +269,39 @@ Crucially the synthetic bank is **not the ClassifierBank's source
 bank** — it is a parallel record of the same run, not an upstream
 artifact it was derived from. Consumers join the two on
 `simulation_id`.
+
+### The trace-level key is `(simulation_id, pair_index)` — and it must be unique
+
+`simulation_id` joins a trace to its *generation config*, but it does not
+identify a **trace**: a simulation has one row per bipolar pair. The pair is
+resolved by `pair_index`, so the composite `(simulation_id, pair_index)` is the
+de-facto primary key of the trace tables — **in both banks, and they must agree
+row for row.**
+
+**This is enforced downstream, not just assumed here.**
+`egm-studio/loaders/synthetic_bank.py` matches ClassifierBank traces to their θ
+companion on `(simulation_id, pair_index)` "rather than by position", and
+**raises if either side's key is non-unique**. A bank that breaks the invariant
+is not degraded — it is unloadable by the tooling it exists for.
+
+**Nothing in this repo's schemas states it**, which is why it was possible to
+violate it by accident: `pair_index` is documented as a foreign key into the
+simulation's `electrodes.pairs` list, and nothing says the pair is also carrying
+trace identity. The first positional-sensitivity probe (S16b) emitted
+`n_pairs × n_grid` traces inside **one** simulation and wrote the flat trace
+counter into `pair_index` — values 0–59 against 20 real pairs — which both
+destroyed the column's stated meaning and produced a bank egm-studio refused.
+
+**The rule that follows, for any future emission shape:** if a run needs to emit
+more traces than it has electrode pairs, the extra axis becomes **more
+simulations**, never a re-purposed `pair_index`. The probe emits N logical
+simulations differing only in crop offset, computed by reusing one solve — the
+single solve is an implementation detail, not the unit of identity. Traces from
+one sweep are recognised by their **shared `seed`**, which the schema carries
+per simulation and does not require to be unique.
+
+A trace-identity field that made this explicit is the honest fix; it is deferred
+because it is an egm-contracts change reaching every reader.
 
 **Why the label still runs inside the producer.** Unchanged from
 Phase 1, and still the reason the ClassifierBank can stay this thin:
