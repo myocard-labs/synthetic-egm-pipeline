@@ -65,6 +65,7 @@ def _build_dataset_config(cfg: GenerateDatasetCLIConfig, show_progress: bool) ->
         run_config=cfg.run_config,
         cell_model=cfg.cell_model,
         detection_preprocessor=cfg.detection_preprocessor,
+        probe_grid=cfg.probe_grid,
         fibrosis_density_range=cfg.fibrosis_density_range,
         fraction_healthy=cfg.fraction_healthy,
         fixed_stim_edge=cfg.fixed_stim_edge,
@@ -109,6 +110,20 @@ def _format_result(
     # window placement that never happened.
     if cfg.detection_preprocessor is not None:
         lines.append(f"  Detection curve:        {cfg.detection_preprocessor.name}")
+    if cfg.probe_grid is not None:
+        # The snap reported ONCE, here, rather than per trace: the config states
+        # fractions and the sweep cuts at sample offsets, and the difference is
+        # a fact about the run rather than about any one window. It also says
+        # plainly that this bank holds n_points simulations, not the one the
+        # config asked for.
+        grid = cfg.probe_grid
+        lines.append(
+            f"  Probe grid:             {grid.n_points} offsets, "
+            f"{grid.offsets_samples[0]}..{grid.offsets_samples[-1]} samples "
+            f"(p {grid.low:.4f}..{grid.high:.4f}), "
+            f"snapped by at most {grid.max_snap_error:.4f}"
+        )
+        lines.append(f"  Probe simulations:      {grid.n_points} (one per offset, shared seed)")
     keys, counts = _unique_counts(dataset_result.labels)
     label_counts = {int(k): int(v) for k, v in zip(keys, counts, strict=False)}
     label_descrs = ", ".join(

@@ -6,6 +6,13 @@ backend's ``RawSimulationResult`` into the runner-side
 :class:`~myocard_synthetic_egm_pipeline.simulate.result.SimulationResult`
 that label policies and storage consume.
 
+:func:`run_probe_sweep` is its sibling for the positional-sensitivity probe
+(SEP13): one solve, **one result per crop offset**. It returns a list rather
+than being a mode on ``run_single``, because the return type genuinely differs
+and a conditional one would push the branch onto every caller. Both share the
+capture and the result-building below, so the two cannot drift on what a
+simulation's post-processing is.
+
 The orchestration is intentionally small:
 
 1. Call ``backend.simulate(...)`` — backend owns the V_m → φ_e step
@@ -43,6 +50,7 @@ if TYPE_CHECKING:
 
 from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.cropping import crop_traces
+from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid, sweep_capture
 from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
     bipolar_from_unipolar,
     downsample,
@@ -112,6 +120,130 @@ def run_single(
         ``backend_metadata``, which describes the simulator's capture and would
         read as authoritative about something it does not know.
     """
+    captured, raw = _capture_bipolar(
+        geometry=geometry,
+        substrate=substrate,
+        activation=activation,
+        electrodes=electrodes,
+        cell_model=cell_model,
+        backend=backend,
+        config=config,
+        rng=rng,
+    )
+    target_samples = _target_samples(config)
+
+    # --- 5. Place the window (SEP2) -------------------------------------
+    # With a position policy the trace is a T-sample window cut around each
+    # pair's *detected* activation; without one it is the leading T samples,
+    # which is what the producer did before cropping existed.
+    activation_positions: npt.NDArray[np.float64] | None = None
+    if position_generator is None:
+        bipolar_traces = captured[:, :target_samples]
+    else:
+        cropped = crop_traces(
+            traces=captured,
+            position_generator=position_generator,
+            window_length_samples=target_samples,
+            preprocessor=detection_preprocessor,
+        )
+        bipolar_traces = cropped.signals
+        activation_positions = cropped.realized_positions
+
+    return _build_result(
+        raw=raw,
+        geometry=geometry,
+        substrate=substrate,
+        activation=activation,
+        electrodes=electrodes,
+        config=config,
+        bipolar_traces=bipolar_traces,
+        activation_positions=activation_positions,
+    )
+
+
+def run_probe_sweep(
+    *,
+    geometry: GeometrySpec,
+    substrate: SubstrateStrategy,
+    activation: ActivationSource,
+    electrodes: ElectrodePlacement,
+    cell_model: CellModelSpec,
+    backend: SimulationBackend,
+    config: RunConfig,
+    rng: np.random.Generator,
+    grid: ProbeGrid,
+    detection_preprocessor: DetectionPreprocessor | None = None,
+) -> list[SimulationResult]:
+    """Solve once, then return **one result per grid point** (SEP13 / S16b).
+
+    A probe emits N simulations that differ only in where the window was cut.
+    Reusing a single solve is what makes that cheap; it is not what makes them
+    one simulation. Each returned result is an ordinary
+    :class:`SimulationResult` with ``n_pairs`` traces, so ``pair_index`` means
+    what the schema says it means and nothing downstream needs a probe-shaped
+    branch.
+
+    A separate function rather than a mode on :func:`run_single`: the return
+    type genuinely differs, and a conditional ``SimulationResult |
+    list[SimulationResult]`` would push that branch onto every caller.
+
+    The caller gives every returned result the **same** ``sim_seed`` — they came
+    from one solve — and consecutive ``simulation_id`` values. The schema
+    carries ``seed`` per simulation and does not require it to be unique, so the
+    shared seed is what identifies a sweep.
+    """
+    captured, raw = _capture_bipolar(
+        geometry=geometry,
+        substrate=substrate,
+        activation=activation,
+        electrodes=electrodes,
+        cell_model=cell_model,
+        backend=backend,
+        config=config,
+        rng=rng,
+    )
+    _target_samples(config)  # same short-capture guard the single path applies
+
+    swept = sweep_capture(
+        traces=captured,
+        grid=grid,
+        preprocessor=detection_preprocessor,
+    )
+    n_pairs = captured.shape[0]
+    return [
+        _build_result(
+            raw=raw,
+            geometry=geometry,
+            substrate=substrate,
+            activation=activation,
+            electrodes=electrodes,
+            config=config,
+            bipolar_traces=swept.signals[point_index],
+            # One value per logical simulation, repeated across its pairs
+            # because the column is per trace. Not a tiling of a longer axis:
+            # every trace in this simulation genuinely sits at this offset.
+            activation_positions=np.full(n_pairs, position, dtype=np.float64),
+        )
+        for point_index, position in enumerate(swept.positions)
+    ]
+
+
+def _capture_bipolar(
+    *,
+    geometry: GeometrySpec,
+    substrate: SubstrateStrategy,
+    activation: ActivationSource,
+    electrodes: ElectrodePlacement,
+    cell_model: CellModelSpec,
+    backend: SimulationBackend,
+    config: RunConfig,
+    rng: np.random.Generator,
+) -> tuple[npt.NDArray[np.float32], Any]:
+    """Steps 1-4: solve, pair, downsample, and hand back ``(n_pairs, n_capture)``.
+
+    Shared by :func:`run_single` and :func:`run_probe_sweep` so the two cannot
+    drift on what "the capture" means.
+    """
     raw = backend.simulate(
         geometry=geometry,
         substrate=substrate,
@@ -146,7 +278,7 @@ def run_single(
     # cropping rather than padding at the dataset boundary. Under correct
     # sizing (simulate.sizing) this branch is unreachable; if it fires, the
     # sizing is wrong and silently manufacturing data would hide that.
-    target_samples = round(config.trace_duration_ms * 1e-3 * config.output_fs_hz)
+    target_samples = _target_samples(config)
     n = bipolar_target.shape[0]
     if n < target_samples:
         raise ValueError(
@@ -159,31 +291,33 @@ def run_single(
 
     # --- 4. Reshape (n_samples, n_pairs) → (n_pairs, n_samples) + float32 ---
     captured: npt.NDArray[np.float32] = bipolar_target.T.astype(np.float32, copy=False)
+    return captured, raw
 
-    # --- 5. Place the window (SEP2) -------------------------------------
-    # With a position policy the trace is a T-sample window cut around each
-    # pair's *detected* activation; without one it is the leading T samples,
-    # which is what the producer did before cropping existed.
-    activation_positions: npt.NDArray[np.float64] | None = None
-    if position_generator is None:
-        bipolar_traces = captured[:, :target_samples]
-    else:
-        cropped = crop_traces(
-            traces=captured,
-            position_generator=position_generator,
-            window_length_samples=target_samples,
-            preprocessor=detection_preprocessor,
-        )
-        bipolar_traces = cropped.signals
-        activation_positions = cropped.realized_positions
 
-    # --- 6. Per-pair midpoints (physical mm) ----------------------------
+def _target_samples(config: RunConfig) -> int:
+    """``T`` in samples for this run."""
+    return round(config.trace_duration_ms * 1e-3 * config.output_fs_hz)
+
+
+def _build_result(
+    *,
+    raw: Any,
+    geometry: GeometrySpec,
+    substrate: SubstrateStrategy,
+    activation: ActivationSource,
+    electrodes: ElectrodePlacement,
+    config: RunConfig,
+    bipolar_traces: npt.NDArray[np.float32],
+    activation_positions: npt.NDArray[np.float64] | None,
+) -> SimulationResult:
+    """Steps 5-7: midpoints, run-level provenance, and the finished result."""
+    # --- 5. Per-pair midpoints (physical mm) ----------------------------
     midpoints = _compute_pair_midpoints_mm(
         positions_mm=raw.electrode_positions_mm,
         bipolar_pairs=raw.bipolar_pairs,
     )
 
-    # --- 7. Run-level provenance ----------------------------------------
+    # --- 6. Run-level provenance ----------------------------------------
     # Duck-typed extraction of per-sim scalars from the strategy specs.
     # Concretes that don't expose the field get None; downstream
     # consumers (ClassifierBank trace_metadata, SyntheticBank columns)

@@ -8,6 +8,58 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
 
 ### Added
 
+- **Positional-sensitivity probe bank (SEP13, S16b).** A generation mode that
+  solves **once** and emits **one logical simulation per crop offset**, each
+  cut from that same capture at a different position with substrate, electrode
+  height and seed held constant:
+
+  ```yaml
+  activation_position:
+    detection:
+      curve: botteron_envelope     # shared with the random-position mode
+    grid:
+      low: 0.2
+      high: 0.8
+      n_points: 13
+  ```
+
+  **A diagnostic bank, not training data** — its traces are near-duplicates by
+  construction, so training on one means training on a single simulation
+  repeated. It exists so a study can plot model output *against* activation
+  offset and read the sensitivity off a curve whose x-axis carries no other
+  variation. Ships as `examples/synthegm_probe.yaml`; no schema change, since
+  the offset lands in the existing `activation_position` column.
+
+  **One grid point is one `simulation_id`, and the single solve is an
+  implementation detail rather than the unit of identity.** The first cut of
+  this put the whole sweep inside one simulation, making the trace axis
+  `(pair x grid point)`; a generated bank came out with `pair_index` running
+  0-59 against 20 real pairs. That is not a matter of taste — `egm-studio`'s
+  synthetic-bank loader joins ClassifierBank traces to their theta companion on
+  `(simulation_id, pair_index)` and **raises when either side's key is
+  non-unique**, so the tiled bank was unloadable by the one consumer it exists
+  for. Every simulation now has `n_pairs` traces, `pair_index` means
+  `0..n_pairs-1`, `activation_position` is one value per simulation, and a sweep
+  is identified by the **shared `seed`** the schema already carries. Two costs,
+  both documented in `docs/usage.md`: the bank reports N simulations where the
+  config asked for one, and patient-aware splitting would treat grid points as
+  separate patients — harmless for a bank that is never training data.
+
+  **The grid is snapped to the sample lattice and the snapped value is the grid
+  of record** (design note D6, amended). A window is placed at
+  `s = round(t_a - p(T-1))`, so realized equals requested only when `p(T-1)` is
+  an integer — and at `T = 192` the divisor is 191, which is prime, so a grid
+  in round fractions hits none of the representable positions. Each point snaps
+  to `k = round(p(T-1))` at config load, under half a sample from what was
+  asked for, and `k/(T-1)` is what the sweep requests and the bank stores. Two
+  points snapping to one offset **error**, naming the pair: emitting one crop
+  twice under two different offset labels is a mis-specified study, not
+  something to de-duplicate quietly.
+  **Detection runs once per pair**, then every offset is an exact integer shift
+  from it, so the axis carries no detector jitter — and the probe uses the
+  **run's** configured curve rather than a private default, or it would
+  characterise a bank it does not share a detector with.
+
 - **The detection curve is configurable (S16a, CL-167).** `crop_traces` has
   always taken a `preprocessor` and `run_single` never passed one, so every
   synthetic bank in the project's history was windowed with
@@ -131,6 +183,19 @@ All notable changes to `synthetic-egm-pipeline` are documented here. The format 
   the fixed arm — the same class with the range collapsed to a point.
   *Cropping itself is not wired yet;* this step sizes the capture and the trace
   is still the first `T` samples. The window is cut in the next step.
+
+### Fixed
+
+- **The ClassifierBank and its `synthetic_bank` companion now read one array
+  for their join key.** The ClassifierBank builder recomputed
+  `(simulation_id, pair_index)` from `run_metadata` and `range(n_pairs)` while
+  the theta builder read `DatasetResult.simulation_ids` / `.pair_indices` — one
+  quantity, two computations. When the probe changed the trace layout only one
+  of them was updated, so the two banks disagreed on `pair_index` and the pair
+  could not be joined. The layout has since been fixed, which would have made
+  the symptom vanish while leaving the duplication in place; both builders now
+  read the same columns, and the builder checks that those columns and the
+  signal axis agree on the trace count.
 
 ### Changed
 

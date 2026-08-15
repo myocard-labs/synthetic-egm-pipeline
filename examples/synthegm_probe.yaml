@@ -1,0 +1,99 @@
+# synthegm-generate-dataset — POSITIONAL-SENSITIVITY PROBE (SEP13 / S16b).
+#
+# NOT TRAINING DATA. This bank exists to answer one question: how much does a
+# model's output move when the *only* thing that changes is where the
+# activation sits in the window? It runs ONE solve and emits one LOGICAL
+# SIMULATION per grid point, each cut from that same capture at a different
+# offset. Morphology, substrate, electrode height and seed are identical across
+# the whole sweep — which is what makes the resulting curve attributable to the
+# offset rather than to a different draw.
+#
+# Do not train on it and do not mix it into a training corpus: the traces are
+# near-duplicates of each other by construction, so a classifier would see one
+# simulation repeated n_points times.
+#
+# One grid point is one `simulation_id`, so this config writes 13 simulations
+# x 20 pairs = 260 traces from a single solve. `pair_index` runs 0-19 within
+# each of them and `activation_position` is one value per simulation. That
+# shape is what egm-studio's loader needs: it joins the ClassifierBank to its
+# theta companion on `(simulation_id, pair_index)` and raises if either side's
+# key repeats.
+#
+# The bank therefore REPORTS 13 simulations where this config asks for 1 —
+# deliberate, and written up in docs/usage.md.
+#
+# Output: ../banks/synthegm_probe.classifier.h5 (+ .synthetic.h5)
+
+dataset:
+  n_simulations: 1                         # REQUIRED to be 1 — this counts SOLVES, not written simulations
+  master_seed: 42                          # the solve's seed; every grid point inherits it
+  show_progress: false                     # one solve; the bar has nothing to report
+
+backend:
+  type: finitewave
+  model: af_remodelled_220ms               # same calibrated card the training corpus uses
+
+geometry:
+  type: patch_2d
+  size_mm: 40.0
+  dr_mm: 0.25
+  fiber_angle_rad: 0.0
+  anisotropy_ratio: 2.0
+
+substrate:
+  type: uniform_random_fibrosis
+  density_range: [0.3, 0.3]                # collapsed: the sweep varies offset, nothing else
+  fraction_healthy: 0.0
+
+activation:
+  type: planar_edge
+  fixed_edge: left                         # pinned, not sampled — same reason as the density above
+
+electrodes:
+  type: centered_grid_2d
+  n_rows: 5
+  n_cols: 5
+  spacing_mm: 2.0
+  height_mm_range: [0.5, 0.5]              # collapsed; a sampled height would vary the morphology
+
+label_policy:
+  type: local_density
+  radius_mm: 2.0
+  threshold: 0.1
+
+run:
+  trace_duration_ms: 192.0                 # T = 192 samples, so the lattice is j/191
+  output_fs_hz: 1000.0
+  capture_oversample: 4
+  # The sweep needs the whole capture to cut from, and the widest grid point
+  # sizes it: the stimulus delay is derived from the grid's largest SNAPPED
+  # offset and the capture length from its smallest. Raise travel_allowance_ms
+  # if a grid point reports running off the BACK.
+
+activation_position:
+  # The detection curve is shared with the ordinary random-position mode, and
+  # a probe MUST use the run's curve rather than a default: a sweep that
+  # characterised a bank through a different detector would measure two things
+  # at once.
+  detection:
+    curve: rectified_derivative            # default; match whatever the bank under study used
+  # The sweep. Mutually exclusive with low/high — a probe requests its offsets,
+  # it does not draw them.
+  grid:
+    low: 0.2                               # smallest offset; sizes the capture
+    high: 0.8                              # largest offset; buys the stimulus delay
+    n_points: 13                           # snapped to the sample lattice; collisions are an error
+    # Every pair is swept; there is no pair-subset knob. A subset would need a
+    # per-trace pair mapping, which is what made the first probe bank
+    # unloadable — select pairs when you analyse the bank instead.
+
+output:
+  classifier_bank: ../banks/synthegm_probe.classifier.h5
+  description: >
+    POSITIONAL-SENSITIVITY PROBE, not training data. One solve (density 0.3, left
+    edge, height 0.5 mm, master_seed 42) emitted as 13 logical simulations, one
+    per crop offset in [0.2, 0.8], all sharing a sim_seed.
+    Detection curve: rectified_derivative.
+
+# No `mix:` block. Noise would add a second varying quantity to a bank whose
+# whole purpose is that only one thing varies.

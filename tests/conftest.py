@@ -8,6 +8,7 @@ patch so locality-aware tests have deterministic ground truth.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import numpy as np
@@ -456,3 +457,82 @@ class _MockBackend:
 def mock_backend() -> SimulationBackend:
     """A no-op backend that returns canned RawSimulationResults."""
     return _MockBackend()
+
+
+# ---------------------------------------------------------------------------
+# A capture the detection curves disagree about (S16a / S16b)
+# ---------------------------------------------------------------------------
+
+
+def ambiguous_complex(n_samples: int) -> npt.NDArray[np.float64]:
+    """One trace at 1 kHz holding two candidate activations.
+
+    The 100 Hz burst below is written in ms, so this is only the shape
+    described here at that rate.
+
+    A one-sample biphasic spike at ``n/4`` — steepest thing in the trace, so
+    ``rectified_derivative`` anchors there — and a broader, larger 100 Hz Gabor
+    burst at ``n/2``, which carries most of the energy inside Botteron's
+    40-250 Hz band and so wins the smoothed envelope. Teager-Kaiser tracks
+    amplitude x frequency and lands on the burst too, one sample earlier than
+    the envelope.
+
+    Three curves, three indices: that is what makes a bank-to-bank diff mean
+    "the curve reached the crop" rather than "the seed differed".
+    """
+    sharp_at = n_samples // 4
+    broad_at = n_samples // 2
+    t = np.arange(n_samples, dtype=np.float64)
+
+    signal = np.zeros(n_samples, dtype=np.float64)
+    signal[sharp_at] += 1.0
+    signal[sharp_at + 1] -= 1.0
+    envelope = np.exp(-0.5 * ((t - broad_at) / 6.0) ** 2)
+    signal += 2.0 * envelope * np.sin(2.0 * np.pi * 100.0 * (t - broad_at) / 1000.0)
+    return signal
+
+
+class _AmbiguousComplexBackend:
+    """The mock backend with its Gaussian capture replaced by the complex.
+
+    Wraps rather than reimplements, so the ``backend_metadata`` the runner
+    forwards stays exactly what the real backend emits — a thinner fixture is
+    how a mapping gap gets to pass.
+
+    Every electrode sees the same waveform at a different amplitude, so each
+    bipolar difference is a scaled copy of it. All three curves take an
+    ``argmax`` of a non-negative, homogeneous transform, so scale and sign
+    cannot move the detected index: every pair in the run detects the same
+    sample, and the only thing that can move a window is the curve.
+    """
+
+    name = "ambiguous_complex"
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def simulate(self, **kwargs: Any) -> Any:
+        raw = self._inner.simulate(**kwargs)
+        n_capture, n_electrodes = raw.unipolar_traces.shape
+        oversample = int(kwargs["config"].capture_oversample)
+        assert n_capture % oversample == 0, (
+            f"capture of {n_capture} samples does not divide by the oversample "
+            f"factor {oversample}; the hold below would not survive the runner's "
+            "stride-downsample"
+        )
+        # Sample-and-hold upsample: the runner downsamples by taking every
+        # `oversample`-th sample, so the trace it crops is exactly the waveform
+        # above rather than a resampled approximation of it.
+        held = np.repeat(ambiguous_complex(n_capture // oversample), oversample)
+        amplitudes = np.arange(1, n_electrodes + 1, dtype=np.float64)
+        return replace(raw, unipolar_traces=held[:, None] * amplitudes[None, :])
+
+
+def ambiguous_complex_backend_for(inner: SimulationBackend) -> SimulationBackend:
+    """Wrap a backend so its capture carries the ambiguous complex.
+
+    A function rather than only a fixture because several tests build one per
+    run inside a loop, and because the wrapper is what a test hands to
+    ``generate_dataset`` directly.
+    """
+    return _AmbiguousComplexBackend(inner)

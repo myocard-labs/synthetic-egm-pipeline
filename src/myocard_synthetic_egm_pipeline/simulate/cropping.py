@@ -29,6 +29,8 @@ the two corpora.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 from myocard_egm_signal import (
@@ -121,6 +123,63 @@ def build_preprocessor(
     raise ValueError(f"Unknown detection curve {curve!r}; expected one of {DETECTION_CURVES}.")
 
 
+def out_of_bounds_message(
+    *,
+    window: Any,
+    window_length_samples: int,
+    n_capture: int,
+    context: str,
+) -> str:
+    """Why a window did not fit, and which knob buys the room.
+
+    Shared by the random-position crop and the probe sweep (S16b) so the two
+    cannot drift into describing the same failure differently. ``context``
+    names what was being cut — a pair for the crop, a pair *and a grid point*
+    for the probe — because "it does not fit" without a subject sends the
+    reader looking through every trace.
+
+    ``window`` is egm-signal's ``Window``; typed loosely because the class is
+    not exported and the two attributes read here are stable.
+    """
+    start = window.activation_index - round(window.realized_position * (window_length_samples - 1))
+    off_front = start < 0
+    overshoot = (start + window_length_samples) - n_capture
+    detail = (
+        (
+            f"It runs off the FRONT by {-start} samples: the activation arrived before "
+            "the stimulus delay allowed for. Raise activation.stimulus_delay_ms."
+        )
+        if off_front
+        else (
+            f"It runs off the BACK by {overshoot} samples: the wave took longer to reach "
+            f"this pair than the travel allowance covers (activation at "
+            f"{window.activation_index}). Raise run.travel_allowance_ms — it needs to "
+            f"exceed the largest activation index minus the stimulus delay. Heavy "
+            f"fibrosis slows conduction, so a dense substrate needs a larger allowance "
+            f"than a clean one."
+        )
+    )
+    return (
+        f"{context}: a window of {window_length_samples} samples at realized "
+        f"position {window.realized_position:.4f} does not fit inside a "
+        f"{n_capture}-sample capture. " + detail
+    )
+
+
+def constant_signal_message(context: str) -> str:
+    """Why a flat trace has no activation to anchor on.
+
+    Shared for the same reason as :func:`out_of_bounds_message`: both callers
+    hit it, and on a synthetic run it always means the same thing — the
+    wavefront never reached that pair.
+    """
+    return (
+        f"{context} carries a constant signal, so no activation can be detected. "
+        "The wavefront never reached this pair — check the activation source, "
+        "the substrate density, and the capture duration."
+    )
+
+
 class CroppedTraces:
     """Result of cropping one simulation's traces.
 
@@ -211,38 +270,17 @@ def crop_traces(
             # with the pair named: on a clean simulation this means the
             # wavefront never reached that pair, which is a generation problem,
             # not a windowing one.
-            raise ValueError(
-                f"pair {pair_index} carries a constant signal, so no activation can be "
-                "detected. The wavefront never reached this pair — check the activation "
-                "source, the substrate density, and the capture duration."
-            ) from exc
+            raise ValueError(constant_signal_message(f"pair {pair_index}")) from exc
 
         (window,) = window_set.windows
         if not window.in_bounds:
-            start = window.activation_index - round(
-                window.realized_position * (window_length_samples - 1)
-            )
-            off_front = start < 0
-            overshoot = (start + window_length_samples) - n_capture
-            detail = (
-                (
-                    f"It runs off the FRONT by {-start} samples: the activation arrived before "
-                    "the stimulus delay allowed for. Raise activation.stimulus_delay_ms."
-                )
-                if off_front
-                else (
-                    f"It runs off the BACK by {overshoot} samples: the wave took longer to reach "
-                    f"this pair than the travel allowance covers (activation at "
-                    f"{window.activation_index}). Raise run.travel_allowance_ms — it needs to "
-                    f"exceed the largest activation index minus the stimulus delay. Heavy "
-                    f"fibrosis slows conduction, so a dense substrate needs a larger allowance "
-                    f"than a clean one."
-                )
-            )
             raise ValueError(
-                f"pair {pair_index}: a window of {window_length_samples} samples at realized "
-                f"position {window.realized_position:.4f} does not fit inside a "
-                f"{n_capture}-sample capture. " + detail
+                out_of_bounds_message(
+                    window=window,
+                    window_length_samples=window_length_samples,
+                    n_capture=n_capture,
+                    context=f"pair {pair_index}",
+                )
             )
         assert window.signal is not None  # in-bounds windows always carry their slice
         signals[pair_index] = window.signal.astype(np.float32, copy=False)
@@ -258,6 +296,8 @@ __all__ = [
     "DETECTION_CURVES",
     "CroppedTraces",
     "build_preprocessor",
+    "constant_signal_message",
     "crop_traces",
     "default_preprocessor",
+    "out_of_bounds_message",
 ]

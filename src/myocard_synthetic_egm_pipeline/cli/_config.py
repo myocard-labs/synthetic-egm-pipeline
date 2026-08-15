@@ -73,6 +73,7 @@ from myocard_synthetic_egm_pipeline.simulate.model_cards import (
     ModelCardError,
     load_model_card,
 )
+from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid
 from myocard_synthetic_egm_pipeline.simulate.sizing import (
     WINDOW_LENGTH_MULTIPLE,
     required_capture_duration_ms,
@@ -249,10 +250,22 @@ def _build_position_generator(doc: dict[str, Any]) -> UniformPositionGenerator |
     block = _optional(doc, "activation_position", default=None)
     if block is None:
         return None
+    if "grid" in block:
+        if "low" in block or "high" in block:
+            raise ConfigError(
+                "activation_position sets both 'grid' and 'low'/'high', and each "
+                "decides where the activation sits in the stored trace. A probe "
+                "sweeps a fixed grid of offsets; low/high draw them at random per "
+                "trace. Keep one: nest low/high inside 'grid' for a sweep, or drop "
+                "the grid block for an ordinary run."
+            )
+        # The sweep supplies its own offsets, so there is no random stream.
+        return None
     if "low" not in block or "high" not in block:
         raise ConfigError(
             "activation_position must set both 'low' and 'high' (use the same "
-            "value twice for the fixed/anchored arm, e.g. low: 0.5, high: 0.5)."
+            "value twice for the fixed/anchored arm, e.g. low: 0.5, high: 0.5), "
+            "or a 'grid' block for a positional-sensitivity probe."
         )
     low = float(block["low"])
     high = float(block["high"])
@@ -265,6 +278,80 @@ def _build_position_generator(doc: dict[str, Any]) -> UniformPositionGenerator |
     return UniformPositionGenerator(
         low=low, high=high, seed=master_seed if seed is None else int(seed)
     )
+
+
+def _window_length_samples(doc: dict[str, Any]) -> int:
+    """``T`` in samples, from the ``run:`` block's duration and rate.
+
+    Read before ``RunConfig`` exists because the probe grid snaps against ``T``
+    and the capture is then sized from the *snapped* bounds. Both callers go
+    through :func:`~myocard_synthetic_egm_pipeline.simulate.sizing.window_length_samples`
+    so the number cannot drift between them.
+    """
+    block = _optional(doc, "run", default={}) or {}
+    return window_length_samples(
+        trace_duration_ms=float(
+            _optional(block, "trace_duration_ms", default=DEFAULT_TRACE_DURATION_MS)
+        ),
+        output_fs_hz=float(_optional(block, "output_fs_hz", default=DEFAULT_OUTPUT_FS_HZ)),
+    )
+
+
+def _build_probe_grid(doc: dict[str, Any]) -> ProbeGrid | None:
+    """Construct the probe sweep from ``activation_position.grid:`` (SEP13).
+
+    ``None`` for an ordinary run. The block nests inside ``activation_position``
+    for the same reason ``detection`` does — it decides where the activation
+    sits in the stored trace — and is mutually exclusive with ``low``/``high``,
+    which :func:`_build_position_generator` enforces.
+
+    The fractions are snapped here, at config load, so the run reports what it
+    will actually sweep before spending a simulation on it. The snapped values
+    are the grid of record (D6).
+    """
+    block = _optional(doc, "activation_position", "grid", default=None)
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ConfigError(f"activation_position.grid must be a mapping of keys; got {block!r}.")
+    missing = [key for key in ("low", "high", "n_points") if key not in block]
+    if missing:
+        raise ConfigError(
+            f"activation_position.grid must set {', '.join(missing)}. A sweep needs a "
+            "range and a point count: low, high, n_points."
+        )
+
+    n_simulations = int(_optional(doc, "dataset", "n_simulations", default=1))
+    if n_simulations != 1:
+        raise ConfigError(
+            f"activation_position.grid runs exactly one simulation, but "
+            f"dataset.n_simulations is {n_simulations}. The sweep holds morphology, "
+            "substrate and seed constant so the only thing varying across its traces "
+            "is the crop offset; a second simulation would vary the substrate too. "
+            "Set dataset.n_simulations to 1."
+        )
+
+    if "pair_indices" in block:
+        raise ConfigError(
+            "activation_position.grid.pair_indices is not supported: a probe sweeps "
+            "every bipolar pair. One grid point is one logical simulation, so its "
+            "traces ARE that simulation's pairs and pair_index means 0..n_pairs-1. "
+            "Sweeping a subset would need a per-trace pair mapping, which is the "
+            "thing that made an earlier probe bank unloadable by egm-studio (it "
+            "joins the bank pair on (simulation_id, pair_index) and raises on a "
+            "non-unique key). Drop the key and select pairs when you analyse the "
+            "bank instead."
+        )
+
+    try:
+        return ProbeGrid.snapped(
+            low=float(block["low"]),
+            high=float(block["high"]),
+            n_points=int(block["n_points"]),
+            window_length_samples=_window_length_samples(doc),
+        )
+    except ValueError as exc:
+        raise ConfigError(f"activation_position.grid: {exc}") from exc
 
 
 #: Keys iafdb-pipeline's ``DetectionConfig`` carries that this side refuses, in
@@ -323,7 +410,7 @@ def _reject_retired_activation_detection_block(doc: dict[str, Any]) -> None:
 def _build_detection_preprocessor(
     doc: dict[str, Any],
     *,
-    position_generator: UniformPositionGenerator | None,
+    crops: bool,
     output_fs_hz: float,
 ) -> DetectionPreprocessor | None:
     """Construct the detection curve from ``activation_position.detection:``.
@@ -343,9 +430,14 @@ def _build_detection_preprocessor(
     *path* deliberately differs — their ``activation:`` block means
     activation-based windowing, ours means the activation source.
 
-    ``None`` when no position policy is configured: no crop, so nothing is
-    detected and there is no curve to resolve. An absent ``detection`` sub-block
-    inside a present ``activation_position`` gives
+    ``crops`` is whether this run cuts windows at all — a position range or a
+    probe grid. Both detect, and **the probe must share the run's curve**: a
+    sweep that characterised a bank through a different detector would be
+    measuring two things at once.
+
+    ``None`` when the run does not crop: nothing is detected, so there is no
+    curve to resolve. An absent ``detection`` sub-block inside a present
+    ``activation_position`` gives
     :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.default_preprocessor`,
     so every config written before the knob existed keeps its meaning.
 
@@ -354,7 +446,7 @@ def _build_detection_preprocessor(
     ``fs_capture_hz`` would mis-scale Botteron's band and low-pass by the
     oversample factor and still run without complaint.
     """
-    if position_generator is None:
+    if not crops:
         return None
     block = _optional(doc, "activation_position", "detection", default=None)
     if block is None:
@@ -411,20 +503,22 @@ def _build_detection_preprocessor(
         raise ConfigError(f"activation_position.detection: {exc}") from exc
 
 
-def _stimulus_delay_ms(
-    doc: dict[str, Any], *, position_generator: UniformPositionGenerator | None
-) -> float:
+def _stimulus_delay_ms(doc: dict[str, Any], *, position_high: float | None) -> float:
     """``activation.stimulus_delay_ms`` — explicit, else derived, else 0.
 
     Three cases, in precedence order:
 
     1. **explicit** — the config sets it; used as given;
-    2. **derived** — a position policy is configured but no delay is: the
-       smallest delay that guarantees the front budget, ``k(p_high)``. Cropping
-       does not work without one, so defaulting to zero here would mean every
-       shipped cropping config raises;
-    3. **zero** — no position policy, so nothing needs positioning and the
-       stimulus fires at ``t = 0`` as it always has.
+    2. **derived** — the run crops but sets no delay: the smallest delay that
+       guarantees the front budget, ``k(p_high)``. Cropping does not work without
+       one, so defaulting to zero here would mean every shipped cropping config
+       raises;
+    3. **zero** — no crop, so nothing needs positioning and the stimulus fires
+       at ``t = 0`` as it always has.
+
+    ``position_high`` is the largest position any window will be placed at —
+    the position range's upper bound, or the probe grid's largest **snapped**
+    offset. ``None`` means the run does not crop.
 
     **What the delay is for, and what it is not for.** It positions the
     activation far enough into the capture that a window can be placed at any
@@ -439,7 +533,7 @@ def _stimulus_delay_ms(
         if delay < 0:
             raise ConfigError(f"activation.stimulus_delay_ms must be >= 0; got {delay}.")
         return delay
-    if position_generator is None:
+    if position_high is None:
         return 0.0
     # Cropping configured but no explicit delay: derive the smallest delay that
     # guarantees a window at p_high has signal in front of it. Without this the
@@ -451,23 +545,25 @@ def _stimulus_delay_ms(
             _optional(block, "trace_duration_ms", default=DEFAULT_TRACE_DURATION_MS)
         ),
         output_fs_hz=float(_optional(block, "output_fs_hz", default=DEFAULT_OUTPUT_FS_HZ)),
-        position_high=position_generator.high,
+        position_high=position_high,
     )
 
 
 def _build_run_config(
     doc: dict[str, Any],
     *,
-    position_generator: UniformPositionGenerator | None,
+    position_low: float | None,
     stimulus_delay_ms: float = 0.0,
     model_card: ModelCard | None = None,
 ) -> RunConfig:
     """Construct a :class:`RunConfig` from the ``run:`` block.
 
-    When a position policy is configured the capture is sized from it, so the
-    solver runs past the end of the trace and a window placed around the
-    activation has signal behind it (see
-    :mod:`~myocard_synthetic_egm_pipeline.simulate.sizing`).
+    When the run crops, the capture is sized from ``position_low`` — the
+    position range's lower bound, or the probe grid's smallest **snapped**
+    offset — so the solver runs past the end of the trace and a window placed
+    around the activation has signal behind it (see
+    :mod:`~myocard_synthetic_egm_pipeline.simulate.sizing`). A probe needs no
+    new arithmetic here: a fixed grid is a tighter range, not a different one.
 
     When a **model card** is given, the membrane knobs come from its solved
     block and the ``run:`` block may not restate them. Two sources for one
@@ -505,11 +601,11 @@ def _build_run_config(
         required_capture_duration_ms(
             trace_duration_ms=trace_duration_ms,
             output_fs_hz=output_fs_hz,
-            position_low=position_generator.low,
+            position_low=position_low,
             stimulus_delay_ms=stimulus_delay_ms,
             travel_allowance_ms=travel_allowance_ms,
         )
-        if position_generator is not None
+        if position_low is not None
         else None
     )
 
@@ -611,6 +707,13 @@ class GenerateDatasetCLIConfig:
     # object the backend receives — a generator on it would make two runs
     # sharing a RunConfig silently share a random stream.
     position_generator: UniformPositionGenerator | None
+    probe_grid: ProbeGrid | None
+    """Positional-sensitivity sweep, from ``activation_position.grid`` (S16b).
+
+    ``None`` for an ordinary run. Mutually exclusive with
+    ``position_generator``: exactly one of the two is ever set, because each
+    decides where the activation sits in the stored trace.
+    """
     detection_preprocessor: DetectionPreprocessor | None
     """Detection curve the crop anchors on, from ``activation_position.detection`` (S16a).
 
@@ -714,7 +817,21 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     # first spelling fails in milliseconds rather than after the calibration.
     _reject_retired_activation_detection_block(doc)
     position_generator = _build_position_generator(doc)
-    stimulus_delay_ms = _stimulus_delay_ms(doc, position_generator=position_generator)
+    probe_grid = _build_probe_grid(doc)
+    # One pair of bounds, whichever mode set them: the sizing arithmetic is the
+    # same either way (a fixed grid is a tighter range, not a different one), so
+    # it reads floats rather than branching on which object supplied them. The
+    # probe's are the SNAPPED extremes — sizing the capture for the fractions
+    # asked for would be sizing it for offsets the sweep never cuts at.
+    position_low: float | None
+    position_high: float | None
+    if probe_grid is not None:
+        position_low, position_high = probe_grid.low, probe_grid.high
+    elif position_generator is not None:
+        position_low, position_high = position_generator.low, position_generator.high
+    else:
+        position_low = position_high = None
+    stimulus_delay_ms = _stimulus_delay_ms(doc, position_high=position_high)
 
     # The card is resolved against the geometry, because verify_solved re-runs
     # the calibration and the solve depends on the mesh pitch. A card is only
@@ -737,7 +854,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
 
     run_config = _build_run_config(
         doc,
-        position_generator=position_generator,
+        position_low=position_low,
         stimulus_delay_ms=stimulus_delay_ms,
         model_card=model_card,
     )
@@ -749,7 +866,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     # all, and asking it beats re-deriving the answer from the doc.
     detection_preprocessor = _build_detection_preprocessor(
         doc,
-        position_generator=position_generator,
+        crops=position_low is not None,
         output_fs_hz=run_config.output_fs_hz,
     )
 
@@ -869,6 +986,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         run_config=run_config,
         cell_model=model_card.solved,
         position_generator=position_generator,
+        probe_grid=probe_grid,
         detection_preprocessor=detection_preprocessor,
         classifier_bank_output=classifier_bank_output,
         clean_intermediate_output=clean_intermediate_output,

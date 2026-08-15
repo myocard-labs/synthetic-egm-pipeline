@@ -230,17 +230,34 @@ def build_classifier_bank_from_dataset(
         },
     )
 
+    # The join key comes from the DatasetResult's own columns — the same arrays
+    # the synthetic_bank is built from — rather than being recomputed here.
+    #
+    # It used to be recomputed: `range(result.n_pairs)` for the pair index and
+    # `run_metadata["simulation_id"]` for the simulation, while the theta path
+    # read `dataset_result.pair_indices` / `.simulation_ids`. One quantity, two
+    # computations, and when the probe changed the layout only one of them was
+    # updated — so the two banks disagreed on `pair_index` and egm-studio, which
+    # joins them on `(simulation_id, pair_index)` and raises on a non-unique
+    # key, could not load the pair. The layout has since been fixed, which is
+    # exactly why this stays: with both readings correct again the duplication
+    # is invisible until the next change reintroduces the skew.
+    n_traces = int(dataset_result.labels.shape[0])
+    for name, column in (
+        ("simulation_ids", dataset_result.simulation_ids),
+        ("pair_indices", dataset_result.pair_indices),
+    ):
+        if column.shape[0] != n_traces:
+            raise ValueError(
+                f"DatasetResult.{name} has {column.shape[0]} entries for {n_traces} "
+                "traces; the ClassifierBank and the synthetic_bank are keyed on these "
+                "columns and must agree trace for trace."
+            )
+
     traces: list[ClassifierTrace] = []
     flat_idx = 0
     for result in dataset_result.results:
-        simulation_id = result.run_metadata.get("simulation_id")
-
         for pair_idx in range(result.n_pairs):
-            label_value = int(dataset_result.labels[flat_idx])
-            trace_meta = build_clean_trace_metadata(
-                simulation_id=simulation_id,
-                pair_idx=pair_idx,
-            )
             traces.append(
                 ClassifierTrace(
                     bank_id=resolved_bank_id,
@@ -248,12 +265,20 @@ def build_classifier_bank_from_dataset(
                     freq_hz=result.fs_hz,
                     amp_type=AMP_TYPE,
                     split=None,
-                    label_truth=label_value,
+                    label_truth=int(dataset_result.labels[flat_idx]),
                     prediction=None,
-                    trace_metadata=trace_meta,
+                    trace_metadata=build_clean_trace_metadata(
+                        simulation_id=int(dataset_result.simulation_ids[flat_idx]),
+                        pair_idx=int(dataset_result.pair_indices[flat_idx]),
+                    ),
                 )
             )
             flat_idx += 1
+    if flat_idx != n_traces:
+        raise ValueError(
+            f"walked {flat_idx} traces across the results but the DatasetResult's "
+            f"columns carry {n_traces}; the signal axis and the key columns disagree."
+        )
 
     return ClassifierBank(
         id=resolved_bank_id,

@@ -51,8 +51,9 @@ from myocard_synthetic_egm_pipeline.constants import (
 )
 from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.label_policy import LabelPolicy
+from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid
 from myocard_synthetic_egm_pipeline.simulate.result import SimulationResult
-from myocard_synthetic_egm_pipeline.simulate.runner import run_single
+from myocard_synthetic_egm_pipeline.simulate.runner import run_probe_sweep, run_single
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     EDGES,
     CenteredGrid2D,
@@ -156,6 +157,21 @@ class DatasetConfig:
     FB-35, the bank's ``description`` is the record.
     """
 
+    probe_grid: ProbeGrid | None = None
+    """Positional-sensitivity sweep (SEP13) — a diagnostic bank, not training data.
+
+    Set, the run emits **one logical simulation per grid point**, all computed
+    from a single solve and all carrying the same seed, so the only thing that
+    differs between them is where the window was cut. ``None`` is the ordinary
+    generative run.
+
+    Mutually exclusive with the position generator ``generate_dataset`` is given,
+    and with ``n_simulations > 1``: a probe answers a question about *one*
+    substrate, so a second solve is a mis-specified study rather than extra data.
+    Note that ``n_simulations`` counts **solves**, not written simulations — a
+    probe is configured with 1 and writes ``n_points``.
+    """
+
     fibrosis_density_range: tuple[float, float] = DEFAULT_FIBROSIS_DENSITY_RANGE
     fraction_healthy: float = 0.0
 
@@ -189,6 +205,14 @@ class DatasetConfig:
         if self.fixed_stim_edge is not None and self.fixed_stim_edge not in EDGES:
             raise ValueError(
                 f"fixed_stim_edge must be None or one of {EDGES}, got {self.fixed_stim_edge!r}."
+            )
+        if self.probe_grid is not None and self.n_simulations != 1:
+            raise ValueError(
+                f"a probe sweep runs exactly one simulation; got n_simulations="
+                f"{self.n_simulations}. The sweep holds morphology, substrate and seed "
+                "constant so the only thing varying across its traces is the crop "
+                "offset — a second simulation would vary the substrate too, and the "
+                "positional curve would no longer be attributable to position."
             )
 
 
@@ -249,9 +273,25 @@ def generate_dataset(
     The curve those positions are measured against is
     ``config.detection_preprocessor``; it rides on the config rather than
     alongside it here precisely because it is stateless.
+
+    ``config.probe_grid`` switches the run to the positional-sensitivity probe
+    (SEP13): **one solve, one logical simulation per crop offset**, all sharing
+    a seed. The probe ignores ``position_generator`` because the two are
+    mutually exclusive at the config layer — a sweep requests its offsets rather
+    than drawing them.
     """
     master_rng = np.random.default_rng(config.master_seed)
-    lo, hi = config.fibrosis_density_range
+
+    seeded_results = (
+        _simulate_probe_sweep(config=config, backend=backend, master_rng=master_rng)
+        if config.probe_grid is not None
+        else _simulate_sampled(
+            config=config,
+            backend=backend,
+            position_generator=position_generator,
+            master_rng=master_rng,
+        )
+    )
 
     results: list[SimulationResult] = []
     label_chunks: list[npt.NDArray[np.int64]] = []
@@ -260,65 +300,8 @@ def generate_dataset(
     seeds_list: list[int] = []
     labels_dict: dict[int, str] | None = None
 
-    iterator: Any = range(config.n_simulations)
-    if config.show_progress:
-        iterator = tqdm(iterator, desc="Simulating", unit="sim")
-
-    for simulation_id in iterator:
-        # Per-sim deterministic RNG.
-        sim_seed = int(master_rng.integers(0, 2**31 - 1))
-        sim_rng = np.random.default_rng(sim_seed)
+    for simulation_id, (result, sim_seed) in enumerate(seeded_results):
         seeds_list.append(sim_seed)
-
-        # Sample fibrosis density.
-        if config.fraction_healthy > 0.0 and sim_rng.uniform() < config.fraction_healthy:
-            density = 0.0
-        else:
-            density = float(sim_rng.uniform(lo, hi))
-        substrate = UniformRandomFibrosis(density=density)
-
-        # Sample stim edge (or use the fixed override).
-        edge: Edge = (
-            config.fixed_stim_edge if config.fixed_stim_edge is not None else random_edge(sim_rng)
-        )
-        activation = PlanarEdgeStimulus(
-            edge=edge,
-            time_model_units=config.cell_model.ms_to_model_time(config.stimulus_delay_ms),
-        )
-
-        # Sample electrode placement (height drawn inside .sample).
-        # The geometry must be a Patch2DGeometry for CenteredGrid2D —
-        # the backend will reject other combinations at simulate time;
-        # here we trust the runner-level dispatch to surface mismatches.
-        from myocard_synthetic_egm_pipeline.simulate.specs import Patch2DGeometry
-
-        if not isinstance(config.geometry, Patch2DGeometry):
-            raise TypeError(
-                "Phase 1 CenteredGrid2D requires a Patch2DGeometry; "
-                f"got geometry type {config.geometry.type!r}."
-            )
-        electrodes = CenteredGrid2D.sample(
-            geometry=config.geometry,
-            n_rows=config.electrode_n_rows,
-            n_cols=config.electrode_n_cols,
-            spacing_mm=config.electrode_spacing_mm,
-            height_mm_range=config.electrode_height_mm_range,
-            rng=sim_rng,
-        )
-
-        # Run one simulation.
-        result = run_single(
-            geometry=config.geometry,
-            substrate=substrate,
-            activation=activation,
-            electrodes=electrodes,
-            backend=backend,
-            cell_model=config.cell_model,
-            config=config.run_config,
-            rng=sim_rng,
-            position_generator=position_generator,
-            detection_preprocessor=config.detection_preprocessor,
-        )
 
         # Stamp simulation_id into the result's run_metadata for downstream
         # provenance. The frozen dataclass means we mutate via dict
@@ -367,6 +350,117 @@ def generate_dataset(
         pair_indices=pair_indices,
         seeds=np.asarray(seeds_list, dtype=np.int64),
     )
+
+
+def _sample_specs(
+    *, config: DatasetConfig, sim_rng: np.random.Generator
+) -> tuple[UniformRandomFibrosis, PlanarEdgeStimulus, CenteredGrid2D]:
+    """Draw one simulation's substrate, activation and electrode placement."""
+    lo, hi = config.fibrosis_density_range
+    if config.fraction_healthy > 0.0 and sim_rng.uniform() < config.fraction_healthy:
+        density = 0.0
+    else:
+        density = float(sim_rng.uniform(lo, hi))
+    substrate = UniformRandomFibrosis(density=density)
+
+    edge: Edge = (
+        config.fixed_stim_edge if config.fixed_stim_edge is not None else random_edge(sim_rng)
+    )
+    activation = PlanarEdgeStimulus(
+        edge=edge,
+        time_model_units=config.cell_model.ms_to_model_time(config.stimulus_delay_ms),
+    )
+
+    # The geometry must be a Patch2DGeometry for CenteredGrid2D — the backend
+    # will reject other combinations at simulate time; here we trust the
+    # runner-level dispatch to surface mismatches.
+    from myocard_synthetic_egm_pipeline.simulate.specs import Patch2DGeometry
+
+    if not isinstance(config.geometry, Patch2DGeometry):
+        raise TypeError(
+            "Phase 1 CenteredGrid2D requires a Patch2DGeometry; "
+            f"got geometry type {config.geometry.type!r}."
+        )
+    electrodes = CenteredGrid2D.sample(
+        geometry=config.geometry,
+        n_rows=config.electrode_n_rows,
+        n_cols=config.electrode_n_cols,
+        spacing_mm=config.electrode_spacing_mm,
+        height_mm_range=config.electrode_height_mm_range,
+        rng=sim_rng,
+    )
+    return substrate, activation, electrodes
+
+
+def _simulate_sampled(
+    *,
+    config: DatasetConfig,
+    backend: SimulationBackend,
+    position_generator: ActivationPositionGenerator | None,
+    master_rng: np.random.Generator,
+) -> list[tuple[SimulationResult, int]]:
+    """The ordinary run: ``n_simulations`` independent draws, one solve each."""
+    iterator: Any = range(config.n_simulations)
+    if config.show_progress:
+        iterator = tqdm(iterator, desc="Simulating", unit="sim")
+
+    seeded: list[tuple[SimulationResult, int]] = []
+    for _ in iterator:
+        sim_seed = int(master_rng.integers(0, 2**31 - 1))
+        sim_rng = np.random.default_rng(sim_seed)
+        substrate, activation, electrodes = _sample_specs(config=config, sim_rng=sim_rng)
+        seeded.append(
+            (
+                run_single(
+                    geometry=config.geometry,
+                    substrate=substrate,
+                    activation=activation,
+                    electrodes=electrodes,
+                    backend=backend,
+                    cell_model=config.cell_model,
+                    config=config.run_config,
+                    rng=sim_rng,
+                    position_generator=position_generator,
+                    detection_preprocessor=config.detection_preprocessor,
+                ),
+                sim_seed,
+            )
+        )
+    return seeded
+
+
+def _simulate_probe_sweep(
+    *,
+    config: DatasetConfig,
+    backend: SimulationBackend,
+    master_rng: np.random.Generator,
+) -> list[tuple[SimulationResult, int]]:
+    """The probe: one solve, one logical simulation per grid point (S16b).
+
+    Every returned result carries the **same seed**, because they came from one
+    solve of one substrate — which is what makes a sweep identifiable in the
+    written bank. ``simulation_id`` still runs ``0..n_points-1``, so
+    ``(simulation_id, pair_index)`` stays unique and egm-studio's loader can
+    join the bank pair.
+    """
+    assert config.probe_grid is not None
+    sim_seed = int(master_rng.integers(0, 2**31 - 1))
+    sim_rng = np.random.default_rng(sim_seed)
+    substrate, activation, electrodes = _sample_specs(config=config, sim_rng=sim_rng)
+
+    results = run_probe_sweep(
+        geometry=config.geometry,
+        substrate=substrate,
+        activation=activation,
+        electrodes=electrodes,
+        backend=backend,
+        cell_model=config.cell_model,
+        config=config.run_config,
+        rng=sim_rng,
+        grid=config.probe_grid,
+        detection_preprocessor=config.detection_preprocessor,
+    )
+    return [(result, sim_seed) for result in results]
 
 
 __all__ = ["DatasetConfig", "DatasetResult", "generate_dataset"]
