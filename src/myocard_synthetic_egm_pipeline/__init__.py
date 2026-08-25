@@ -21,11 +21,11 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-# Package version, read from installed distribution metadata (CL-117) and so
+# Package version, read from installed distribution metadata and so
 # single-sourced from pyproject.toml's [project] version rather than restated
 # here. The hardcoded literal this replaced had drifted to "0.2.0" against a
 # v0.3.0 tag — and since this value is stamped into every bank as
-# `producer_version` (the reproducibility field CL-109 argued to keep), every
+# `producer_version`, the field a consumer uses to reproduce a bank, every
 # artifact written before this fix claims a version that never produced it.
 #
 # The fallback is deliberately an obviously-wrong sentinel rather than a

@@ -101,8 +101,8 @@ def _format_result(
     lines.append(f"  N traces:               {dataset_result.labels.size}")
     lines.append(f"  Label policy:           {cfg.label_policy.name}")
     # Printed because nothing else records it: the curve decides where each
-    # window was cut, and neither bank schema has a field for it until FB-35
-    # lands. This is the string to paste into output.description.
+    # window was cut, and neither bank schema has a field for it. This is the
+    # string to paste into output.description.
     #
     # Absent from the summary when the run did not crop, which is the only case
     # where there is no curve — the config nests it inside activation_position,
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         #
         # When a clean intermediate is requested it is a *published artifact*,
         # not scratch: it gets its own id base and its own theta partner, so
-        # the pair is joinable on its own terms (D8 / CL-143). It used to be
+        # the pair is joinable on its own terms. It used to be
         # built with no bank_id at all — falling back to a cell-model-derived
         # id — while naming the mixed run's theta file, so its companion id
         # matched no artifact and egm-data refused the join.
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             # The clean bank's own theta partner: same per-simulation config as
             # the mixed one, but the *clean* signals. Sharing the mixed theta
             # file would hand a consumer mixed waveforms for a trace it joined
-            # as clean, with nothing flagging the swap (D8).
+            # as clean, with nothing flagging the swap.
             clean_theta_path = write_synthetic_bank_from_dataset(
                 dataset_result=dataset_result,
                 config=dataset_cfg,

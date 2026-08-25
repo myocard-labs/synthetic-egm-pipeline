@@ -1,4 +1,4 @@
-"""Controlled-position cropping of a simulation's bipolar traces (SEP2).
+"""Controlled-position cropping of a simulation's bipolar traces.
 
 The capture is longer than the trace (see
 :mod:`~myocard_synthetic_egm_pipeline.simulate.sizing`); this is where the
@@ -16,13 +16,13 @@ activation time *at a given pair* is not: the stored trace is a pseudo-EGM, a
 distance-weighted sum of membrane current over the whole mesh, so its timing
 follows the wavefront's arrival — a function of conduction velocity, the
 realized fibrosis draw, the electrode standoff and the pair's position. None of
-those is a value the config carries. Detecting also keeps T1 a
-detected-versus-detected comparison: the real corpus has nothing but the
-electrogram, so handing the synthetic side a privileged ground-truth time would
-flatter the very comparison the experiment exists to make (CL-130 / CL-147).
+those is a value the config carries. Detecting also keeps the synthetic-versus-
+real comparison **detected against detected**: the real corpus has nothing but
+the electrogram, so handing the synthetic side a privileged ground-truth time
+would flatter the very comparison the experiment exists to make.
 
 Everything below routes through egm-signal's ``SingleActivationWindower``,
-which is ``window_train`` with a **train of one** (CL-134) — the same function
+which is ``window_train`` with a **train of one** — the same function
 the IAFDB side uses, which is what stops the window geometry drifting between
 the two corpora.
 """
@@ -65,11 +65,11 @@ def default_preprocessor() -> DetectionPreprocessor:
 
     The original rationale was that a clean simulated trace has no need of the
     smoothed Botteron envelope, which exists for the noise on real recordings.
-    CL-167 corrected that framing: ``activation_position`` has to be the *same
+    That framing was wrong: ``activation_position`` has to be the *same
     measurand* on both corpora, so the curve is a shared decision with
     iafdb-pipeline rather than a per-corpus convenience — and a decision that
     can only be made once the two sides can be *set* to the same value.
-    :func:`build_preprocessor` is that seam (S16a); this stays the default so
+    :func:`build_preprocessor` is that seam; this stays the default so
     an absent ``activation_position.detection`` block means exactly what it
     meant before it existed.
     """
@@ -132,7 +132,7 @@ def out_of_bounds_message(
 ) -> str:
     """Why a window did not fit, and which knob buys the room.
 
-    Shared by the random-position crop and the probe sweep (S16b) so the two
+    Shared by the random-position crop and the probe sweep so the two
     cannot drift into describing the same failure differently. ``context``
     names what was being cut — a pair for the crop, a pair *and a grid point*
     for the probe — because "it does not fit" without a subject sends the

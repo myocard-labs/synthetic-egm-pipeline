@@ -202,7 +202,7 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
     assert result.specs.substrate is substrate
     assert result.specs.activation is activation
     assert result.specs.electrodes is electrodes
-    # The fifth spec (S18a). Without it the bank had to reconstruct the
+    # The fifth spec. Without it the bank had to reconstruct the
     # model's identity from the class name the backend reported.
     assert result.specs.cell_model is cell_model
     # The sampled per-sim values are recoverable from the specs, which is
@@ -213,10 +213,10 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
 
 
 def test_run_metadata_join_key_is_simulation_id(mock_backend: SimulationBackend) -> None:
-    """The join key is spelled ``simulation_id`` everywhere (CL-024 §3).
+    """The join key is spelled ``simulation_id`` everywhere.
 
-    ``synthetic_bank`` 2.0, egm-data's converter and the T4 bank-to-bank
-    join all key on ``simulation_id``; the producer used to write
+    ``synthetic_bank`` 2.0, egm-data's converter and every bank-to-bank
+    join key on ``simulation_id``; the producer used to write
     ``sim_id`` on its direct path, so the same artifact carried two names
     depending on which writer made it.
     """
@@ -238,7 +238,7 @@ def test_run_metadata_join_key_is_simulation_id(mock_backend: SimulationBackend)
 
 
 # ---------------------------------------------------------------------------
-# Capture sizing + the no-padding rule (SEP2 / S14)
+# Capture sizing + the no-padding rule
 # ---------------------------------------------------------------------------
 
 
@@ -344,7 +344,7 @@ def test_stimulus_delay_moves_the_activation_later(mock_backend: SimulationBacke
     # Converted through the cell model, not by dividing by a constant. That
     # division was an Aliev-Panfilov idiom leaking into the runner and is simply
     # wrong for a dimensional model like Courtemanche; asking the model is the
-    # seam that lets it join (D2).
+    # seam that lets a second cell model join at all.
     cell_model = _shipped_cell_model()
     expected = cell_model.ms_to_model_time(delay_ms)
     activation = PlanarEdgeStimulus(edge="left", time_model_units=expected)

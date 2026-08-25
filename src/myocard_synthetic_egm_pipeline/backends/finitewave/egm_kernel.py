@@ -19,7 +19,8 @@ Two defects sit in the stock kernel's arithmetic, and both need fixing:
    pair perpendicular to a ``left`` wavefront so the *near* field cancels;
 2. **a mixed weighting** — the source term is a Laplacian (the diffusion
    increment) but the weight was ``1/r²``, which belongs to the gradient
-   formulation. One term from each of two equivalent forms. Fixed in S40.
+   formulation. One term from each of two equivalent forms. Both are fixed
+   here.
 
 Defect 1 is **ours**: upstream's API means ``[i, j, z]`` and we hand it
 ``[x, y, z]``. Defect 2 is upstream's, and they have already fixed it on the
@@ -35,8 +36,8 @@ simulation at the production geometry — which is precisely why the streaming
 tracker was chosen in the first place. Vendoring ~20 lines keeps the streaming
 behaviour and puts both fixes somewhere we control.
 
-The one axis convention (S39)
------------------------------
+The one axis convention
+-----------------------
 Finitewave is **internally consistent**: everywhere in the package, "x" means
 mesh axis-0 (``i``) and "y" means axis-1 (``j``). Verified in three places:
 
@@ -99,7 +100,7 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
     so the **near** field cancelled. That is the ``1.35e-6`` "dead healthy
     tissue" artifact.
 
-    **The weighting is ``1/r``** (S40), matching the Laplacian source term:
+    **The weighting is ``1/r``**, matching the Laplacian source term:
 
     .. math::
         \\phi_e = \frac{1}{4 \\pi \\sigma_e}
@@ -150,7 +151,7 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
 
     for c in range(n_c):
         # Our (x, y) -> mesh (j, i). The pairing below is the whole of the
-        # S39 fix; upstream had x against i and y against j.
+        # axis fix; upstream had x against i and y against j.
         x = coords[c, 0]  # along axis-1 (j)
         y = coords[c, 1]  # along axis-0 (i)
         z = coords[c, 2]  # standoff, also in cells
@@ -162,8 +163,9 @@ def egm_kernel_2d(  # pragma: no cover - njit-compiled, exercised via the tracke
             j = ii % n_j
 
             # Squared grid distance -> grid distance -> physical distance.
-            # The sqrt is the S40 fix; upstream divided by d_squared * dr,
-            # which is dimensionally consistent with neither pure formulation.
+            # The sqrt is the weighting fix; upstream divided by
+            # d_squared * dr, which is dimensionally consistent with neither
+            # pure formulation.
             d_squared = (y - i) * (y - i) + (x - j) * (x - j) + z * z
             if d_squared > 0.0:
                 r_phys = np.sqrt(d_squared) ** distance_power * dr

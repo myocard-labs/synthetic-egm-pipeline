@@ -1,8 +1,8 @@
-"""Tests for the positional-sensitivity probe (SEP13 / S16b).
+"""Tests for the positional-sensitivity probe.
 
 One solve, **one logical simulation per crop offset**. The bank is a diagnostic
-— STU8 plots model output against activation offset — so two things have to be
-right: the x-axis must *reproduce* the grid rather than approximate it, and the
+— the study it feeds plots classifier output against activation offset — so two
+things have to be right: the x-axis must *reproduce* the grid rather than approximate it, and the
 bank pair must be loadable at all.
 
 That second one is why this file exists in its present form. The first
@@ -47,7 +47,7 @@ from myocard_synthetic_egm_pipeline.cli._config import (
 from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid, sweep_capture
 
 T_SAMPLES = 192
-"""``T`` every config here runs at, so the lattice is ``j/191`` (D6)."""
+"""``T`` every config here runs at, so the lattice is ``j/191``."""
 
 LATTICE = T_SAMPLES - 1
 
@@ -113,7 +113,7 @@ def _config_doc(
         "activation_position": activation_position,
         "output": {
             "classifier_bank": str(out_dir / f"{stem}.classifier.h5"),
-            "description": "S16b probe test",
+            "description": "probe test",
         },
     }
 
@@ -133,8 +133,8 @@ def _run_probe(
 ) -> tuple[Path, Path]:
     """Run the CLI end to end; return ``(classifier_path, theta_path)``.
 
-    Both, because the defect this step fixed was the two banks disagreeing —
-    a helper that returned only one would make that untestable.
+    Both, because the defect the probe was reworked to fix was the two banks
+    disagreeing — a helper that returned only one would make that untestable.
     """
     doc = _config_doc(out_dir=tmp_path, grid=grid, detection=detection, stem=stem)
     config_path = tmp_path / f"{stem}.yaml"
@@ -324,7 +324,7 @@ def test_activation_position_column_is_the_snapped_grid(
 
 
 def test_the_grid_is_snapped_to_the_sample_lattice() -> None:
-    """``k = round(p(T-1))``, and ``k/(T-1)`` is the grid of record (D6).
+    """``k = round(p(T-1))``, and ``k/(T-1)`` is the grid of record.
 
     ``T - 1 = 191`` is prime, so a grid stated in round fractions lands on none
     of the representable positions. The snap is what makes "the probe hits every
@@ -442,7 +442,7 @@ def test_the_probe_inherits_the_runs_curve(
 
 
 def test_detection_runs_once_per_pair_not_once_per_grid_point() -> None:
-    """D6: one detection per pair, then exact shifts.
+    """One detection per pair, then exact shifts.
 
     Counted rather than inferred. Re-detecting per grid point would put the
     detector's jitter on the axis the study reads off, and the cost would scale
@@ -473,7 +473,7 @@ def test_the_sweep_uses_the_preprocessor_it_is_given() -> None:
 
     Two curves over one capture put the windows in different places, so the
     preprocessor argument cannot be quietly dropped the way ``crop_traces``'s
-    was before S16a.
+    was before the curve became configurable.
     """
     capture = np.tile(ambiguous_complex(600), (2, 1)).astype(np.float32)
     grid = ProbeGrid.snapped(low=0.3, high=0.6, n_points=4, window_length_samples=T_SAMPLES)
@@ -563,8 +563,9 @@ def test_the_grid_block_needs_its_three_keys(tmp_path: Path, missing: str) -> No
 def test_pair_indices_is_rejected_by_name(tmp_path: Path) -> None:
     """The removed subset knob errors rather than being ignored.
 
-    It existed in the first cut of this step and is exactly what forced the
-    per-trace pair mapping. Silently dropping the key would leave a config
+    It existed in the first implementation of the probe and is exactly what
+    forced the per-trace pair mapping that made a bank unloadable. Silently
+    dropping the key would leave a config
     reading as though it swept three pairs while the bank held twenty.
     """
     doc = _config_doc(out_dir=tmp_path, grid={**GRID, "pair_indices": [0, 2]})
@@ -624,7 +625,7 @@ def test_the_example_probe_config_runs_end_to_end(
     Only the output path is redirected — every substantive value is the
     example's own, so a knob that stops loading is caught here rather than by
     whoever next runs the probe. The bank it writes is checked for the one
-    property STU8 needs: a unique, agreeing join key.
+    property the study needs: a unique, agreeing join key.
     """
     doc = yaml.safe_load(Path("examples/synthegm_probe.yaml").read_text(encoding="utf-8"))
     doc["output"]["classifier_bank"] = str(tmp_path / "example.classifier.h5")

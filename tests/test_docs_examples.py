@@ -2,7 +2,7 @@
 
 A documented example that no longer runs is invisible: nothing imports it,
 nothing lints it, and a reader discovers the breakage instead of the author.
-Both files had rotted by S38c — ``RunConfig`` no longer takes
+Both files had rotted once already — ``RunConfig`` no longer takes
 ``ap_time_unit_ms`` (``TypeError``), ``trace_duration_ms: 200.0`` is refused
 because ``T`` must be a multiple of 64 (``ConfigError``), and the YAML schema
 reference still documented ``run.ap_time_unit_ms``, which is now a hard error.

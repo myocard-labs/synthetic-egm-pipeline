@@ -59,7 +59,7 @@ FIXTURE_CELL_MODEL = AlievPanfilovCellModel(
 #: Trace length used by every fixture below, in samples at 1 kHz. Tied to the
 #: shipped default so the suite exercises the value real runs use — a fixture
 #: on a different T would still pass while hiding a T-dependent defect, and
-#: would fall foul of the coming `T % 64 == 0` guard (S14).
+#: would fall foul of the `T % 64 == 0` guard the config loader applies.
 TRACE_SAMPLES: int = round(DEFAULT_TRACE_DURATION_MS)
 
 
@@ -213,7 +213,7 @@ def _make_simulation_result(
                 "backend_name": "mock",
                 "finitewave_version_pin": "0.9.3",
                 "ap_dt_model_units": 0.01,
-                # Neither of these is read for identity any more (S18a): the
+                # Neither of these is read for identity any more: the
                 # cell model comes from `specs.cell_model`. They stay here on
                 # purpose — this fixture is the one producer that still emits
                 # them, so `backend_model`'s promise to keep them out of
@@ -396,7 +396,7 @@ def small_noise_bank() -> NoiseBank:
     from datetime import datetime, timezone
 
     return NoiseBank(
-        # noise_bank 1.1 (egm-contracts v0.6.0) added the root bank_id (B20).
+        # noise_bank 1.1 (egm-contracts v0.6.0) added the root bank_id.
         schema_version=NoiseSchemaVersion.field_1_1,
         bank_id="nbank_test_fixture",
         created_utc=datetime.now(timezone.utc),
@@ -480,7 +480,7 @@ def mock_backend() -> SimulationBackend:
 
 
 # ---------------------------------------------------------------------------
-# A capture the detection curves disagree about (S16a / S16b)
+# A capture the detection curves disagree about
 # ---------------------------------------------------------------------------
 
 

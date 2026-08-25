@@ -475,7 +475,7 @@ amplitude scales with ``dV/dt``, which is the realism difference the two
 models are meant to isolate.
 
 **It ships in Phase 1.5**, ahead of the Phase-2 plan above, as the
-``courtemanche_control`` model card (SEP5 / S18b). Both shipped cards
+``courtemanche_control`` model card. Both shipped cards
 target the same conduction velocity, so a bank generated under each
 differs in membrane behaviour and nothing else. Two caveats travel with
 it and are recorded on the card: it is authored at ``dr = 0.25 mm``,
@@ -669,7 +669,7 @@ For us:
 >
 > Finitewave 0.9.3 mixed them: a Laplacian source term divided by the
 > **squared** grid distance, with no ``sqrt`` anywhere. We shipped that
-> until S40. Upstream has since fixed it the same way on their
+> for the whole of v0.2.0. Upstream has since fixed it the same way on their
 > unreleased ``solvers`` branch. Our kernel now takes the ``sqrt``; the
 > ``distance_power`` argument exists only to reproduce pre-fix banks for
 > comparison and is deliberately not a config field.
@@ -693,9 +693,9 @@ electrode positions). Three properties of φ_e to keep in mind:
    ``LocalDensityLabel`` — a bipolar pair "sees" only a small
    neighbourhood, so its label should be set by that neighbourhood, not
    by the global density.
-   Note the falloff is *gentler* than the ``1/r²`` we shipped before
-   S40, so each electrode's effective neighbourhood is now slightly
-   **wider**, not narrower. In practice the change was small — waveform
+   Note the falloff is *gentler* than the ``1/r²`` shipped before the
+   weighting was corrected, so each electrode's effective neighbourhood is
+   now slightly **wider**, not narrower. In practice the change was small — waveform
    correlation 0.961 against the old output on clean tissue — because
    the nearest sources dominated under either exponent. The far-field
    contamination seen during the CV investigation is a

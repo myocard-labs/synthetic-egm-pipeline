@@ -264,7 +264,7 @@ def test_generate_dataset_mix_requires_noise_bank(tmp_path: Path) -> None:
 
 def test_generate_dataset_rejects_malformed_bank_id(tmp_path: Path) -> None:
     """A malformed output.bank_id override fails at config-load (fail-fast),
-    not after the N-simulation run (S8-3)."""
+    not after the N-simulation run has already spent the compute."""
     path = _write_yaml(
         tmp_path,
         """
@@ -368,7 +368,7 @@ def test_mix_config_rejects_malformed_bank_id(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Retired output.also_emit_synthetic_bank (SEP12.5)
+# Retired output.also_emit_synthetic_bank
 # ---------------------------------------------------------------------------
 
 
@@ -462,7 +462,7 @@ def test_mix_config_rejects_synthetic_bank_keys(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Position policy + capture sizing (SEP2 / S14)
+# Position policy + capture sizing
 # ---------------------------------------------------------------------------
 
 
@@ -479,8 +479,8 @@ def test_no_position_block_means_no_cropping(tmp_path: Path) -> None:
     """Absent block -> no generator, and the capture stays the trace.
 
     Cropping is opt-in: the position policy sets the positional structure of
-    every bank a run writes, and neither arm of the §8.9 A/B is a safe default
-    to fall into silently.
+    every bank a run writes, and neither arm of the anchored-versus-varied
+    comparison is a safe default to fall into silently.
     """
     cfg = build_generate_dataset_config(_base_doc(tmp_path))
 
@@ -503,7 +503,7 @@ def test_position_block_sizes_the_capture_past_the_trace(tmp_path: Path) -> None
 
 
 def test_collapsed_range_is_the_fixed_arm(tmp_path: Path) -> None:
-    """SEP10's anchored arm is a config value, not a code path.
+    """The anchored arm of the A/B is a config value, not a code path.
 
     ``UniformPositionGenerator`` is point-collapsible, so the A/B is one class
     with two configurations and `is_fixed` reports which arm is in play.
@@ -573,7 +573,8 @@ def test_trace_duration_off_the_64_grid_is_rejected(tmp_path: Path) -> None:
 
     This is the cheapest place to catch it: the alternative is an N-simulation
     run that completes, writes a bank, and fails only when egm-classifier tries
-    to train on it (CL-112).
+    to train on it — its 1D MobileViT halves the sequence six times, so an
+    off-grid length fails outright rather than degrading.
     """
     doc = _base_doc(tmp_path)
     doc["run"] = {"trace_duration_ms": 200.0}
@@ -594,7 +595,7 @@ def test_off_grid_error_names_the_nearest_valid_lengths(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stimulus delay (CL-163/CL-164 diagnostic)
+# Stimulus delay — a diagnostic knob, not a way to buy lead-in morphology
 # ---------------------------------------------------------------------------
 
 

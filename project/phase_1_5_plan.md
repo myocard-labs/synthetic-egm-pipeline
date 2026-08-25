@@ -1449,23 +1449,33 @@ published axis via a severity scalar `s ∈ [0,1]`, swept once until measured AP
   will, and once a phase is archived the number is noise internally too. A citation stays verifiable
   forever; a process id rots. It slots into the existing `project/` (internal) / `docs/` (external)
   split rather than inventing a new rule.
-- **Scale, measured:** **~133 references across 20 files in `src/`** — 42 `CL-NNN`, 47 step ids,
-  26 `SEP-NN`, 13 `FB-NN`, 5 design notes — plus **14 in `docs/`**. Worst offenders
-  `cell_models.py` 13, `bank_config.py` 11, `runner.py` 8, `cli/_config.py` 8.
-- **This is NOT a find-and-delete, and treating it as one will make the codebase worse.** Most of
-  these pointers stand *in place of* the reasoning rather than beside it. `calibration.py`'s "APD
-  MUST EXCEED the trace duration … (CL-176)" becomes an unjustified assertion the moment the tag
-  goes. **Promote the reasoning inline:** "…because otherwise the repolarisation deflection lands
-  inside every cropped window at a fixed offset — a marker present in all synthetic traces and no
-  real ones." Self-contained, and better than the pointer was. A regex over 133 sites would leave
-  133 bare assertions — the scripted-bulk-edit trap CLAUDE.md already names.
+- **Scale, measured after the S18 commit:** **127 in `src/` (32 files) · 21 in `docs/` (4 files) ·
+  79 in `tests/` (17 files) = ~227 sites.** `tests/` included on Daniel's call 2026-08-25: a test
+  docstring's job is to say what the test proves and why it matters, and *"Both halves of CL-180's
+  trap 3"* fails that for anyone who cannot open CL-180 — which by phase end includes us.
+- **This is NOT a find-and-delete, and treating it as one will make the codebase worse.** A regex
+  over 227 sites would leave 227 bare assertions — the scripted-bulk-edit trap CLAUDE.md names.
+  Four distinct cases, and they need different handling:
+
+  | case | example | treatment |
+  |---|---|---|
+  | **trailing citation, reasoning already present** | *"…was always the stencil's built-in 3.09 no matter what was requested (CL-172)."* | delete the tag; the sentence stands |
+  | **tag stands IN PLACE of the reasoning** | *"off-grid T fails outright downstream (CL-112)"* | **write the reason**: the classifier halves the sequence six times, so a length off the 64-sample grid fails at the first ragged stage |
+  | **tag used as a feature NAME** | *"as before SEP2"*, *"the probe sweep (SEP13)"* | replace with the English name — *"before controlled-position cropping"* — the sentence needs a subject, not a deletion |
+  | **tag used as a version marker** | *"**2.0 since S38b**, down from 3.0"* | delete the marker; git records when. Keep the citation that justifies the value |
+
+  The second case is the dangerous one: `_config.py`'s *"which is the root cause of CL-143"* becomes
+  "the root cause of" nothing at all once stripped.
 - **Own commit, not folded into S18.** Half-converting the nine files S18 touches while leaving the
   other eleven is worse than either end state, and this needs real review attention precisely
   because it *looks* mechanical and is not.
 - **Also update `CLAUDE.md`** — done 2026-08-25; it previously documented the opposite convention.
 - **Verify:** zero matches for `CL-[0-9]`, `SEP[0-9]`, `FB-[0-9]`, step ids and `design note D[0-9]`
-  under `src/` and `docs/`; `project/` unchanged; **every site that lost a tag gained a reason** —
-  spot-check that no comment now asserts a constraint without saying why; full gate green.
+  under `src/`, `docs/` and `tests/`; `project/` untouched; full gate green.
+- **The verification that actually matters is not greppable:** *every site that lost a tag gained a
+  reason.* One mechanical proxy is worth applying though — **the diff should be net-positive in
+  lines.** Promoting reasoning makes comments longer; a net-negative diff is direct evidence the
+  pass deleted rather than rewrote, and is grounds to reject it without reading further.
 - **Sibling repos are unchecked** and almost certainly carry the same pattern, since it was authored
   consistently across the constellation. Out of scope here (one repo at a time); worth a backlog
   entry or a note to the project-lead.

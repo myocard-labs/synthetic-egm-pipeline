@@ -98,7 +98,7 @@ class Patch2DGeometry:
         not disturb a conduction-velocity calibration.
 
         Prescriptive **since 2026-08-14** — before that the adapter wrote to
-        the model rather than the stencil and the knob did nothing (CL-172).
+        the model rather than the stencil and the knob did nothing at all.
     """
 
     size_mm: float = DEFAULT_PATCH_SIZE_MM

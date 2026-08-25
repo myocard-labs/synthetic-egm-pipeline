@@ -156,10 +156,11 @@ def noise_mixed_id_from(clean_bank_id: str) -> str:
     Derived from the **id** rather than re-derived from the cell model,
     which is what the mixer used to do by reading ``cell_model`` out of
     the clean bank's ``bank_metadata``. That coupling broke the moment
-    the generation parameters were cleaned off the ClassifierBank
-    (SEP12.10): the lookup silently fell back to ``"unknown"`` and the
-    mixed bank got a wrong-but-valid id. Deriving from the id keeps the
-    whole family — clean, noise-mixed, and their theta partners —
+    the generation parameters were cleaned off the ClassifierBank and
+    moved to its ``synthetic_bank`` partner: the lookup silently fell back
+    to ``"unknown"`` and the mixed bank got a wrong-but-valid id — the worst
+    kind, because nothing downstream refuses it. Deriving from the id keeps
+    the whole family — clean, noise-mixed, and their theta partners —
     anchored to one string.
 
         ``tbank_synthetic_ap_2026-08-01``

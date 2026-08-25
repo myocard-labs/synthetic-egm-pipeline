@@ -180,9 +180,10 @@ def _resolve_noise_mixed_id(override: str | None, clean_bank: ClassifierBank) ->
     Derived from the **clean bank's id** by inserting the ``noise_mixed``
     marker. It used to be re-derived from the cell model, read out of the
     clean bank's ``bank_metadata`` — a coupling that broke silently the
-    moment generation parameters were cleaned off the ClassifierBank
-    (SEP12.10): the lookup fell back to ``"unknown"`` and produced a
-    wrong-but-valid id. One string now anchors the whole family.
+    moment generation parameters were cleaned off the ClassifierBank and
+    moved to its ``synthetic_bank`` partner: the lookup fell back to
+    ``"unknown"`` and produced a wrong-but-valid id. One string now anchors
+    the whole family.
     """
     if override is not None:
         return validate_artifact_id(override)
@@ -208,12 +209,13 @@ def _rewrite_theta_companion(
     ``synthetic_bank`` (same per-simulation config, mixed signals), under
     its own id. Carrying the clean entry through would leave the mixed
     ClassifierBank pointing at a *different* artifact than the one
-    written beside it, which is the failure this entry exists to prevent.
+    written beside it, which is the failure this rewrite exists to prevent.
 
     **Both** the id and the path are rewritten. Rewriting only the id was
     survivable while the clean bank's entry happened to name the mixed theta
     file — the two banks shared one theta artifact, which is exactly the
-    defect D8 settled (CL-143). Now that the clean bank names its *own*
+    defect that gave the clean intermediate its own id base and its own theta
+    partner in the first place. Now that the clean bank names its *own*
     theta partner, inheriting its path would point the mixed bank at the
     clean theta file: right id, wrong file, and a consumer joining on it
     would read clean waveforms out of an artifact it believes is mixed.
@@ -225,9 +227,9 @@ def _rewrite_theta_companion(
     recoverable from per-trace metadata, so no theta partner can exist. The
     old code rewrote the id and kept the clean bank's path, leaving the mixed
     bank naming a mixed-derived id at the *clean* theta file — the same
-    id-versus-file divergence as CL-143, one CLI over. Absence is the honest
-    answer: no theta partner, said by omission, not by a pointer to the wrong
-    artifact.
+    id-names-one-artifact-file-holds-another divergence, one CLI over.
+    Absence is the honest answer: no theta partner, said by omission, not by a
+    pointer to the wrong artifact.
     """
     rewritten: list[ClassifierBankMetaData] = []
     for entry in entries:

@@ -25,12 +25,13 @@ DEFAULT_PATCH_DR_MM: float = 0.25
 DEFAULT_ANISOTROPY_RATIO: float = 2.0
 """Conduction velocity along:across ratio.
 
-Atrial physiology sits in the 2-3:1 range; 3.0 is the project default.
+Atrial physiology sits in the 2-3:1 range; the shipped default is 2.0, for the
+reasons below.
 
 **Prescriptive since 2026-08-14, and only since then.** v0.2.0 claimed to have
 made this value prescriptive, but the helper wrote the tensor components to the
 *model* while Finitewave reads them off the **stencil**, so the realized ratio
-was always the stencil's built-in 3.09 no matter what was requested (CL-172).
+was always the stencil's built-in 3.09 no matter what was requested.
 The claim is retracted; the fix is in
 ``backends.finitewave.backend._configure_anisotropy_2d``.
 
@@ -38,7 +39,7 @@ Because the config has always requested 3.0 and the accidental value was 3.09,
 **no bank generated before the fix is wrong** — the knob was inoperative, not
 mis-set.
 
-**2.0 since S38b** (CL-176), down from 3.0. Hansson *Eur Heart J* 1998;19:293
+**2.0, down from 3.0.** Hansson *Eur Heart J* 1998;19:293
 measured right-atrial free wall intra-operatively in sinus rhythm at 88 ± 9 cm/s
 and only weakly direction-dependent — 74-81 cm/s across four propagation
 directions. The high ratios belong to **bundles** (crista terminalis, pectinate
@@ -46,9 +47,10 @@ muscles), not to working myocardium, where 2:1 is standard, and our patch is
 generic working myocardium. At 2.0 the transverse velocity lands near 41 cm/s,
 inside the usual 30-50 range; at 3.0 it was forced to 26.5, below it.
 
-The value stayed 3.0 through S38a deliberately: that step made the knob
-*operative* and had to be bit-identical at the shipped setting, so changing the
-number waited for the recalibration that regenerates everything anyway.
+The value stayed at 3.0 for one release after the knob was made *operative*,
+deliberately: that change had to be bit-identical at the shipped setting to
+prove it moved nothing on its own, so the new number waited for the
+recalibration that regenerates every bank anyway.
 """
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ number waited for the recalibration that regenerates everything anyway.
 DEFAULT_TRACE_DURATION_MS: float = 192.0
 """Per-trace duration after downsampling (ms). Captures one full activation.
 
-**192, not 200** (CL-112, design §8.1). At :data:`DEFAULT_OUTPUT_FS_HZ` this is
+**192, not 200.** At :data:`DEFAULT_OUTPUT_FS_HZ` this is
 T = 192 samples, and T must be a multiple of 64: egm-classifier's 1D MobileViT
 downsamples by 2 six times, so a length off that grid does not merely degrade
 the model — it fails outright at the first ragged stage. 200 is off the grid.
@@ -78,12 +80,12 @@ mixable without resampling."""
 # documentation tree. Re-run the calibration when anything upstream
 # changes (dr, AP diffusion coef, model swap to Courtemanche).
 AP_TIME_UNIT_MS: float = 1.97
-"""**Legacy fallback only. Superseded by model cards (S38b).**
+"""**Legacy fallback only. Superseded by model cards.**
 
 The operative value now comes from a model card's ``solved.time_unit_ms``,
 derived from physiological targets by ``simulate.calibration.calibrate``. This
 constant survives as the default for a ``RunConfig`` built without a card, so
-pre-S38b code keeps meaning what it meant.
+code written before cards existed keeps meaning what it meant.
 
 **It is also a cautionary tale, which is why the history stays here.** Set
 2026-06-10 (from 12.9, the AP 1996 canine fit) by scaling to hit an 80 cm/s
@@ -96,7 +98,7 @@ could contradict it, because the only artifact was four numbers and a comment.
 
 The measurement that revealed it was itself taken through a broken layer: the
 "12.2 cm/s" above was the *transverse* velocity read under a longitudinal label,
-because the fibre field was transposed (CL-170).
+because the fibre field was transposed.
 """
 
 # ---------------------------------------------------------------------------

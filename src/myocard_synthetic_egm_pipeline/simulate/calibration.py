@@ -15,7 +15,8 @@ conduction velocity by destroying action potential duration — and nothing coul
 catch it, because there was no executable statement of what the numbers were
 *for*. Making the physiology the input and the knobs the output buys three
 things a constant cannot: the derivation is reviewable, it is testable by
-round-trip, and it is the same solve STU4 needs per proposal.
+round-trip, and it is the same solve a parameter-estimation study needs to run
+per proposed parameter set.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ formula guarantees. Far looser than :data:`SOLVED_MATCH_RTOL` because it is
 absorbing a one-dimensional authoring sweep stopping at a grid point rather
 than the rounding in a YAML file: 5 % of 220 ms is 11 ms, well inside the
 literature's own spread for the quantity (95-287 ms across the cited cAF
-studies, CL-180).
+studies).
 """
 
 
@@ -59,7 +60,8 @@ studies, CL-180).
 class ModelTargets:
     """What we asked the tissue to do, in units a cardiologist would use.
 
-    The block the white paper cites and the block STU4 searches.
+    The block the white paper cites, and the block a parameter-estimation
+    study searches over.
 
     **Anisotropy is deliberately absent.** It is fibre architecture, not membrane
     behaviour, and it already lives on
@@ -67,7 +69,7 @@ class ModelTargets:
     earlier draft carried it here too, giving one number two homes with nothing
     reconciling them — and the solve never read it.
 
-    **Long-term home: `SubstrateStrategy`** (Daniel, 2026-08-15; FB-34). In the
+    **Long-term home: `SubstrateStrategy`.** In the
     ablation literature "substrate" means the arrhythmogenic tissue state —
     structural *and* electrical remodelling together — and a shortened APD is
     textbook AF remodelling, which is why the shipped card is called
@@ -86,8 +88,9 @@ class ModelTargets:
 
     The payoff is bigger than tidiness: **substrate is already sampled per
     simulation** (``density_range`` draws from ``sim_rng`` in the dataset loop),
-    so per-simulation APD sampling over 200-260 ms — deferred out of S38b for
-    want of a sampling mechanism — falls out for free once targets live there.
+    so per-simulation APD sampling over 200-260 ms — deferred when the
+    calibration landed, for want of a sampling mechanism — falls out for free
+    once targets live there.
     """
 
     conduction_velocity_cm_s: float
@@ -118,8 +121,8 @@ class ModelTargets:
     leaves the cropped window iff ``APD > T * (1 - p)``, so ``APD >= T`` is the
     unconditional guarantee across the whole position range. At T = 192 ms an
     APD of 180 — plausible from the AF literature, which quotes short-cycle
-    rates we do not simulate — fails for any ``p < 0.0625`` (CL-176),
-    reintroducing the exact defect the calibration exists to remove.
+    rates we do not simulate — fails for any ``p < 0.0625``, reintroducing the
+    exact defect the calibration exists to remove.
     """
 
     def __post_init__(self) -> None:
@@ -152,8 +155,9 @@ class ModelCard:
 
     A file rather than a block inside a generation config so that a
     parameterisation has an **identity** — citable, diffable, referenceable from
-    a methods section — and because STU4's output is a *region* of parameters,
-    which means writing many of these.
+    a methods section — and because a parameter-estimation study's output is a
+    *region* of parameters rather than a point, which means writing many of
+    these.
     """
 
     name: str
@@ -196,7 +200,7 @@ def verify_targets_against_solve(
 
     ``measured`` is optional and is only consulted for a target the model does
     not solve. It is passed separately rather than read off a card so that this
-    function keeps taking the pieces it checks — the shape FB-34's move of
+    function keeps taking the pieces it checks — the shape the planned move of
     ``targets`` onto ``SubstrateStrategy`` needs.
     """
     fields: tuple[str, ...]
@@ -302,8 +306,8 @@ def verify_solved(
 
     Deliberately thin. The real check takes ``targets`` and ``solved`` as
     separate arguments precisely so that when targets move to
-    ``SubstrateStrategy`` (FB-34) this wrapper is the only thing that has to
-    change — the verification logic never learns where its inputs came from.
+    ``SubstrateStrategy`` this wrapper is the only thing that has to change —
+    the verification logic never learns where its inputs came from.
     """
     verify_targets_against_solve(
         card.targets,

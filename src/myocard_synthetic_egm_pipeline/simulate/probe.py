@@ -1,10 +1,10 @@
-"""Positional-sensitivity probe — one logical simulation per crop offset (SEP13).
+"""Positional-sensitivity probe — one logical simulation per crop offset.
 
 The probe is a **diagnostic bank, not training data**. It emits N simulations
 that differ only in where the window was cut, computed by reusing a single
-solve. STU8 plots model output *against* activation offset; holding everything
-but the offset fixed is what makes the resulting curve attributable to the
-offset rather than to a different draw.
+solve. The study it feeds plots classifier output *against* activation offset;
+holding everything but the offset fixed is what makes the resulting curve
+attributable to the offset rather than to a different draw.
 
 One grid point is one ``simulation_id``
 ---------------------------------------
@@ -27,9 +27,9 @@ simulation, and nothing tiled. The sweep is identified by its **shared seed**,
 which the schema already carries per simulation and does not require to be
 unique.
 
-Detect once, then shift (D6)
-----------------------------
-This is not "call the SEP2 crop N times". That path re-runs the detector per
+Detect once, then shift
+-----------------------
+This is not "call the ordinary crop N times". That path re-runs the detector per
 window, which carries detector jitter — fine when the position is a training
 augmentation draw, wrong for an axis a study reads off. So the activation is
 detected **once per pair** on the source trace and every grid point is placed by
@@ -40,10 +40,10 @@ jitter, and the verification correspondingly asserts that the emitted
 The windows still go through egm-signal's ``window_train`` — the same function
 the random-position crop and the IAFDB side use — so probe windows and training
 windows have identical geometry by construction rather than by two
-configurations agreeing (CL-134).
+configurations agreeing.
 
-The grid lives on the sample lattice (D6, amended)
---------------------------------------------------
+The grid lives on the sample lattice
+------------------------------------
 A window is placed at ``s = round(t_a - p(T-1))`` and reports
 ``realized = (t_a - s)/(T-1)``, so realized equals requested **iff ``p(T-1)`` is
 an integer**. At ``T = 192`` the divisor is 191, which is prime: the only
@@ -272,7 +272,7 @@ def sweep_capture(
     for pair_index in range(n_pairs):
         trace = np.asarray(traces[pair_index], dtype=np.float64)
 
-        # Once per pair (D6). Re-detecting per grid point would put the
+        # Once per pair. Re-detecting per grid point would put the
         # detector's jitter onto the axis the study reads off.
         try:
             activation_index = detect_activation(trace, preprocessor=detector)

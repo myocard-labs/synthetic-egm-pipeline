@@ -4,10 +4,11 @@ These drive :func:`generate_dataset_cmd.main` end to end — config file in,
 banks on disk out — with the Finitewave backend swapped for the test
 ``MockBackend``. The backend is not what is under test; the **CLI wiring** is.
 
-That distinction is the whole reason this module exists. CL-143 was a defect in
-which the clean intermediate ClassifierBank named a θ companion that did not
-match the θ file written beside it, and *every builder-level test passed while
-it was present*, because each builder was individually correct. Only the
+That distinction is the whole reason this module exists. The defect it was
+written for was one where the clean intermediate ClassifierBank named a θ
+companion that did not match the θ file written beside it, and *every
+builder-level test passed while it was present*, because each builder was
+individually correct. Only the
 composition was wrong, and only a run through ``main()`` composes them.
 """
 
@@ -117,8 +118,9 @@ def _idstr(value: Any) -> str:
 def test_inline_mix_writes_four_files(inline_mix_run: Path) -> None:
     """A mix run with a clean intermediate produces two complete pairs.
 
-    Per design note D8: every ClassifierBank gets its own θ partner, so the
-    four files are mixed bank + mixed θ, clean bank + clean θ.
+    Every ClassifierBank gets its own θ partner, so the four files are
+    mixed bank + mixed θ, clean bank + clean θ. Sharing one θ file would hand
+    a consumer mixed waveforms for a trace it joined as clean.
     """
     for name in (
         "run.classifier.h5",
@@ -139,7 +141,7 @@ def test_inline_mix_writes_four_files(inline_mix_run: Path) -> None:
 def test_each_bank_joins_against_its_own_theta(
     inline_mix_run: Path, classifier_name: str, theta_name: str
 ) -> None:
-    """CL-143 regression: **both** banks join, each against its own θ file.
+    """Regression: **both** banks join, each against its own θ file.
 
     The clean intermediate used to name the *mixed* run's θ bank with an id
     derived from its own — so the id did not match the file, and egm-data
@@ -237,12 +239,12 @@ def test_clean_intermediate_bank_id_override(
     mock_backend: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """B13: ``output.clean_intermediate_bank_id`` names the clean pair.
+    """``output.clean_intermediate_bank_id`` names the clean pair.
 
     One override per pair, matching how ``output.bank_id`` names the mixed
     pair. The clean bank previously had no override at all and fell back to a
-    cell-model-derived id — the gap B13 asked to close, and the root cause of
-    CL-143.
+    cell-model-derived id, which is how it came to name a θ artifact that did
+    not exist.
     """
     noise_path = write_noise_bank(small_noise_bank, tmp_path / "noise.h5")
     doc = _config_doc(out_dir=tmp_path, noise_bank=noise_path, clean_intermediate=True)

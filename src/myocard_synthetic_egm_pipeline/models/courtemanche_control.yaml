@@ -1,6 +1,6 @@
 # Control Courtemanche-Ramirez-Nattel human atrial myocyte, in tissue.
 #
-# The ionic half of SEP5's A/B: the same conduction-velocity target as
+# The ionic half of the model comparison: the same conduction-velocity target as
 # af_remodelled_220ms, a real human-atrial membrane instead of a phenomenological
 # one. Solved by simulate.cell_models.calibrate_courtemanche at dr_mm = 0.25,
 # dr_model_units = 0.25. The solved block is re-derived and checked every time
@@ -12,9 +12,12 @@
 # It is not remodelled. Full cAF remodelling (I_to -65 %, I_CaL -65 %,
 # I_Kur -49 %, I_K1 +110 %; van Wagoner 1997, Bosch 1999, Dobrev 2001) gives
 # APD90 = 143.87 ms, which is BELOW the 192 ms trace duration and would bring
-# back the repolarisation shortcut CL-176 removed. The matched AF card reaches
-# 220 ms by partial remodelling along the same published axis, and the severity
-# that lands there is a measurement, so it is a separate step (S18c).
+# back the repolarisation shortcut the 220 ms target exists to remove: an APD
+# shorter than the window leaves a repolarisation deflection inside every
+# cropped trace at a fixed offset after the activation, which is a marker
+# present in all synthetic traces and no real ones. The matched AF card reaches
+# 220 ms by partial remodelling along the same published axis; the severity
+# that lands there has to be swept for, so it is authored separately.
 
 model:
   name: courtemanche_control
@@ -40,7 +43,7 @@ model:
     # in tissue simulations (Seemann 2010a). Applying that on top of a solved
     # diffusion would double-count: this solve DERIVES diffusion from the
     # velocity we want, so the 30 % would simply be cancelled by a 30 % larger
-    # solved D, leaving a coefficient that means nothing physical (CL-180).
+    # solved D, leaving a coefficient that means nothing physical.
     # Whatever conduction slowing we intend belongs in this target.
     conduction_velocity_cm_s: 80.0
 
@@ -53,8 +56,8 @@ model:
     # Conductance scalings on top of the published defaults, {name: multiplier}.
     # Empty means control: every conductance at its Courtemanche 1998 value.
     # Chosen rather than derived, which is why they live here rather than being
-    # re-solved — S18c fills them in for the AF-matched card, and SEP11's
-    # theta-spec addresses them by path.
+    # re-solved. The AF-matched card fills them in, and a parameter sweep
+    # addresses them by path.
     params: {}
 
   # --- what a simulation actually produced -------------------------------
@@ -89,7 +92,7 @@ model:
 #
 # THIS CARD MATCHES AN INDEPENDENT REIMPLEMENTATION. It does not reproduce
 # Courtemanche/Ramirez/Nattel 1998's own reported table, which is paywalled and
-# could not be retrieved (CL-180). Agreement with Wilhelms is arguably the
+# could not be retrieved. Agreement with Wilhelms is arguably the
 # stronger evidence — a second implementation is a genuine independent
 # replicate, and it gives five numbers rather than one — but it is a different
 # claim, and this card makes the weaker one.
@@ -126,8 +129,8 @@ model:
 # TIMESTEP, measured rather than inherited. The CFL bound permits dt = 0.052 ms
 # at the solved diffusion, but the fast sodium current needs far less, and
 # because Finitewave integrates the gating variables Rush-Larsen a coarse step
-# does not diverge — it quietly flattens the upstroke, which is the observable
-# SEP5 exists to compare. Same protocol, two steps:
+# does not diverge — it quietly flattens the upstroke, which is the one
+# observable an ionic model was added to get right. Same protocol, two steps:
 #
 #   dt (ms)   Amplitude   RMP       APD50     APD90     dV/dt max
 #   0.02      106.26 mV   -80.63    169.62    292.40    213.03
@@ -142,9 +145,9 @@ model:
 # =========================================================================
 #
 # Authored at dr = 0.25 mm, where Courtemanche's ~0.59 ms upstroke spans about
-# 1.9 mesh cells; monodomain practice wants 5-10, i.e. dr ~ 0.05-0.1 mm
-# (CL-180 trap 3). The danger is silent: a CV-solve absorbs discretisation
-# error into diffusion and hits its target anyway.
+# 1.9 mesh cells; monodomain practice wants 5-10, i.e. dr ~ 0.05-0.1 mm.
+# The danger is silent: a CV-solve absorbs discretisation error into diffusion
+# and hits its target anyway.
 #
 # It is measurably not silent here. CV was measured along the fibres on the
 # 40 mm patch at three diffusions spanning 16x:
@@ -156,12 +159,15 @@ model:
 #
 # CV ~ D^0.58 over that range, not D^0.50. The law the solve inverts is exact
 # physics and the mesh is what bends it: a smaller D means a narrower wavefront
-# means fewer cells across it means more discretisation loss. This IS the
-# under-resolution CL-180 predicted, measured rather than argued.
+# means fewer cells across it means more discretisation loss. That is
+# under-resolution with a number on it, rather than argued from the upstroke
+# width alone — and the exponent returning toward 0.50 is what a converged
+# mesh would look like.
 #
 # Two things stand against it rather than one comment. calibrate_courtemanche
 # REFUSES any pitch other than the one its reference CV was measured at, and
 # load-time verification re-solves against geometry.dr_mm — so this card loaded
 # against a different mesh raises rather than quietly meaning something else.
-# S18c measures the convergence curve, picks a pitch on the plateau, and
-# re-authors here.
+# A mesh-convergence sweep — CV and dV/dt max against dr, continued until both
+# plateau — picks the coarsest pitch on the plateau, and this card is
+# re-authored there.

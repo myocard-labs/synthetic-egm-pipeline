@@ -66,8 +66,9 @@ class RunConfig:
     mapping and the diffusion coefficient ride on a
     :class:`~myocard_synthetic_egm_pipeline.simulate.cell_models.CellModelSpec`
     passed to :meth:`SimulationBackend.simulate` alongside the other four specs
-    (design note D2). S38b briefly made them fields here, which would have given
-    a Courtemanche run an ``eps`` field that means nothing to it.
+    — a parameter belongs to the narrowest thing that can change it
+    independently. An earlier revision briefly made them fields here, which
+    would have given a Courtemanche run an ``eps`` field meaning nothing to it.
     """
 
     trace_duration_ms: float
@@ -94,7 +95,7 @@ class RunConfig:
     as four solved numbers.
 
     It is a ``RunConfig`` field rather than a sixth ``simulate`` argument because
-    it is inert — D2's objection was to model-specific **parameters** landing in
+    it is inert — the objection is to model-specific **parameters** landing in
     a shared config object, and a label that nothing computes from is not one.
     A path would be worthless here (it points into a mutable filesystem), so the
     resolved card travels.
@@ -126,7 +127,7 @@ class RunConfig:
         """How long the backend actually simulates.
 
         Separate from :attr:`trace_duration_ms`, which is what lands on disk.
-        The two were one number until controlled-position cropping (SEP2): a
+        The two were one number until controlled-position cropping arrived: a
         window placed around the activation needs signal *after* it, so the
         solver has to run past the end of the trace it will eventually yield.
         ``None`` means "no cropping configured" and keeps the historical

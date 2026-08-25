@@ -240,10 +240,11 @@ def test_synthetic_bank_activation_edges_is_a_list(
     small_dataset_result: DatasetResult,
     small_dataset_config: DatasetConfig,
 ) -> None:
-    """``planar_edge.edges`` is a list even for today's single edge (CL-087).
+    """``planar_edge.edges`` is a list even for today's single edge.
 
-    The schema is deliberately ahead of the producer here so SEP6's
-    multi-edge stimulation needs no contracts bump.
+    The schema is deliberately ahead of the producer here, so adding
+    multi-edge stimulation later needs no contracts bump and no migration
+    of the banks written before it.
     """
     bank = build_synthetic_bank_from_dataset(
         dataset_result=small_dataset_result,
@@ -259,7 +260,7 @@ def test_synthetic_bank_label_policy_uses_thresholds_list(
     small_dataset_result: DatasetResult,
     small_dataset_config: DatasetConfig,
 ) -> None:
-    """The policy carries ``thresholds[]`` and no class names (CL-088).
+    """The policy carries ``thresholds[]`` and no class names.
 
     Names live once in the per-simulation ``label_names`` map; writing
     them into the policy too would let the two disagree with nothing to
@@ -344,8 +345,8 @@ def test_synthetic_bank_activation_position_absent_in_wave_1(
 
     The schema is explicit that absence means *unknown*; 0.0 is a
     legitimate position (activation on the first sample), so defaulting
-    would fabricate a spike at the low edge of the distribution. SEP2
-    populates it.
+    would fabricate a spike at the low edge of the distribution. It is
+    populated exactly when the run crops.
     """
     bank = build_synthetic_bank_from_dataset(
         dataset_result=small_dataset_result,
@@ -467,11 +468,10 @@ def test_written_bank_converts_to_a_classifier_bank(
 ) -> None:
     """egm-data can derive a ClassifierBank from what we write.
 
-    We do **not** use this path in the producer (design note D7 — the
-    converter hardcodes ``amp_type="mv"``, which is wrong for
-    relative-unit synthetic traces; see FB-17). But a consumer may, so
-    the bank we emit has to be convertible: labels come off the bank
-    itself and the join keys land in ``trace_metadata``.
+    We do **not** use this path in the producer: the converter hardcodes
+    ``amp_type="mv"``, which is wrong for relative-unit synthetic traces. But
+    a consumer may, so the bank we emit has to be convertible: labels come off
+    the bank itself and the join keys land in ``trace_metadata``.
     """
     bank = build_synthetic_bank_from_dataset(
         dataset_result=small_dataset_result,
@@ -514,7 +514,7 @@ def test_backend_object_fills_its_typed_fields_from_metadata(
 
 
 # ---------------------------------------------------------------------------
-# The cell model comes from the spec, not from the backend's class name (S18a)
+# The cell model comes from the spec, not from the backend's class name
 # ---------------------------------------------------------------------------
 
 
@@ -542,7 +542,7 @@ def test_cell_model_identity_ignores_the_backends_class_name(
 ) -> None:
     """``model_class`` is provenance about the solver, not the model's identity.
 
-    Until S18a the bank recovered the cell model by matching this string
+    The bank used to recover the cell model by matching this string
     against ``"AlievPanfilov2D"`` — so the identity of every simulation
     this project has recorded rode on the class name a third-party
     package happened to choose, and a rename upstream would have written
@@ -581,7 +581,7 @@ def test_ap_time_unit_comes_from_the_spec_not_the_metadata(
 ) -> None:
     """The contract still wants ``ap_time_unit_ms``; its source moved.
 
-    S18a changed **where** the number comes from, not what lands on
+    What moved is **where** the number comes from, not what lands on
     disk — so the check is that a bank built from a result whose
     metadata carries a *different* value still records the spec's. Read
     the other way round, this is what stops the calibration the solver
@@ -611,9 +611,9 @@ def test_cell_model_mapper_refuses_an_unwired_spec() -> None:
     config would not describe the simulation that produced it — the
     failure the 2.0 restructure exists to prevent — so it raises, exactly
     as the activation and electrode mappers do for their unbuilt
-    variants. Courtemanche was the placeholder here until S18b wired it;
-    the guard is about the *next* model, so it now names one the schema
-    itself does not have.
+    variants. Courtemanche was the placeholder here until it was wired; the
+    guard is about the *next* model, so it now names one the schema itself
+    does not have.
     """
 
     class _NotYetBuilt:
@@ -662,7 +662,7 @@ def test_seed_column_carries_the_run_master_seed(
     """``simulations/seed`` is the run's master seed, repeated per row.
 
     It is a bank-scoped fact that 2.0 placed in the per-simulation group
-    by oversight (CL-096); FB-16 moves it to a root attr. Writing the
+    by oversight; a later schema bump moves it to a root attribute. Writing the
     per-simulation derived seed here instead would change the column's
     meaning with no version bump to signal it — so the repetition is
     deliberate, not an accident of the loop.
@@ -677,7 +677,7 @@ def test_seed_column_carries_the_run_master_seed(
 
 
 # ---------------------------------------------------------------------------
-# SEP12.3b — the two banks a run emits must agree
+# The two banks a run emits must agree
 # ---------------------------------------------------------------------------
 
 
@@ -688,16 +688,16 @@ def test_both_banks_from_one_run_agree(
     """The ClassifierBank and the synthetic_bank describe the same traces.
 
     A run emits both, and they are **parallel artifacts joined on
-    ``simulation_id``** rather than one derived from the other (design
-    note D4). Because the producer builds them through two independent
-    code paths (D7 — we deliberately do not route through egm-data's
-    converter, which would hardcode ``amp_type="mv"`` onto relative-unit
-    synthetic traces, FB-17), nothing structural forces them to match.
+    ``simulation_id``** rather than one derived from the other. Because the
+    producer builds them through two independent code paths — we deliberately
+    do not route through egm-data's converter, which would hardcode
+    ``amp_type="mv"`` onto relative-unit synthetic traces — nothing structural
+    forces them to match.
 
     This is the guard that replaces the by-construction guarantee: same
     trace count, same order, same labels, same join key. If either
-    builder's ordering or labelling drifts, the join that T4 depends on
-    silently starts pairing the wrong rows — which would not show up as
+    builder's ordering or labelling drifts, the bank-to-bank join silently
+    starts pairing the wrong rows — which would not show up as
     an error anywhere, just as wrong science.
     """
     classifier = build_classifier_bank_from_dataset(
@@ -766,7 +766,7 @@ def test_both_banks_agree_on_the_noise_mixed_path(
 
 
 # ---------------------------------------------------------------------------
-# SEP12.7 — the Wave-1 equivalence gate
+# The equivalence gate: the restructure moved no numbers
 # ---------------------------------------------------------------------------
 
 
@@ -872,7 +872,7 @@ def test_wave_1_equivalence_against_the_real_backend(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SEP12.9 — what a `banks` entry means
+# What a `banks` entry means
 # ---------------------------------------------------------------------------
 
 

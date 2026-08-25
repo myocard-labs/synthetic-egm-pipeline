@@ -1,12 +1,12 @@
 """Courtemanche: the seam, the partial solve, the card, and the published vector.
 
 The fast tests here are arithmetic, dispatch and file handling. The **slow**
-ones are the point of the step: Courtemanche arrives with no known-good prior
-fixture of our own — S17 was meant to leave a clean numerical baseline and was
-absorbed into S38c, which moved every number on purpose — so it is validated
-against **Wilhelms et al. 2012**'s published five-element vector rather than
-against a previous run of ours. That is weaker than a self-comparison, and it is
-exactly why the five values are asserted rather than eyeballed.
+ones are the point of the module: Courtemanche arrives with no known-good
+prior fixture of our own — the recalibration that came just before it moved
+every number on purpose, so no earlier run of ours is a baseline — and it is
+therefore validated against **Wilhelms et al. 2012**'s published five-element
+vector. That is weaker than a self-comparison, and it is exactly why the five
+values are asserted rather than eyeballed.
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ def test_ms_to_model_time_is_the_identity_for_courtemanche() -> None:
 
     # And the attribute whose absence makes the identity necessary really is
     # absent, rather than present and equal to 1.0 — a `time_unit_ms` of 1.0
-    # would make every test here pass while restoring the very knob D2 says a
-    # dimensional model must not carry.
+    # would make every test here pass while restoring the very knob a
+    # dimensional model has no business carrying.
     assert not hasattr(solved, "time_unit_ms")
 
 
@@ -161,9 +161,9 @@ def test_the_solved_step_respects_both_bounds() -> None:
     Aliev-Panfilov's limit is purely the explicit-diffusion bound. Courtemanche's
     fast sodium current needs a much smaller step than that bound permits, and
     because Finitewave integrates the gating variables Rush-Larsen the coarse
-    step does not diverge — it flattens the upstroke, which is the observable
-    SEP5 exists to compare. A limit reporting only the CFL bound would report
-    the slack constraint.
+    step does not diverge — it flattens the upstroke, which is the one
+    observable an ionic model was added to get right. A limit reporting only
+    the CFL bound would report the slack constraint.
     """
     solved = calibrate_courtemanche(
         conduction_velocity_cm_s=80.0, dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS
@@ -188,7 +188,7 @@ def test_the_solved_step_respects_both_bounds() -> None:
 def test_a_mesh_the_constant_was_not_measured_on_is_refused(
     dr_mm: float, dr_model_units: float, match: str
 ) -> None:
-    """Both halves of CL-180's trap 3, refused by name rather than absorbed.
+    """Both halves of the under-resolution trap, refused rather than absorbed.
 
     A CV-solve will happily absorb discretisation error into ``diffusion`` and
     hit its target anyway, leaving a physical-looking number that is not — the
@@ -208,7 +208,8 @@ def test_remodelled_conductances_are_refused_until_their_velocity_is_measured() 
 
     Sodium conductance moves conduction velocity directly, so solving a
     remodelled set through the control constant puts the whole error into
-    diffusion. S18c measures the remodelled reference and registers it.
+    diffusion. The remodelled reference has to be measured and registered
+    before any card can be solved through it.
     """
     with pytest.raises(ValueError, match="control conductances"):
         calibrate_courtemanche(
@@ -266,7 +267,7 @@ def test_the_shipped_courtemanche_card_states_no_apd_target() -> None:
 
 
 def test_the_measured_courtemanche_apd_clears_the_trace_duration() -> None:
-    """``APD >= T`` is the unconditional no-shortcut rule (CL-176/178).
+    """``APD >= T`` is the unconditional no-shortcut rule.
 
     Aliev-Panfilov reaches it by solving; Courtemanche has to be *checked*,
     because nothing in its solve is aiming at it. Control CRN clears T with
@@ -284,9 +285,9 @@ def test_the_measured_courtemanche_apd_clears_the_trace_duration() -> None:
 def test_both_shipped_cards_aim_at_the_same_conduction_velocity() -> None:
     """What makes the A/B a comparison of models rather than of tissues.
 
-    CV is the target both solves share; upstroke morphology is what SEP5 is
-    actually isolating, and it only reads as a model difference if everything
-    solvable is matched.
+    CV is the target both solves share; upstroke morphology is what the
+    comparison is actually isolating, and it only reads as a model difference
+    if everything solvable is matched.
     """
     courtemanche = shipped_card()
     aliev_panfilov = load_model_card(
@@ -299,12 +300,12 @@ def test_both_shipped_cards_aim_at_the_same_conduction_velocity() -> None:
 
 
 def test_an_aliev_panfilov_card_still_loads_and_verifies_unchanged() -> None:
-    """The regression guard for a step that touched every card path.
+    """The regression guard for a change that touched every card path.
 
-    Parsing gained a dispatch table, ``targets.apd90_ms`` became optional and
-    verification gained a branch. None of that may move the Aliev-Panfilov
-    card's numbers — a bank generated before and after this step must be
-    identical.
+    Adding a second cell model gave the parser a dispatch table, made
+    ``targets.apd90_ms`` optional and gave verification a branch. None of that
+    may move the Aliev-Panfilov card's numbers — a bank generated before and
+    after it must be identical.
     """
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
 
@@ -398,8 +399,9 @@ def test_a_courtemanche_apd_target_is_checked_against_the_measurement() -> None:
     """A stated target that nothing verifies is worse than an absent one.
 
     Courtemanche cannot solve for APD, so a card that states an APD target is
-    claiming its *chosen parameters* reach it — the claim S18c's severity sweep
-    will make. The check is two recorded numbers against each other, so it stays
+    claiming its *chosen parameters* reach it — the claim an AF-remodelled
+    card's severity sweep makes. The check is two recorded numbers against
+    each other, so it stays
     load-time cheap, and it is the reason ``apd90_ms`` may be present on a
     Courtemanche card at all rather than being refused outright.
     """
@@ -494,8 +496,9 @@ def test_a_scaling_the_solver_cannot_apply_is_refused_by_name() -> None:
 
     ``I_Kur`` is the live case, not a hypothetical: finitewave 0.9.3 computes its
     conductance from voltage inside the kernel rather than reading a parameter,
-    so the cAF -49 % I_Kur scaling S18c needs cannot be set by assignment at
-    all. Discovering that here costs a message; discovering it from a severity
+    so the cAF -49 % I_Kur scaling an AF-remodelled card needs cannot be set
+    by assignment at all. Discovering that here costs a message; discovering it
+    from a severity
     sweep that silently moved three of four currents costs a day.
     """
     from myocard_synthetic_egm_pipeline.backends.finitewave import backend as be
@@ -638,8 +641,8 @@ def test_courtemanche_reproduces_the_published_control_vector() -> None:
     state: APD90 falls to 83 % of its first beat over 16 minutes of pacing, so
     the same model legitimately reads 295 ms or ~245 ms depending on when you
     look. Wilhelms paces 50 s at BCL 1 s, so this test does too — and pins both
-    numbers rather than the cycle length alone, which is CL-180's most likely
-    cause of a spurious failure here.
+    numbers rather than the cycle length alone, which is the most likely cause
+    of a spurious failure in this module.
 
     This is a claim about agreement with an **independent reimplementation**,
     not about reproducing CRN 1998's own table, which could not be retrieved.

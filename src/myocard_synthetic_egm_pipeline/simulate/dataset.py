@@ -131,18 +131,19 @@ class DatasetConfig:
     label_policy: LabelPolicy
     run_config: RunConfig
     cell_model: CellModelSpec = field(default_factory=lambda: _default_cell_model())
-    """Membrane model for every simulation in the dataset (D2's fifth spec).
+    """Membrane model for every simulation in the dataset — the fifth spec.
 
     Dataset-level rather than per-simulation for now: at APD 220 > T = 192 the
     repolarisation marker is already outside the analysis window, so sampling
     APD per simulation buys physiological variation rather than correctness.
     When it is scheduled, this becomes a sampled field like ``density_range``
-    — and FB-34 (targets onto ``SubstrateStrategy``) makes that nearly free,
-    because the substrate is already drawn per simulation.
+    — and the planned move of the physiological targets onto
+    ``SubstrateStrategy`` makes that nearly free, because the substrate is
+    already drawn per simulation.
     """
 
     detection_preprocessor: DetectionPreprocessor | None = None
-    """Detection curve every crop in this run anchors on (S16a).
+    """Detection curve every crop in this run anchors on.
 
     ``None`` keeps ``cropping.default_preprocessor()`` — ``RectifiedDerivative``
     — so a run that names no curve behaves exactly as every run before the knob
@@ -152,13 +153,13 @@ class DatasetConfig:
     Stateless, unlike the position generator, so one instance is shared across
     the whole run rather than being a per-simulation object.
 
-    **Not recorded in either bank (FB-35).** It changes where the window is cut
-    and therefore the stored waveform, but no schema has a field for it; until
-    FB-35, the bank's ``description`` is the record.
+    **Not recorded in either bank.** It changes where the window is cut and
+    therefore the stored waveform, but neither schema has a field for it; until
+    one gains it, the bank's ``description`` is the only record.
     """
 
     probe_grid: ProbeGrid | None = None
-    """Positional-sensitivity sweep (SEP13) — a diagnostic bank, not training data.
+    """Positional-sensitivity sweep — a diagnostic bank, not training data.
 
     Set, the run emits **one logical simulation per grid point**, all computed
     from a single solve and all carrying the same seed, so the only thing that
@@ -181,7 +182,7 @@ class DatasetConfig:
     #: ms; converted to the solver's model units at spec construction, where
     #: ``ap_time_unit_ms`` is in hand. **Diagnostic first:** a delay buys only
     #: *resting* lead-in, since phi_e sums membrane current over the whole mesh
-    #: and nothing is depolarising yet — see CL-163/CL-164.
+    #: and nothing is depolarising yet.
     stimulus_delay_ms: float = 0.0
 
     electrode_n_rows: int = DEFAULT_ELECTRODE_GRID_ROWS
@@ -262,7 +263,7 @@ def generate_dataset(
     ``n_simulations * electrode_n_rows * (electrode_n_cols - 1)`` for a
     centered-grid placement.
 
-    ``position_generator`` enables controlled-position cropping (SEP2). The
+    ``position_generator`` enables controlled-position cropping. The
     **same** generator instance is handed to every simulation on purpose: it is
     stateful, so a shared instance advances one stream across the whole run and
     every trace draws an independent position. Constructing one per simulation
@@ -274,8 +275,8 @@ def generate_dataset(
     ``config.detection_preprocessor``; it rides on the config rather than
     alongside it here precisely because it is stateless.
 
-    ``config.probe_grid`` switches the run to the positional-sensitivity probe
-    (SEP13): **one solve, one logical simulation per crop offset**, all sharing
+    ``config.probe_grid`` switches the run to the positional-sensitivity
+    probe: **one solve, one logical simulation per crop offset**, all sharing
     a seed. The probe ignores ``position_generator`` because the two are
     mutually exclusive at the config layer — a sweep requests its offsets rather
     than drawing them.
@@ -435,7 +436,7 @@ def _simulate_probe_sweep(
     backend: SimulationBackend,
     master_rng: np.random.Generator,
 ) -> list[tuple[SimulationResult, int]]:
-    """The probe: one solve, one logical simulation per grid point (S16b).
+    """The probe: one solve, one logical simulation per grid point.
 
     Every returned result carries the **same seed**, because they came from one
     solve of one substrate — which is what makes a sweep identifiable in the

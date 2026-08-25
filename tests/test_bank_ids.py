@@ -328,12 +328,12 @@ def test_mixed_bank_companion_names_the_mixed_theta_bank(
     theta companion is not shared history: a noise-mixed run writes its
     own ``synthetic_bank`` under its own id. Carrying the clean entry
     through left the mixed ClassifierBank naming a *different* artifact
-    than the one written beside it — exactly the mispairing this entry
+    than the one written beside it — exactly the mispairing the rewrite
     exists to prevent.
 
     **Id and path both move.** Rewriting only the id was survivable while both
-    banks shared one theta file; now that the clean bank has its own (D8), a
-    kept path would point the mixed bank at the *clean* theta artifact.
+    banks shared one theta file; now that the clean bank has its own, a kept
+    path would point the mixed bank at the *clean* theta artifact.
     """
     clean = _clean_bank_with_theta_companion(small_classifier_bank)
 
@@ -361,8 +361,8 @@ def test_mix_without_a_theta_bank_drops_the_companion(
     schema 2.0's per-simulation config is not recoverable from per-trace
     metadata. The mixer used to rewrite the companion's id to a mixed-derived
     one while keeping the clean bank's path — leaving the mixed bank naming an
-    id that no file carries, at a file that holds clean signals. That is the
-    CL-143 divergence in the other CLI.
+    id that no file carries, at a file that holds clean signals — the same
+    id-names-one-artifact-file-holds-another divergence, in the other CLI.
 
     Absence is the honest answer, and it matches the rule the noise columns
     already follow: a field a run did not produce is omitted, never faked.

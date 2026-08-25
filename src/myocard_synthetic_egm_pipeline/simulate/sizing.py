@@ -1,7 +1,8 @@
 """Sizing the simulation so a ``T``-sample window always fits around the activation.
 
 This is the synthetic-side *response* to controlled-position cropping, and the
-part egm-signal cannot do. SIG1 owns the crop — the detection curve, the
+part egm-signal cannot do. That library owns the crop — the detection curve,
+the
 ``argmax`` detection, the fractional-to-index conversion, the slice. What it
 cannot own is **how much signal exists to slice from**, nor **where in that
 signal the activation lands**; both follow from how the simulation was set up.
@@ -68,8 +69,8 @@ What this replaced
 ------------------
 An earlier version sized only the back and argued the front away — that the
 lead-in was inherently flat, so ``p`` should be held low ("back-bounded"). That
-reasoning was retired (plan design note D9): it was reasoned back from
-activation indices that later proved to be detection artifacts, and it would
+reasoning was retired: it was reasoned back from activation indices that
+later proved to be detection artifacts, and it would
 have left synthetic windows positionally disjoint from IAFDB's, which is a
 sim-to-real gap rather than a fix for one.
 """
@@ -80,7 +81,7 @@ import math
 
 #: ``T`` must be a multiple of this. egm-classifier's 1D MobileViT halves the
 #: sequence six times (2**6 = 64), so a length off the grid fails outright at
-#: the first ragged stage rather than degrading (CL-112, design §8.1).
+#: the first ragged stage rather than degrading.
 WINDOW_LENGTH_MULTIPLE: int = 64
 
 

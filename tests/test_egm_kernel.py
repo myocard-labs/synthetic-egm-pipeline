@@ -1,12 +1,12 @@
-"""The vendored EGM kernel: identity with stock (S37), then the axis fix (S39).
+"""The vendored EGM kernel: identity with stock, then the axis fix.
 
-S37 vendored the kernel changing no physics; S39 corrects the electrode
-transpose and the fibre-component order. Each landed separately so that each is
-attributable — the fixes are a line or two apiece, so bundling would have been
-tempting and would have destroyed the checks below.
+Vendoring came first and changed no physics; the electrode transpose and the
+fibre-component order were corrected after. Each landed separately so that each
+is attributable — the fixes are a line or two apiece, so bundling would have
+been tempting and would have destroyed the checks below.
 
-S37 proved the vendored kernel was byte-identical to the stock tracker. S39
-then changed the axis pairing deliberately, so that check was **sharpened
+The first step proved the vendored kernel byte-identical to the stock tracker.
+The second changed the axis pairing deliberately, so that check was **sharpened
 rather than deleted**: our kernel given ``(x, y, z)`` must still equal the stock
 kernel given ``(y, x, z)``, exactly — proving the change is precisely a
 transpose and nothing else.
@@ -134,10 +134,11 @@ def test_our_kernel_reduces_to_stock_under_the_old_settings() -> None:
 
     Carried forward and re-sharpened at each step rather than deleted:
 
-    - **S37** — identical to stock, full stop.
-    - **S39** — identical once the coordinates are pre-swapped, proving the
-      change was precisely a transpose.
-    - **S40** — identical once the coordinates are pre-swapped **and** the two
+    - **at vendoring** — identical to stock, full stop.
+    - **after the axis fix** — identical once the coordinates are pre-swapped,
+      proving the change was precisely a transpose.
+    - **after the weighting fix** — identical once the coordinates are
+      pre-swapped **and** the two
       new parameters are dialled back to their pre-fix values:
       ``distance_power = 2`` reinstates ``1/r²``, and
       ``conductivity = 1/(4 pi)`` cancels the new prefactor.
@@ -218,7 +219,7 @@ def test_the_traces_are_not_trivially_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S39 — one axis convention across electrodes, fibres and stimulus
+# One axis convention across electrodes, fibres and stimulus
 # ---------------------------------------------------------------------------
 
 
@@ -279,9 +280,9 @@ def test_a_wave_along_the_pair_beats_a_wave_across_it() -> None:
 def test_healthy_uniform_tissue_produces_a_real_activation() -> None:
     """Density-0 tissue must give a real EGM, not a near-cancelled blob.
 
-    This is the check that retires the CL-168 hypothesis. The ~2000x amplitude
-    jump between density 0 and density 0.01 was read as "a planar wave over
-    uniform tissue is degenerate"; it was the transpose. Healthy tissue can and
+    This retires an earlier hypothesis. The ~2000x amplitude jump between
+    density 0 and density 0.01 was read as "a planar wave over uniform tissue
+    is degenerate"; it was the transpose. Healthy tissue can and
     must produce a normal local activation.
     """
     traces = _directional_run("left")
@@ -302,13 +303,13 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
     ``fibers[..., 0] = cos(theta)`` put the fast axis 90 degrees off, and the
     wave clears the mesh sooner along whichever axis the fibres actually run.
 
-    **The magnitude reasoning here used to be wrong, and the test passed anyway**
-    (CL-172). It requested ``anisotropy_ratio = 9`` and argued conduction was
+    **The magnitude reasoning here used to be wrong, and the test passed
+    anyway.** It requested ``anisotropy_ratio = 9`` and argued conduction was
     ``sqrt(9) = 3x`` faster along the fibres. In fact the request did nothing —
-    ``anisotropy_ratio`` was a no-op until S38a — and the 3x came from the
-    stencil's built-in default. What the test genuinely checks is the
-    **direction**, which is set by the fibre field and was always real, so the
-    S39 transpose fix stayed verified throughout. But a test that would not have
+    ``anisotropy_ratio`` was written to an object that never read it — and the
+    3x came from the stencil's built-in default. What the test genuinely checks
+    is the **direction**, which is set by the fibre field and was always real,
+    so the transpose fix stayed verified throughout. But a test that would not have
     failed if its own input were ignored was proving less than it claimed, so
     the ratio is now a plain 3.0 and the *magnitude* claim lives in
     :func:`test_the_requested_anisotropy_is_the_realized_one`, which does fail
@@ -321,7 +322,8 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
 
         The original proxy was the **last** sample above 1 % of peak, i.e. when
         the trace went quiet. That worked at APD 51 ms and stopped working the
-        moment S38b lengthened APD to 220 ms: the window is 192 ms, so the trace
+        moment the calibration lengthened APD to 220 ms: the window is 192 ms,
+        so the trace
         is still repolarising at the final sample in **both** directions and the
         proxy saturates at 191 for each. It failed for the right reason — the
         calibration fix doing exactly what it was meant to.
@@ -344,7 +346,7 @@ def test_the_fast_conduction_axis_is_the_intended_one() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S40 — 1/r weighting, cross-checked against the independent reference
+# The 1/r weighting, cross-checked against the independent reference
 # ---------------------------------------------------------------------------
 
 
@@ -356,7 +358,7 @@ def test_the_production_kernel_agrees_with_compute_phi_e() -> None:
     which is exactly how two kernels came to disagree on the physics unnoticed:
     the tested one was irrelevant and the untested one was authoritative.
 
-    **Isotropic, unmasked tissue only, and that is deliberate** (plan S40). The
+    **Isotropic, unmasked tissue only, and that is deliberate.** The
     two compute *different Laplacians*: ``compute_phi_e`` applies a plain
     5-point stencil over every node, while the production path uses
     Finitewave's **anisotropic**, myocardium-**masked** diffusion kernel. At
@@ -423,7 +425,7 @@ def test_the_reference_check_would_catch_a_wrong_exponent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S38a — anisotropy_ratio is operative (CL-172)
+# anisotropy_ratio is operative — it spent the project inoperative
 # ---------------------------------------------------------------------------
 
 
@@ -480,12 +482,12 @@ def test_the_requested_anisotropy_is_the_realized_one(ratio: float) -> None:
     and ``D_ac`` to the **model**, while Finitewave reads them off the
     **stencil** — so Python created two attributes nobody consulted and the
     realized ratio was the stencil's built-in 3.09 whatever was requested.
-    Measured 3.093 for requested 1.0, 3.0 and 6.0 alike (CL-172).
+    Measured 3.093 for requested 1.0, 3.0 and 6.0 alike.
 
     **Ratio 1.0 is the load-bearing case** — it is the one the old code could
     not produce, so a test at 3.0 alone would have passed against the bug.
-    2.0 is the value S38b ships (CL-176), covered here so the knob is exercised
-    at its intended setting before that step depends on it. 3.0 is deliberately
+    2.0 is the shipped default — the atrial working-myocardium value — covered
+    here so the knob is exercised at the setting real banks use. 3.0 is deliberately
     absent: it is covered exactly, not approximately, by
     :func:`test_the_default_ratio_reproduces_the_stencil_defaults_exactly`.
 
@@ -523,9 +525,9 @@ def test_the_shipped_ratio_leaves_the_along_fibre_velocity_alone() -> None:
     the transverse entry continuously, and the invariance stops holding. That is
     correct behaviour, not a leak: measured on a fibrotic 40 mm patch, along-fibre
     propagation at ratio 1 vs 3 differs by more than the same change measured
-    across the fibres. The practical consequence is for S38b, not here — in the
-    substrate we actually generate, the ratio changes every bank whatever the
-    fibre orientation.
+    across the fibres. The practical consequence is for generation, not for
+    this test — in the substrate we actually generate, the ratio changes every
+    bank whatever the fibre orientation.
     """
     isotropic = _cv_model_units("left", 1.0)
     anisotropic = _cv_model_units("left", 3.0)

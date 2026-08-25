@@ -441,7 +441,7 @@ def build_theta_spec(simulations: Simulations) -> GenerationParams:
     fixed across the bank; ``knobs`` is the list of swept parameters.
     Wave 1 sweeps nothing, so the knob list is empty — which the schema
     requires anyway rather than allowing omission, because "nothing
-    varied" is worth stating explicitly. SEP11 fills the list.
+    varied" is worth stating explicitly. A parameter sweep fills the list.
     """
     regime: dict[str, str] = {}
     if simulations.simulation_id:
@@ -479,7 +479,7 @@ def _cell_model_name(results: Sequence[SimulationResult]) -> str:
     else — so the id of every bank this project has written depended on
     a third party's class naming. The spec's own ``type`` is the
     discriminator the schema uses, and it produces the same
-    ``"aliev_panfilov"`` (S18a).
+    ``"aliev_panfilov"`` without asking the backend.
 
     ``"unknown"`` only for an empty run, which has no spec to ask.
     """

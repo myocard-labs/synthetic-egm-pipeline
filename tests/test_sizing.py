@@ -1,4 +1,4 @@
-"""Capture sizing for controlled-position cropping (SEP2).
+"""Capture sizing for controlled-position cropping.
 
 The arithmetic here decides whether a window fits, so the tests are written
 against the *geometry* — place the window and check where it lands — rather

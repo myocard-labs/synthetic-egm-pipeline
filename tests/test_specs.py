@@ -29,7 +29,7 @@ def test_patch_2d_defaults() -> None:
     g = Patch2DGeometry()
     assert g.size_mm == 40.0
     assert g.dr_mm == 0.25
-    # 2.0 since S38b: atrial WALL is ~2:1 (Hansson 1998); the higher ratios in
+    # 2.0 because the atrial WALL is ~2:1 (Hansson 1998); the higher ratios in
     # the literature belong to specialised bundles, not working myocardium.
     assert g.anisotropy_ratio == 2.0
     assert g.fiber_angle_rad == 0.0

@@ -65,8 +65,8 @@ class SimulationSpecs:
     the type) changes. The five strategy Protocols are not modified. See
     ``project/architecture.md`` → Guardrails.
 
-    ``cell_model`` is the fifth spec (design note D2), added at S18a in
-    the same widening category. Until then the bank recovered the model's
+    ``cell_model`` is the fifth strategy spec, added in the same widening
+    category. Until it existed the bank recovered the model's
     identity by **string-sniffing** the class name the backend happened
     to report in ``backend_metadata["model_class"]`` — a dependency on a
     third party's naming standing in for a fact the runner had in hand

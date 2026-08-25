@@ -1,4 +1,4 @@
-"""Tests for the configurable detection curve (S16a).
+"""Tests for the configurable detection curve.
 
 ``crop_traces`` has always taken a ``preprocessor`` and ``run_single`` never
 passed one, so every synthetic bank in the project's history was windowed with
@@ -106,7 +106,7 @@ def _config_doc(
         "activation_position": activation_position,
         "output": {
             "classifier_bank": str(out_dir / f"{stem}.classifier.h5"),
-            "description": "S16a detection-curve test",
+            "description": "detection-curve test",
         },
     }
 
@@ -194,7 +194,7 @@ def test_each_curve_writes_a_different_bank(
 ) -> None:
     """Setting ``detection.curve`` changes **the stored waveform**.
 
-    The whole point of S16a. Two runs identical in every other respect — same
+    The whole point of the knob. Two runs identical in every other respect — same
     master seed, same substrate draws, same position stream — differ only in the
     curve, so any difference in the banks is the curve reaching the crop. With
     the runner still dropping the preprocessor on the floor (the defect), both
@@ -277,8 +277,8 @@ def test_omitting_the_block_reproduces_the_pre_s16a_bank(
 
     Two references, because one alone leaves a hole:
 
-    - ``detection_preprocessor=None`` is literally the pre-S16a call — the
-      ``crop_traces`` invocation with no preprocessor argument at all. It
+    - ``detection_preprocessor=None`` is literally the call the runner used to
+      make — ``crop_traces`` with no preprocessor argument at all. It
       catches an absent block resolving to some other curve.
     - an explicit ``RectifiedDerivative()`` pins *which* curve that is. Without
       it, redefining ``default_preprocessor`` would move both the run and its
@@ -288,7 +288,7 @@ def test_omitting_the_block_reproduces_the_pre_s16a_bank(
 
     references = {
         # The call the runner made before the parameter was threaded through.
-        "pre-S16a (no preprocessor)": None,
+        "the old call (no preprocessor)": None,
         # ... and what that default has to be.
         "explicit RectifiedDerivative": RectifiedDerivative(),
     }
@@ -414,7 +414,8 @@ def test_multi_activation_keys_are_refused_by_name(
 
     Synthetic detection is ``argmax g`` over a trace with exactly one activation
     by construction, so accepting these would mint fresh config surface that
-    provably has no effect — the same unreachable-seam defect S16a removes.
+    provably has no effect — the same unreachable-seam defect this knob was
+    added to remove, a setting that reads as though it were honoured and is not.
     Both the nested (``threshold:``) and flat (``threshold_rule:``) spellings are
     refused, so a block copied from an iafdb config fails whichever way it was
     written.
@@ -521,7 +522,7 @@ def test_build_preprocessor_rejects_an_unknown_curve() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The run summary — the only record of the curve until FB-35
+# The run summary — the only record of the curve until a schema carries it
 # ---------------------------------------------------------------------------
 
 
@@ -531,7 +532,7 @@ def test_run_summary_reports_the_resolved_curve(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The bank cannot carry the curve (FB-35), so the run has to say it.
+    """No schema has a field for the curve, so the run summary has to say it.
 
     This is the string that goes into ``output.description`` by hand, which is
     the record until the schema grows a field for it.

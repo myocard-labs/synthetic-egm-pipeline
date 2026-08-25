@@ -144,16 +144,16 @@ backend:
   # Membrane parameterisation, as a shipped card name or a path to your own
   # YAML. Omit it and you still get the calibrated card — a run never falls
   # back to bare constants, because uncalibrated physics that looks like a
-  # normal run is the failure S38 exists to remove.
+  # normal run is the failure the card exists to prevent.
   model: af_remodelled_220ms               # default; targets CV 80 cm/s, APD90 220 ms
-  # model: courtemanche_control            # the human-atrial ionic model (SEP5)
+  # model: courtemanche_control            # the human-atrial ionic model
 
 geometry:
   type: patch_2d                           # default 'patch_2d' (Phase 1: only option)
   size_mm: 40.0                            # default
   dr_mm: 0.25                              # default
   fiber_angle_rad: 0.0                     # default
-  anisotropy_ratio: 2.0                    # default (2.0, NOT 3.0 — changed in S38b)
+  anisotropy_ratio: 2.0                    # default; 2:1 is the atrial WALL value
 
 substrate:
   type: uniform_random_fibrosis            # default (Phase 1: only option)
@@ -200,7 +200,7 @@ run:
   # model card named by `backend.model`. Setting any of them here is an ERROR,
   # not an override.
 
-# Optional controlled-position cropping (SEP2). Omit the block for no
+# Optional controlled-position cropping. Omit the block for no
 # cropping. Both bounds are required; use the same value twice for the
 # anchored arm of the position A/B.
 activation_position:
@@ -219,7 +219,7 @@ activation_position:
     # `curve: botteron_envelope`.
     # botteron_band_hz: [40.0, 250.0]      # default, Botteron 1995
     # botteron_lowpass_hz: 20.0            # default; read at run.output_fs_hz
-  # Positional-sensitivity probe (SEP13) — mutually exclusive with low/high
+  # Positional-sensitivity probe — mutually exclusive with low/high
   # above, and requires dataset.n_simulations: 1 (which counts SOLVES: the run
   # writes one simulation per grid point). See "The positional-sensitivity
   # probe" below; it is a diagnostic bank, not training data.
@@ -267,7 +267,7 @@ Per-field reference:
 | `geometry.size_mm` | float | 40.0 | Patch edge length. |
 | `geometry.dr_mm` | float | 0.25 | Spatial step (mesh cell size). |
 | `geometry.fiber_angle_rad` | float | 0.0 | Fiber orientation. With the default 0.0 **every bipole is parallel to the fibres**, since pairs are grid-x separated and fibres run along x — so the anisotropy ratio has less effect on bipolar morphology than it looks. |
-| `geometry.anisotropy_ratio` | float | **2.0** | CV_along / CV_across. 2:1 is the standard atrial-wall value (Hansson 1998: RA free wall 88 ± 9 cm/s, only weakly direction-dependent); higher ratios belong to bundles, not working myocardium. **Was 3.0 before S38b** — at 3.0 the transverse velocity falls below the physiological range. Had no effect at all before S38a, when the knob was a silent no-op. |
+| `geometry.anisotropy_ratio` | float | **2.0** | CV_along / CV_across. 2:1 is the standard atrial-wall value (Hansson 1998: RA free wall 88 ± 9 cm/s, only weakly direction-dependent); higher ratios belong to bundles, not working myocardium. **Was 3.0 in v0.2.0** — at 3.0 the transverse velocity falls below the physiological range. It also had no effect at all until 2026-08-14, when the tensor components stopped being written to an object that never read them. |
 | `substrate.type` | `uniform_random_fibrosis` | `uniform_random_fibrosis` | Substrate dispatch. |
 | `substrate.density_range` | `[lo, hi]` | `[0.0, 0.5]` | Per-sim density sampled uniformly. |
 | `substrate.fraction_healthy` | float [0, 1] | 0.0 | Fraction of sims forced to density=0 exactly. |
@@ -286,11 +286,11 @@ Per-field reference:
 | `label_policy.type` | `global_density` / `local_density` | `global_density` | Label policy dispatch. |
 | `label_policy.threshold` | float | 0.1 | Density above which a trace is labeled fibrotic. |
 | `label_policy.radius_mm` | float | 2.0 | Used by `local_density` only. |
-| `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise (CL-112). With `activation_position` set this is *not* how long the solver runs; see that block. |
+| `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise, because egm-classifier's 1D MobileViT halves the sequence six times and an off-grid length fails outright at the first ragged stage rather than degrading. With `activation_position` set this is *not* how long the solver runs; see that block. |
 | `run.output_fs_hz` | float | 1000.0 | Output sample rate. Shared with IAFDB by decision, not coincidence — catch22 lag features depend on it — so changing it is a both-sides-or-neither call. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
 | `run.dr_model_units` | float | 0.25 | The solver's own space step, in the backend's units. Backend/scheme, not physiology: it is paired with the model card's `dt` through the explicit-scheme stability bound `dt <= dr^2 / (2 · dim · D)`. **Must equal `geometry.dr_mm` for a Courtemanche card** — that model's diffusion coefficient is in mm²/ms, so its space unit is the millimetre and a different value simulates a different mesh from the one the geometry describes. Aliev-Panfilov is dimensionless and has no such constraint. Refused rather than absorbed. |
-| `run.travel_allowance_ms` | float > 0 | `2 × trace_duration_ms` (384 ms at T=192) | **Assumed upper bound** on stimulus-to-pair travel time; sizes the capture via `N = D + V + T - k(low)`. Raise it when the crop reports a window off the **BACK**. **This is an assumption, not a bound** — the true value is distance/CV, and neither term is known at config time. It has already been too small twice: originally `T`, which failed on a fibrosis run; now `2T`, which failed at density 0.5 (measured travel 414 ms). Heavy fibrosis conducts far slower than a clean patch, so **a dense substrate needs a larger allowance**, and because density is drawn per simulation the failure is a *tail event* — a config that ran fine yesterday can fail today on a different draw. Over-estimating costs solver time; under-estimating costs the run. FB-36 replaces it with a derived value. |
+| `run.travel_allowance_ms` | float > 0 | `2 × trace_duration_ms` (384 ms at T=192) | **Assumed upper bound** on stimulus-to-pair travel time; sizes the capture via `N = D + V + T - k(low)`. Raise it when the crop reports a window off the **BACK**. **This is an assumption, not a bound** — the true value is distance/CV, and neither term is known at config time. It has already been too small twice: originally `T`, which failed on a fibrosis run; now `2T`, which failed at density 0.5 (measured travel 414 ms). Heavy fibrosis conducts far slower than a clean patch, so **a dense substrate needs a larger allowance**, and because density is drawn per simulation the failure is a *tail event* — a config that ran fine yesterday can fail today on a different draw. Over-estimating costs solver time; under-estimating costs the run. A derived value — from the pair distance and the realized substrate's conduction velocity — is the intended replacement. |
 | `activation_position.low` | float 0..1 | (required if block present) | Smallest fractional activation position. **Sizes the capture** — the smaller it is, the more signal a window needs after the activation, so the longer the solver runs. |
 | `activation_position.high` | float 0..1 | (required if block present) | Largest fractional position. Kept below 1: the front cannot be extended, so a far-back position fills the window with flat pre-activation baseline. |
 | `activation_position.seed` | int | `dataset.master_seed` | Seeds the position generator, which is stateful and owns its own stream. |
@@ -317,7 +317,7 @@ card's `type` says which membrane the backend integrates.
 | Card | Cell model | Targets | What it is |
 |---|---|---|---|
 | `af_remodelled_220ms` | `aliev_panfilov` | CV 80 cm/s, APD90 220 ms | The Phase-1.5 default. Phenomenological, two-variable, cheap. |
-| `courtemanche_control` | `courtemanche` | CV 80 cm/s | Courtemanche-Ramirez-Nattel 1998 human atrial myocyte, control (un-remodelled) conductances. The ionic half of the SEP5 A/B. |
+| `courtemanche_control` | `courtemanche` | CV 80 cm/s | Courtemanche-Ramirez-Nattel 1998 human atrial myocyte, control (un-remodelled) conductances. The ionic half of the model comparison. |
 
 Both cards target the **same conduction velocity**, which is what makes a
 comparison between them a comparison of *membrane models* rather than of two
@@ -329,7 +329,7 @@ than an omission. Aliev-Panfilov solves its time-scale constant from an APD
 target; Courtemanche has no such constant and no closed-form inverse from the
 ionic equations, so its APD is **measured and recorded** under `measured:`
 instead. Card targets are therefore per-model partial. A Courtemanche card *may*
-state an APD90 target — S18c's AF-matched card will, since its conductances are
+state an APD90 target — the AF-matched card will, since its conductances are
 chosen to reach one — and where it does, loading checks it against the card's own
 `measured:` block rather than against a solve.
 
@@ -353,7 +353,7 @@ replacement in the error.
 | Retired key | Replaced by | Why |
 |---|---|---|
 | `run.ap_time_unit_ms`, `run.diffusion`, `run.membrane_eps`, `run.dt_model_units` | `backend.model` (a model card) | These are *solved* from physiological targets, not chosen. `time_unit_ms` in particular sets CV and APD90 in **opposite** directions, so hand-tuning it to fix one silently breaks the other — which is exactly what happened between June and August 2026. Two configs setting them independently would let two banks claim one parameterisation with different physics. |
-| `activation.detection` | `activation_position.detection` | Shipped one level too high in S16a. Here `activation:` is the activation *source* — how the wave is launched — while detection belongs to the crop: `crop_traces` builds one windower from the preprocessor and the position generator. (iafdb-pipeline nests it under `activation:` because there that block *means* activation-based windowing; this side matches its curve and parameter names, not its block path.) |
+| `activation.detection` | `activation_position.detection` | First shipped one level too high. Here `activation:` is the activation *source* — how the wave is launched — while detection belongs to the crop: `crop_traces` builds one windower from the preprocessor and the position generator. (iafdb-pipeline nests it under `activation:` because there that block *means* activation-based windowing; this side matches its curve and parameter names, not its block path.) |
 | `output.also_emit_synthetic_bank` | nothing — both banks are always written | The `synthetic_bank` is not an optional extra; it carries the per-simulation generation config the ClassifierBank deliberately does not. `output.synthetic_bank` sets **where** it lands, never **whether**. |
 
 #### When the crop says a window "does not fit"
@@ -391,19 +391,20 @@ is close to percolation rather than merely fibrotic, and raising the allowance
 buys a bank of tissue that conducts an order of magnitude slower than diseased
 atrium. Fibrosis is modelled as **insulating holes** (replacement scar), so
 `substrate.density_range` values near the 0.5 cap remove enough myocardium to
-nearly disconnect the mesh. See FB-36.
+nearly disconnect the mesh.
 
-#### The detection curve is not recorded in the bank (FB-35)
+#### The detection curve is not recorded in the bank
 
 `activation_position.detection.curve` decides **where each window is cut**, so it changes
 the stored waveform — and neither `ClassifierBank` nor `synthetic_bank` has a
-field to record it in. Recording it properly is an egm-contracts change flowing
-into most of the constellation, which ships as its own wave (FB-35); it is
-deliberately *not* stuffed into `backend_metadata`, which describes the
+field to record it in. Recording it properly is an egm-contracts change that
+flows into every repo reading those schemas, so it is scheduled on its own; it
+is deliberately *not* stuffed into `backend_metadata`, which describes the
 simulator's capture and would read as authoritative about something it does not
 know.
 
-**Until FB-35 lands, `output.description` is the record, maintained by hand.**
+**Until a schema carries it, `output.description` is the record, maintained by
+hand.**
 Two banks generated with different curves are otherwise indistinguishable from
 their contents. The run summary prints the resolved curve for exactly this
 reason — paste it into the description:

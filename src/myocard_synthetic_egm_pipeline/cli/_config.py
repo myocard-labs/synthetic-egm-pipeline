@@ -26,10 +26,10 @@ from typing import Any, Literal
 
 import yaml
 
-# egm-signal owns the bandpass default (mixer block), the position policy
-# (SEP2) and the detection curves (S16a). The generator is SIG1's type, not a
-# local one — see _build_position_generator for why it is constructed rather
-# than wrapped.
+# egm-signal owns the bandpass default (mixer block), the activation-position
+# policy the crop uses, and the detection curves. The generator is egm-signal's
+# type, not a local one — see _build_position_generator for why it is
+# constructed rather than wrapped.
 from myocard_egm_signal import (
     DEFAULT_BIPOLAR_BAND_HZ,
     DEFAULT_BOTTERON_BAND_HZ,
@@ -86,8 +86,9 @@ DEFAULT_MODEL_CARD = "af_remodelled_220ms"
 
 Defaulted rather than optional: a config that omits ``backend.model`` still gets
 the calibrated parameterisation. Falling back to bare constants would silently
-generate uncalibrated physics, which is the failure S38 exists to remove, and
-"the user left out a line" is not a reason to do it.
+generate uncalibrated physics — a run that looks entirely normal and is not,
+which is the failure the card exists to prevent — and "the user left out a
+line" is not a reason to do it.
 """
 
 
@@ -236,12 +237,14 @@ def _build_position_generator(doc: dict[str, Any]) -> UniformPositionGenerator |
     """Construct the position generator from the ``activation_position:`` block.
 
     ``None`` when the block is absent, which means **no cropping** — the trace
-    is the first ``T`` samples of the capture, as before SEP2. Cropping is
-    opt-in rather than defaulted because the position policy decides the
-    positional structure of every bank a run writes, and there is no default
-    that is right by accident: anchored is the arm T1 suspects of enabling a
-    positional shortcut, and a varied range has no natural bounds to assume.
-    Both arms of the §8.9 A/B therefore name their range explicitly.
+    is the first ``T`` samples of the capture, as it was before
+    controlled-position cropping existed. Cropping is opt-in rather than
+    defaulted because the position policy decides the positional structure of
+    every bank a run writes, and there is no default that is right by accident:
+    pinning every activation to one position is the arm suspected of letting a
+    classifier key on *where* the deflection sits rather than on its shape, and
+    a varied range has no natural bounds to assume. Both arms of that
+    comparison therefore name their range explicitly.
 
     The generator is **stateful** — it owns an rng — so it is constructed once
     per run and seeded from the run's ``master_seed``, keeping a run
@@ -298,7 +301,7 @@ def _window_length_samples(doc: dict[str, Any]) -> int:
 
 
 def _build_probe_grid(doc: dict[str, Any]) -> ProbeGrid | None:
-    """Construct the probe sweep from ``activation_position.grid:`` (SEP13).
+    """Construct the probe sweep from ``activation_position.grid:``.
 
     ``None`` for an ordinary run. The block nests inside ``activation_position``
     for the same reason ``detection`` does — it decides where the activation
@@ -307,7 +310,8 @@ def _build_probe_grid(doc: dict[str, Any]) -> ProbeGrid | None:
 
     The fractions are snapped here, at config load, so the run reports what it
     will actually sweep before spending a simulation on it. The snapped values
-    are the grid of record (D6).
+    are the grid of record — what the bank stores and what any analysis reads
+    back, so that the requested fractions never outlive the snapped ones.
     """
     block = _optional(doc, "activation_position", "grid", default=None)
     if block is None:
@@ -363,8 +367,9 @@ def _build_probe_grid(doc: dict[str, Any]) -> ProbeGrid | None:
 #: exactly one activation by construction and is detected with
 #: ``detect_activation``, which is ``argmax g``: no threshold, no candidate
 #: selection, no refractory rule. Accepting them would add config surface that
-#: provably does nothing, which is the unreachable-seam defect S16a exists to
-#: remove, freshly minted.
+#: provably does nothing — a knob that reads as though it were consulted and is
+#: not, which is exactly the unreachable-seam defect that making the detection
+#: curve configurable removed, freshly minted.
 _MULTI_ACTIVATION_DETECTION_KEYS: tuple[str, ...] = (
     "threshold",
     "threshold_rule",
@@ -382,14 +387,15 @@ _MULTI_ACTIVATION_DETECTION_KEYS: tuple[str, ...] = (
 def _reject_retired_activation_detection_block(doc: dict[str, Any]) -> None:
     """Refuse a config carrying ``activation.detection``.
 
-    S16a shipped the block one level too high, under the ``activation:`` spec.
+    The block first shipped one level too high, under the ``activation:`` spec.
     In this repo ``activation:`` is the :class:`ActivationSource` — *how the
     wave is launched* — while detection is part of the **crop**, so the block
     now lives beside the position range it is used with.
 
     Erroring rather than ignoring: the old path silently falls back to the
-    default curve, which is precisely the class of failure S16a existed to
-    remove. A config written against the first spelling would keep running and
+    default curve, which is precisely the class of failure a configurable curve
+    exists to remove — a setting that reads as though it were honoured and is
+    not. A config written against the first spelling would keep running and
     keep producing ``rectified_derivative`` banks while reading as though it had
     asked for something else.
     """
@@ -426,7 +432,7 @@ def _build_detection_preprocessor(
     (``cli/_config.py::DetectionConfig`` there), which is the part that has to
     match: a different spelling would put a translation step inside every
     cross-corpus comparison, and comparing the two corpora on a curve each was
-    windowed with is the point of making it configurable at all (CL-167). The
+    windowed with is the point of making it configurable at all. The
     *path* deliberately differs — their ``activation:`` block means
     activation-based windowing, ours means the activation source.
 
@@ -525,7 +531,8 @@ def _stimulus_delay_ms(doc: dict[str, Any], *, position_high: float | None) -> f
     ``p`` — the same property an IAFDB record has for free by being long. It is
     *not* a way to buy pre-activation morphology: ``phi_e ∝ Σ I_m,i / r_i`` sums
     over the whole mesh, so while nothing is depolarising the lead-in is flat.
-    That flatness is a realism question, deliberately not gated on here (D9).
+    That flatness is a realism question — one for the noise model and the
+    substrate, not for the crop — and is deliberately not gated on here.
     """
     value = _optional(doc, "activation", "stimulus_delay_ms", default=None)
     if value is not None:
@@ -592,7 +599,8 @@ def _build_run_config(
             f"run.trace_duration_ms={trace_duration_ms} at {output_fs_hz} Hz gives "
             f"T={t_samples} samples, which is not a multiple of {WINDOW_LENGTH_MULTIPLE}. "
             "egm-classifier's 1D MobileViT halves the sequence six times, so an "
-            f"off-grid T fails outright downstream (CL-112). Nearest valid: "
+            f"off-grid T fails outright at the first ragged stage rather than "
+            f"degrading. Nearest valid: "
             f"{t_samples - t_samples % WINDOW_LENGTH_MULTIPLE} or "
             f"{t_samples + WINDOW_LENGTH_MULTIPLE - t_samples % WINDOW_LENGTH_MULTIPLE} samples."
         )
@@ -700,22 +708,22 @@ class GenerateDatasetCLIConfig:
     run_config: RunConfig
     cell_model: CellModelSpec
     """Resolved from ``backend.model``. Held here rather than on ``RunConfig``
-    because it is a strategy spec (D2), not a per-run knob."""
-    # Position policy for controlled-position cropping (SEP2). ``None`` means
+    because it is a strategy spec, not a per-run knob."""
+    # Position policy for controlled-position cropping. ``None`` means
     # no cropping was configured. Held here rather than folded into RunConfig
     # because it is stateful (it owns an rng) and RunConfig is a frozen value
     # object the backend receives — a generator on it would make two runs
     # sharing a RunConfig silently share a random stream.
     position_generator: UniformPositionGenerator | None
     probe_grid: ProbeGrid | None
-    """Positional-sensitivity sweep, from ``activation_position.grid`` (S16b).
+    """Positional-sensitivity sweep, from ``activation_position.grid``.
 
     ``None`` for an ordinary run. Mutually exclusive with
     ``position_generator``: exactly one of the two is ever set, because each
     decides where the activation sits in the stored trace.
     """
     detection_preprocessor: DetectionPreprocessor | None
-    """Detection curve the crop anchors on, from ``activation_position.detection`` (S16a).
+    """Detection curve the crop anchors on, from ``activation_position.detection``.
 
     ``None`` exactly when ``position_generator`` is ``None``: the curve lives
     *inside* the position block, so "a curve for a run that never crops" is not
@@ -723,9 +731,10 @@ class GenerateDatasetCLIConfig:
     preprocessor — an absent ``detection`` sub-block resolves to
     ``RectifiedDerivative`` here rather than being left for a downstream default,
     so the CLI can report which curve produced a bank without a "defaulted"
-    branch. That report matters more than usual: **FB-35 leaves the curve out of
-    both bank schemas**, so until it lands the run summary and the hand-written
-    ``output.description`` are the only record of it.
+    branch. That report matters more than usual: **neither bank schema has a
+    field for the detection curve**, so until one gains it the run summary and
+    the hand-written ``output.description`` are the only record of which curve
+    produced a given bank.
     """
 
     # Output
@@ -735,16 +744,17 @@ class GenerateDatasetCLIConfig:
     # otherwise derived as a sibling of the ClassifierBank. Both banks are
     # always written, so there is no 'no path' case.
     synthetic_bank_output: Path
-    # The clean intermediate's own theta bank (D8: one ClassifierBank, one
-    # theta partner). Resolved iff a clean intermediate is requested — with no
+    # The clean intermediate's own theta bank — one ClassifierBank, one theta
+    # partner. Resolved iff a clean intermediate is requested — with no
     # clean ClassifierBank on disk there is nothing to partner, and writing one
     # anyway would leave an orphan theta file no artifact names.
     clean_theta_output: Path | None
     description: str
     bank_id: str | None
-    # Id base for the clean intermediate pair (B13). The mixed pair takes
-    # `bank_id`; without a separate base the clean bank fell back to a
-    # cell-model-derived id, which is the root cause of CL-143.
+    # Id base for the clean intermediate pair. The mixed pair takes `bank_id`;
+    # without a separate base the clean bank fell back to a cell-model-derived
+    # id while its metadata named the *mixed* run's theta file — an id that
+    # matched no artifact on disk, which egm-data's join refuses outright.
     clean_intermediate_bank_id: str | None
 
     # Optional inline mixing
@@ -838,8 +848,8 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
     # valid for the mesh it was solved for.
     # Defaulted, not optional. A config that names no card still gets the
     # calibrated parameterisation rather than falling back to bare constants —
-    # silently generating uncalibrated physics is exactly the failure S38 exists
-    # to remove, and "the user forgot a line" is not a reason to do it.
+    # silently generating uncalibrated physics is exactly the failure the card
+    # exists to prevent, and "the user forgot a line" is not a reason to do it.
     model_reference = _optional(doc, "backend", "model", default=DEFAULT_MODEL_CARD)
     assert isinstance(geometry, Patch2DGeometry)
     try:

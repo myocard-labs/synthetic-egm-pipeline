@@ -287,7 +287,8 @@ def measure(
     repolarisation clears the trace window. It is *not* the paced steady-state
     APD that a published single-cell table reports — for Courtemanche the two
     differ by tens of milliseconds and neither is wrong, they are answers to
-    different questions (:func:`measure_single_cell`, CL-180 trap 1).
+    different questions — see :func:`measure_single_cell`, which reads the
+    paced one at a pinned protocol.
     """
     if t_max_model_units is None:
         t_max_model_units = _crossing_and_repolarisation_budget(
@@ -379,8 +380,8 @@ def measure_anisotropy_ratio(
 
     Separate from :func:`measure` because it costs a second solver run and is
     only interesting when the anisotropy itself is under test — which, since
-    that knob spent the project silently doing nothing (CL-172), is worth being
-    able to ask directly.
+    that knob once spent the life of the project silently doing nothing, is
+    worth being able to ask directly.
     """
     velocities: dict[Edge, float] = {}
     for edge in ("left", "top"):

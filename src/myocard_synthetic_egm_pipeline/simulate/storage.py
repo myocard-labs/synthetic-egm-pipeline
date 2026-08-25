@@ -79,8 +79,8 @@ def write_synthetic_bank_from_dataset(
     """Build + write a ``synthetic_bank`` 2.0 for a finished DatasetResult.
 
     This is the artifact that carries θ and the per-simulation
-    generation config — the parallel bank egm-studio's T4 views read
-    from, joined to the ClassifierBank on ``simulation_id``.
+    generation config — the parallel bank egm-studio's bank-to-bank views
+    read from, joined to the ClassifierBank on ``simulation_id``.
 
     Clean runs leave the mixer arguments unset. The **inline mixer
     path** passes the mixed signals plus the three per-trace noise

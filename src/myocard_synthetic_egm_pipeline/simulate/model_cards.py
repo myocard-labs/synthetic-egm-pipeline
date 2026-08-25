@@ -11,9 +11,10 @@ generation config for three reasons:
 2. **Reuse.** A handful of standard parameterisations, referenced by name, keeps
    generation configs about geometry and output rather than about membrane
    kinetics.
-3. **The STU4 lifecycle.** The estimator's output is a *region* of parameters,
-   not a point. Sampling it means writing many parameterisations, which is
-   natural if a parameterisation is a file.
+3. **Parameter estimation.** An estimator fitted against real recordings
+   returns a *region* of parameters, not a point. Sampling that region means
+   writing many parameterisations, which is natural if a parameterisation is a
+   file and unbearable if it is a block inside a config.
 
 Resolution order
 ----------------
@@ -35,8 +36,9 @@ What a bank records
 The **resolved contents**, not the path. A path is a pointer into a mutable
 filesystem; six months from now it may name a different file, or none. The card
 name is kept alongside as a human-readable label, but the values are the record.
-Same reasoning that made bank references record a relative path *and* an id
-rather than either alone (S13 / B13).
+Same reasoning that makes a bank reference record a relative path *and* an
+id rather than either alone: the path locates the file today, the id says which
+artifact it was.
 """
 
 from __future__ import annotations

@@ -69,8 +69,8 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
 
 # Aliev-Panfilov step defaults, retained ONLY as RunConfig fallbacks.
 #
-# These were the operative values until S38b; they now live on RunConfig
-# (``dt_model_units`` / ``dr_model_units``) so a generated bank records what
+# These were the operative values until the calibration landed; they now live
+# on RunConfig (``dt_model_units`` / ``dr_model_units``) so a bank records what
 # produced it. Kept here because the RunConfig defaults have to come from
 # somewhere and this is where the reasoning lives, but nothing reads them
 # during a simulation any more.
@@ -132,9 +132,9 @@ class FinitewaveBackend(SimulationBackend):
 
         # --- 2. Build the membrane model and the tissue ---------------------
         # Every one of these came out of a module constant or a Finitewave
-        # default until S38b. They determine CV and APD, so the no-hardcoding
-        # rule required them in config; they arrive here already solved from
-        # physiological targets by simulate.calibration (CL-173/174).
+        # default until the calibration landed. They determine CV and APD, so
+        # the no-hardcoding rule required them in config; they arrive here
+        # already solved from physiological targets by simulate.calibration.
         native = _build_model_2d(
             cell_model=cell_model,
             geometry=geometry,
@@ -210,7 +210,7 @@ class FinitewaveBackend(SimulationBackend):
             "capture_step_integration": int(capture_step),
             "fs_capture_hz": float(fs_capture_hz),
             # Which finitewave class integrated this — provenance about the
-            # solver, and nothing more. Until S18a the bank recovered the
+            # solver, and nothing more. The bank used to recover the
             # *cell model's identity* from this string; that identity now
             # comes from the spec, so no consumer keys off a third party's
             # class name.
@@ -270,7 +270,9 @@ def _build_model_2d(
     **Refuses an unfamiliar membrane model BY NAME.** Duck-typing into one we
     have no measured calibration for would produce numbers rather than an error,
     which is the worse failure: every model here has constants that were
-    measured against *it*, and applying them to another is how CL-170 happened.
+    measured against *it*, and applying one model's constants to another is
+    how this project once reported a transverse conduction velocity under a
+    longitudinal label.
 
     The anisotropy tensor is configured here too, and is deliberately
     **model-agnostic**: :func:`_configure_anisotropy_2d` writes a pure *shape*
@@ -338,14 +340,15 @@ def _build_model_2d(
 #: Explicit rather than derived, so a name the solver cannot honour is refused
 #: instead of creating a dead attribute — assigning an unknown name to a Python
 #: object is not an error, which is exactly how ``anisotropy_ratio`` spent the
-#: project doing nothing (CL-172).
+#: life of the project doing nothing.
 #:
-#: **`g_Kur_scale` is deliberately absent and S18c will need it.** Finitewave
-#: computes I_Kur's conductance inside the kernel as a function of voltage
+#: **`g_Kur_scale` is deliberately absent, and an AF-remodelled card will need
+#: it.** Finitewave computes I_Kur's conductance inside the kernel as a
+#: function of voltage
 #: (``gkur = 0.005 + 0.05 / (1 + exp(-(u - 15) / 13))``) rather than reading a
 #: parameter, so the cAF -49 % I_Kur scaling cannot be applied by assignment in
-#: 0.9.3. It has to be a kernel change or a fork, and finding that out at
-#: sweep time rather than here would cost a day.
+#: 0.9.3. It has to be a kernel change or a fork, and finding that out when a
+#: remodelling sweep silently moved three currents of four would cost a day.
 _CRN_CONDUCTANCE_ATTRS: dict[str, str] = {
     "g_Na_scale": "gna",
     "g_K1_scale": "gk1",
@@ -383,7 +386,7 @@ def _apply_conductance_scalings(model: Any, params: Mapping[str, float]) -> None
 def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
     """Build a healthy 2D tissue patch with a uniform fiber field.
 
-    **Fibre components are stored in Finitewave's axis order, not ours** (S39).
+    **Fibre components are stored in Finitewave's axis order, not ours.**
     ``fibers[..., 0]`` feeds ``d_xx``, which ``compute_weights`` applies to the
     ``(i-1, j)`` neighbour — so component 0 acts along mesh **axis-0**. Our
     convention is ``x = j`` (axis-1), ``y = i`` (axis-0), and
@@ -397,15 +400,15 @@ def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
 
     Written the other way round, ``fiber_angle_rad = 0`` ran the fibres along
     our **+y** while every doc and config comment said ``+x``. That is the same
-    root cause as the electrode transpose (CL-169/CL-170): Finitewave uses
+    root cause as the electrode transpose: Finitewave uses
     "x" for axis-0 throughout, and we use it for axis-1, so every physical
     ``(x, y)`` handed across the boundary has to swap.
 
     Because the tensor makes the along-fibre axis conduct measurably faster
     (3.09x at the shipped settings), getting this backwards did not merely
     mislabel an axis — it put the fast axis at 90 degrees to the intended one,
-    and every conduction-velocity measurement taken before CL-170 was of the
-    transverse axis under a longitudinal label.
+    and every conduction-velocity measurement taken before it was found was of
+    the transverse axis under a longitudinal label.
     """
     import math
 
@@ -421,7 +424,7 @@ def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
 def _configure_anisotropy_2d(model: Any, geometry: Patch2DGeometry) -> None:
     """Shape the diffusion tensor so the realized CV ratio is the requested one.
 
-    **The knobs live on the STENCIL, not on the model** (CL-172). Finitewave
+    **The knobs live on the STENCIL, not on the model.** Finitewave
     reads ``self.D_al`` / ``self.D_ac`` inside
     ``AsymmetricStencil2D.compute_diffusion_components``. Until 2026-08-14 this
     helper assigned them to the *model*, where Python created two attributes

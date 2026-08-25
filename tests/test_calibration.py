@@ -66,9 +66,9 @@ DR_MODEL_UNITS = 0.25
 #: unpacking it hides exactly the argument mistakes a type checker is for.
 MESH = {"dr_mm": DR_MM, "dr_model_units": DR_MODEL_UNITS}
 
-#: Named separately because ``ModelTargets.apd90_ms`` is ``float | None`` since
-#: S18b — optional *per model*, since Courtemanche measures APD rather than
-#: solving it — and the Aliev-Panfilov solve takes a plain float.
+#: Named separately because ``ModelTargets.apd90_ms`` is ``float | None`` —
+#: optional *per model*, since Courtemanche measures APD rather than solving
+#: it — while the Aliev-Panfilov solve takes a plain float.
 ATRIAL_APD90_MS = 220.0
 ATRIAL = ModelTargets(conduction_velocity_cm_s=80.0, apd90_ms=ATRIAL_APD90_MS)
 
@@ -79,7 +79,7 @@ def calibrate(
     dr_mm: float = DR_MM,
     dr_model_units: float = DR_MODEL_UNITS,
 ) -> AlievPanfilovCellModel:
-    """Test-local shim: the solve takes scalars, deliberately (FB-34).
+    """Test-local shim: the solve takes scalars, deliberately.
 
     That signature is the migration seam for moving targets onto
     ``SubstrateStrategy`` — the solve must not learn where they live. Tests
@@ -225,10 +225,10 @@ def test_the_shipped_apd_target_clears_the_trace_duration() -> None:
 
     Repolarisation leaves the cropped window iff ``APD > T * (1 - p)``. Since
     ``p`` can in principle be small, only ``APD >= T`` guarantees it for the
-    whole position range. A 180 ms target — which is what this chat originally
-    proposed, and what the AF literature suggests if you do not notice that our
-    single stimulus into rested tissue is a *long*-cycle beat — fails for any
-    ``p < 0.0625`` (CL-176/178).
+    whole position range. A 180 ms target — which is what the AF literature
+    suggests if you do not notice that our single stimulus into rested tissue
+    is a *long*-cycle beat, and what was very nearly shipped — fails for any
+    ``p < 0.0625``.
     """
     from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
 
@@ -390,10 +390,11 @@ def test_the_time_conversion_belongs_to_the_cell_model() -> None:
 def test_a_run_config_carries_the_card_without_carrying_its_parameters() -> None:
     """The card rides on ``RunConfig`` as a **label**, not as knobs.
 
-    S38b put ``eps``, ``diffusion`` and the rest here, which design note D2
-    forbids — a Courtemanche run would have carried an ``eps`` meaning nothing
-    to it. What remains is provenance: which named parameterisation produced
-    this bank, in physiological terms rather than four solved numbers.
+    An earlier revision put ``eps``, ``diffusion`` and the rest here, on the
+    config object every backend shares — so a Courtemanche run would have
+    carried an ``eps`` meaning nothing to it. What remains is provenance:
+    which named parameterisation produced this bank, in physiological terms
+    rather than four solved numbers.
     """
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
     config = RunConfig(trace_duration_ms=192.0, output_fs_hz=1000.0, model_card=card)
@@ -402,7 +403,7 @@ def test_a_run_config_carries_the_card_without_carrying_its_parameters() -> None
     for gone in ("diffusion", "membrane_eps", "dt_model_units", "ap_time_unit_ms"):
         assert not hasattr(config, gone), (
             f"RunConfig still carries {gone!r}; cell-model parameters belong on "
-            "the CellModelSpec (D2)."
+            "the CellModelSpec, which is per-model."
         )
 
 
@@ -436,7 +437,8 @@ def test_solving_then_simulating_returns_the_targets() -> None:
     from myocard_synthetic_egm_pipeline.backends.finitewave.measure import measure
 
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
-    # Anisotropy is geometry's, not the card's (FB-34): the default is 2.0.
+    # Anisotropy is fibre architecture, so it lives on the geometry spec
+    # rather than on the card: the default is 2.0.
     geometry = Patch2DGeometry(size_mm=16.0, dr_mm=DR_MM)
 
     assert isinstance(card.solved, AlievPanfilovCellModel)
@@ -467,7 +469,7 @@ def test_solving_then_simulating_returns_the_targets() -> None:
 
 @pytest.mark.slow
 def test_the_realized_anisotropy_matches_the_card() -> None:
-    """The knob S38a made operative, checked at the value S38b ships."""
+    """The knob that spent the project inoperative, checked at the shipped value."""
     from myocard_synthetic_egm_pipeline.backends.finitewave.measure import (
         measure_anisotropy_ratio,
     )
@@ -488,7 +490,7 @@ def test_the_realized_anisotropy_matches_the_card() -> None:
 def test_no_second_deflection_survives_inside_the_cropped_window() -> None:
     """The shortcut is gone — asserted where it actually mattered.
 
-    **On the cropped trace, not the raw capture** (CL-178). The simulation runs
+    **On the cropped trace, not the raw capture.** The simulation runs
     far longer than the 192-sample window, which is cut out of it afterwards at
     position ``p``; "inside the window" is a statement about the crop and does
     not follow from anything measured on the capture. The original 51 ms

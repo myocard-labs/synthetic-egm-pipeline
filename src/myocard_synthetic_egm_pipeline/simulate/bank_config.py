@@ -10,7 +10,7 @@ repo's strategy specs into those egm-contracts models.
 Why it is its own module rather than part of ``builders.py``: the
 mapping is the **producer's half of a cross-repo contract**, and the two
 sides are meant to be readable against each other. egm-contracts' field
-names deliberately follow ``specs.py`` (CL-087), so most of this file is
+names deliberately follow ``specs.py``, so most of this file is
 one-to-one; the places where it *isn't* are the interesting ones and are
 commented individually.
 
@@ -22,8 +22,8 @@ spec object and returns a Pydantic model.
 ``RootModel`` wrapper (``Geometry``, ``Substrate``, ``Electrodes``,
 ``Backend``) while multi-variant unions codegen to a proper discriminated
 union used directly (``cell_model``, ``activation``, ``label_policy``).
-That asymmetry is egm-contracts' FB-15, not something this module can
-fix, so the wrappers are applied explicitly at the call site in
+That asymmetry is a codegen artifact on the contracts side, not something
+this module can fix, so the wrappers are applied explicitly at the call site in
 :func:`build_simulation_columns` rather than hidden inside each mapper —
 otherwise the mappers would return two different kinds of thing for no
 reason visible here.
@@ -93,8 +93,8 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
     UniformRandomFibrosis,
 )
 
-# Union of every activation variant the 2.0 schema accepts. Phase 1.5
-# builds only the planar-edge one; `point` / `s1s2` arrive with SEP7.
+# Union of every activation variant the 2.0 schema accepts. This producer
+# builds only the planar-edge one; `point` / `s1s2` are schema-only so far.
 ActivationModel = PlanarEdgeActivation | PointActivation | S1S2Activation
 LabelPolicyModel = GlobalDensityLabel | LocalDensityLabel
 CellModelModel = CourtemancheCellModel | AlievPanfilovCellModel
@@ -168,14 +168,16 @@ def activation_model(activation: ActivationSource) -> ActivationModel:
     """Map an activation spec to its contracts model.
 
     ``PlanarEdgeStimulus`` holds a single ``edge``; the schema's
-    ``planar_edge.edges`` is a **list** (CL-087), deliberately ahead of
-    the producer so SEP6's multi-edge feature needs no contracts bump.
-    Today's single edge is written as a one-element list.
+    ``planar_edge.edges`` is a **list**, deliberately ahead of the
+    producer: a multi-edge stimulus is a foreseen feature, and having the
+    schema already plural means adding it needs no contracts bump and no
+    migration of banks written before it. Today's single edge is written
+    as a one-element list.
     """
     if not isinstance(activation, PlanarEdgeStimulus):
         raise UnsupportedSpecError(
             f"synthetic_bank 2.0 has no activation variant wired for {activation.type!r}. "
-            "point / s1s2 exist in the schema but are built by SEP7."
+            "point / s1s2 exist in the schema but no producer builds them yet."
         )
     return PlanarEdgeActivation(
         type="planar_edge",
@@ -245,8 +247,8 @@ def backend_model(
 
     ``ap_time_unit_ms`` is deliberately excluded: it is the
     Aliev-Panfilov model-time calibration and therefore belongs to the
-    *cell model*, not the backend (see :func:`cell_model_model`). Since
-    S18a no backend in this repo emits it — the cell-model spec is the
+    *cell model*, not the backend (see :func:`cell_model_model`). No
+    backend in this repo emits it any more — the cell-model spec is the
     source — but the exclusion stays: the rule is "this fact lives on the
     cell model", and a backend that reports it anyway must not get a
     second, independently-editable copy of it into ``params``.
@@ -295,8 +297,7 @@ def cell_model_model(cell_model: CellModelSpec) -> CellModelModel:
     name finitewave happens to use — then read ``ap_time_unit_ms`` back
     out of the same dict. Both facts were the runner's already; the round
     trip through the backend's provenance bag existed only because
-    :class:`~...result.SimulationSpecs` had no cell model to hand over
-    (S18a).
+    :class:`~...result.SimulationSpecs` had no cell model to hand over.
 
     ``ap_time_unit_ms`` is still written, because the contract's
     ``AlievPanfilovCellModel`` still requires it. It now comes from
@@ -306,8 +307,9 @@ def cell_model_model(cell_model: CellModelSpec) -> CellModelModel:
     The Courtemanche variant carries **no** time-unit field, in the schema
     as here: it runs in milliseconds, so there is nothing to calibrate and
     nothing to record. Its ``params`` are the conductance scalings, which
-    are chosen rather than derived and are what SEP11's theta-spec points
-    into by path — hence a mapping rather than named fields.
+    are chosen rather than derived and are what a parameter sweep's
+    theta-spec points into by path — hence a mapping rather than named
+    fields.
     """
     if isinstance(cell_model, ProducerAlievPanfilovCellModel):
         return AlievPanfilovCellModel(
@@ -333,9 +335,9 @@ def label_policy_model(policy: LabelPolicy) -> LabelPolicyModel:
 
     The producer's dataclasses keep a scalar ``threshold`` — it is the
     ergonomic config surface for a binary task. The contract is an
-    ascending **list** (N thresholds = N+1 classes, CL-088), so that
-    Phase-2 multiclass severity is a longer list rather than a new
-    schema variant. Class *names* are deliberately not written here:
+    ascending **list** (N thresholds = N+1 classes), so that a later
+    multiclass severity label is a longer list rather than a new schema
+    variant. Class *names* are deliberately not written here:
     they live once in the per-simulation ``label_names`` map, and
     duplicating them into the policy would let the two disagree.
     """
@@ -376,10 +378,10 @@ def build_simulation_columns(
     to sample from.
 
     ``seed`` is the exception: it is the **run's master seed**, written
-    identically into every row (CL-096). It is bank-scoped like
+    identically into every row. It is bank-scoped like
     ``generation_params``, and 2.0 put it in the per-simulation group by
-    oversight — **FB-16** moves it to a root attr in the Phase-2 bump,
-    at which point the repetition goes away. Writing the per-simulation
+    oversight; a later schema bump moves it to a root attribute, at which
+    point the repetition goes away. Writing the per-simulation
     derived seed here instead would silently change the column's meaning
     with no version bump to signal it, which is the worse failure.
     """
@@ -408,7 +410,7 @@ def build_simulation_columns(
         simulation_ids.append(int(run_meta.get("simulation_id", 0)))
         seeds.append(int(master_seed))
         # Single-variant unions need the RootModel wrapper; multi-variant
-        # ones are used directly. See the module docstring (FB-15).
+        # ones are used directly. See the module docstring.
         geometries.append(Geometry(geometry_model(specs.geometry)))
         cell_models.append(cell_model_model(specs.cell_model))
         substrates.append(Substrate(substrate_model(specs.substrate)))

@@ -6,8 +6,8 @@ backend's ``RawSimulationResult`` into the runner-side
 :class:`~myocard_synthetic_egm_pipeline.simulate.result.SimulationResult`
 that label policies and storage consume.
 
-:func:`run_probe_sweep` is its sibling for the positional-sensitivity probe
-(SEP13): one solve, **one result per crop offset**. It returns a list rather
+:func:`run_probe_sweep` is its sibling for the positional-sensitivity probe:
+one solve, **one result per crop offset**. It returns a list rather
 than being a mode on ``run_single``, because the return type genuinely differs
 and a conditional one would push the branch onto every caller. Both share the
 capture and the result-building below, so the two cannot drift on what a
@@ -85,12 +85,12 @@ def run_single(
         Four of the five strategy specs; the backend's adapters translate
         them into the backend's native representation.
     cell_model
-        The fifth spec (design note D2) — the membrane kinetics each node
-        runs. Handed to the backend *and* recorded on the result's
+        The fifth strategy spec — the membrane kinetics each node runs.
+        Handed to the backend *and* recorded on the result's
         :class:`~myocard_synthetic_egm_pipeline.simulate.result.SimulationSpecs`,
-        which is where the bank serializer reads the model's identity
-        from (S18a). It used to read the class name the backend reported
-        instead.
+        which is where the bank serializer reads the model's identity from.
+        It used to read the class name the backend reported instead, which
+        made every bank's identity depend on a third party's class naming.
     backend
         Concrete :class:`SimulationBackend`. The runner is generic over
         which backend ran.
@@ -101,7 +101,7 @@ def run_single(
         Reproducible source of randomness for any per-sim sampling the
         backend's strategy adapters do (e.g. fibrosis pattern draw).
     position_generator
-        egm-signal's position generator (SEP2). When supplied, each bipolar
+        egm-signal's position generator. When supplied, each bipolar
         trace is cropped to a ``T``-sample window with its activation at a
         sampled fractional position; when ``None`` the trace is the first
         ``T`` samples of the capture, as before cropping existed.
@@ -111,7 +111,7 @@ def run_single(
         the backend, so putting it there would let two runs sharing a config
         silently share one random stream.
     detection_preprocessor
-        The detection curve the crop anchors on (S16a);
+        The detection curve the crop anchors on;
         :func:`~myocard_synthetic_egm_pipeline.simulate.cropping.default_preprocessor`
         when ``None``. Read only when ``position_generator`` is set — with no
         crop there is nothing to detect for.
@@ -120,10 +120,10 @@ def run_single(
         so every bank in the project's history was windowed with
         ``RectifiedDerivative`` and no config could say otherwise.
 
-        **Not recorded in either bank — FB-35.** The curve decides *where the
-        window is cut*, so it changes the stored waveform, and neither schema
-        has anywhere to put it. Until FB-35 lands the bank's ``description`` is
-        the record, maintained by hand; it is deliberately not smuggled into
+        **Not recorded in either bank.** The curve decides *where the window
+        is cut*, so it changes the stored waveform, and neither schema has
+        anywhere to put it. Until one gains a field the bank's ``description``
+        is the record, maintained by hand; it is deliberately not smuggled into
         ``backend_metadata``, which describes the simulator's capture and would
         read as authoritative about something it does not know.
     """
@@ -139,7 +139,7 @@ def run_single(
     )
     target_samples = _target_samples(config)
 
-    # --- 5. Place the window (SEP2) -------------------------------------
+    # --- 5. Place the window ---------------------------------------------
     # With a position policy the trace is a T-sample window cut around each
     # pair's *detected* activation; without one it is the leading T samples,
     # which is what the producer did before cropping existed.
@@ -182,7 +182,7 @@ def run_probe_sweep(
     grid: ProbeGrid,
     detection_preprocessor: DetectionPreprocessor | None = None,
 ) -> list[SimulationResult]:
-    """Solve once, then return **one result per grid point** (SEP13 / S16b).
+    """Solve once, then return **one result per grid point**.
 
     A probe emits N simulations that differ only in where the window was cut.
     Reusing a single solve is what makes that cheap; it is not what makes them
@@ -282,8 +282,8 @@ def _capture_bipolar(
     # This used to zero-pad "so the bank stays uniform", which is uniform in
     # the worst way: zeros are perfectly flat and always at the tail, so a
     # padded trace carries a positional regularity a classifier can key on —
-    # exactly the shortcut controlled-position cropping (T1) exists to
-    # remove. It is the same argument egm-classifier makes in CL-112 for
+    # exactly the positional shortcut that controlled-position cropping
+    # exists to remove. It is the same argument egm-classifier makes for
     # cropping rather than padding at the dataset boundary. Under correct
     # sizing (simulate.sizing) this branch is unreachable; if it fires, the
     # sizing is wrong and silently manufacturing data would hide that.

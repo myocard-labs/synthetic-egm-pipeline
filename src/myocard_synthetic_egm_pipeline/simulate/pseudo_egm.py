@@ -42,11 +42,11 @@ Worth stating, because the answer surprised us: **two of the three.**
 
 That gap is how two kernels came to disagree on the physics unnoticed: this one
 was thoroughly unit-tested and irrelevant, while the one that produced the data
-was untested and authoritative. From S40 :func:`compute_phi_e` is promoted to
+was untested and authoritative. :func:`compute_phi_e` is therefore promoted to
 the **numerical reference** the production kernel is checked against — but only
 on isotropic, unmasked tissue, because the Laplacian here is a plain 5-point
 stencil while the production path uses Finitewave's anisotropic, myocardium-
-masked diffusion kernel. See ``project/phase_1_5_plan.md`` S40.
+masked diffusion kernel.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def compute_phi_e(
         phi_e[:, e_idx] = (lap * weight[np.newaxis, :, :]).sum(axis=(1, 2))
 
     # The 1/(4 pi sigma_e) of the Plonsey / Gima-Rudy integral. A constant
-    # scale, so it changes no morphology and no classification — added (S40)
+    # scale, so it changes no morphology and no classification. It is here
     # only so this and the production kernel are directly comparable, which is
     # the whole point of keeping this function around.
     phi_e *= 1.0 / (4.0 * np.pi * conductivity)
