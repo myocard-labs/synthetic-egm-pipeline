@@ -185,6 +185,7 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
     geometry, electrodes, config = _build_run_inputs()
     substrate = UniformRandomFibrosis(density=0.42)
     activation = PlanarEdgeStimulus(edge="left")
+    cell_model = _shipped_cell_model()
 
     result = run_single(
         geometry=geometry,
@@ -192,7 +193,7 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
         activation=activation,
         electrodes=electrodes,
         backend=mock_backend,
-        cell_model=_shipped_cell_model(),
+        cell_model=cell_model,
         config=config,
         rng=np.random.default_rng(0),
     )
@@ -201,6 +202,9 @@ def test_run_single_carries_the_realized_specs(mock_backend: SimulationBackend) 
     assert result.specs.substrate is substrate
     assert result.specs.activation is activation
     assert result.specs.electrodes is electrodes
+    # The fifth spec (S18a). Without it the bank had to reconstruct the
+    # model's identity from the class name the backend reported.
+    assert result.specs.cell_model is cell_model
     # The sampled per-sim values are recoverable from the specs, which is
     # the point — run_metadata's copies are a lossy convenience view.
     assert result.specs.substrate.density == 0.42

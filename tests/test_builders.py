@@ -9,6 +9,7 @@ every top-level provenance field.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +33,14 @@ from myocard_synthetic_egm_pipeline.simulate import (
     build_clean_trace_metadata,
     build_synthetic_bank_from_dataset,
 )
+from myocard_synthetic_egm_pipeline.simulate.bank_config import (
+    UnsupportedSpecError,
+    cell_model_model,
+)
 from myocard_synthetic_egm_pipeline.simulate.builders import AMP_TYPE
+from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    AlievPanfilovCellModel as ProducerAlievPanfilovCellModel,
+)
 
 # ---------------------------------------------------------------------------
 # build_clean_trace_metadata
@@ -503,6 +511,129 @@ def test_backend_object_fills_its_typed_fields_from_metadata(
     cell_model = bank.simulations.cell_model[0]
     assert isinstance(cell_model, AlievPanfilovCellModel)
     assert cell_model.ap_time_unit_ms is not None
+
+
+# ---------------------------------------------------------------------------
+# The cell model comes from the spec, not from the backend's class name (S18a)
+# ---------------------------------------------------------------------------
+
+
+def _with_backend_metadata(dataset_result: DatasetResult, **overrides: object) -> DatasetResult:
+    """Copy a DatasetResult with every result's ``backend_metadata`` overridden.
+
+    The lever these tests pull. They are the "what if this input were
+    ignored?" check for the identity path: the metadata is made to *lie*,
+    and the bank must not notice.
+    """
+    results = []
+    for result in dataset_result.results:
+        run_metadata = dict(result.run_metadata)
+        run_metadata["backend_metadata"] = {
+            **dict(run_metadata.get("backend_metadata", {})),
+            **overrides,
+        }
+        results.append(replace(result, run_metadata=run_metadata))
+    return replace(dataset_result, results=results)
+
+
+def test_cell_model_identity_ignores_the_backends_class_name(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """``model_class`` is provenance about the solver, not the model's identity.
+
+    Until S18a the bank recovered the cell model by matching this string
+    against ``"AlievPanfilov2D"`` — so the identity of every simulation
+    this project has recorded rode on the class name a third-party
+    package happened to choose, and a rename upstream would have written
+    a bank that mislabelled its own physics.
+
+    The metadata here says something else entirely; the spec says
+    Aliev-Panfilov, and the spec is what ran.
+    """
+    lying = _with_backend_metadata(
+        small_dataset_result,
+        model_class="TotallyDifferentModel3D",
+    )
+
+    bank = build_synthetic_bank_from_dataset(
+        dataset_result=lying,
+        config=small_dataset_config,
+    )
+    classifier = build_classifier_bank_from_dataset(
+        dataset_result=lying,
+        config=small_dataset_config,
+        bank_path=Path("bank.h5"),
+    )
+
+    assert bank.simulations.cell_model[0].type == "aliev_panfilov"
+    # The derived bank ids named the model from the same string.
+    assert classifier.id is not None
+    assert bank.bank_id is not None
+    assert "aliev_panfilov" in classifier.id
+    assert "totally_different_model3_d" not in classifier.id
+    assert "aliev_panfilov" in bank.bank_id
+
+
+def test_ap_time_unit_comes_from_the_spec_not_the_metadata(
+    small_dataset_result: DatasetResult,
+    small_dataset_config: DatasetConfig,
+) -> None:
+    """The contract still wants ``ap_time_unit_ms``; its source moved.
+
+    S18a changed **where** the number comes from, not what lands on
+    disk — so the check is that a bank built from a result whose
+    metadata carries a *different* value still records the spec's. Read
+    the other way round, this is what stops the calibration the solver
+    actually integrated and the calibration the bank claims from drifting
+    apart: there is now one copy, and it is the one the backend was
+    handed.
+    """
+    spec = small_dataset_result.results[0].specs.cell_model
+    assert isinstance(spec, ProducerAlievPanfilovCellModel)
+    spec_value = spec.time_unit_ms
+    lying = _with_backend_metadata(small_dataset_result, ap_time_unit_ms=spec_value * 3.0)
+
+    bank = build_synthetic_bank_from_dataset(
+        dataset_result=lying,
+        config=small_dataset_config,
+    )
+
+    cell_model = bank.simulations.cell_model[0]
+    assert isinstance(cell_model, AlievPanfilovCellModel)
+    assert cell_model.ap_time_unit_ms == pytest.approx(spec_value)
+
+
+def test_cell_model_mapper_refuses_an_unwired_spec() -> None:
+    """A spec the mapper has no branch for refuses rather than guesses.
+
+    A spec the mapper has no branch for is a bank whose per-simulation
+    config would not describe the simulation that produced it — the
+    failure the 2.0 restructure exists to prevent — so it raises, exactly
+    as the activation and electrode mappers do for their unbuilt
+    variants. Courtemanche was the placeholder here until S18b wired it;
+    the guard is about the *next* model, so it now names one the schema
+    itself does not have.
+    """
+
+    class _NotYetBuilt:
+        dt_model_units = 0.01
+
+        @property
+        def type(self) -> str:
+            return "hodgkin_huxley"
+
+        def ms_to_model_time(self, duration_ms: float) -> float:
+            return duration_ms
+
+        def stability_limit(self, *, dr_model_units: float, dimensions: int = 2) -> float:
+            return 1.0
+
+        def to_metadata(self) -> dict[str, object]:
+            return {}
+
+    with pytest.raises(UnsupportedSpecError, match="hodgkin_huxley"):
+        cell_model_model(_NotYetBuilt())
 
 
 def test_substrate_summary_carries_the_realized_draw(

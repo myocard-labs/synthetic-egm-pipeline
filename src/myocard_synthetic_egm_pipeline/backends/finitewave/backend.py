@@ -1,9 +1,13 @@
-"""FinitewaveBackend — Aliev-Panfilov 2D solver + our EGM tracker forward calc.
+"""FinitewaveBackend — 2D solver + our EGM tracker forward calc.
 
 This file is the only place in the repo that imports ``finitewave``
-(Guardrail 1 in ``project/architecture.md``). It translates the four
+(Guardrail 1 in ``project/architecture.md``). It translates the five
 public strategy specs into Finitewave's native API:
 
+- :class:`~myocard_synthetic_egm_pipeline.simulate.cell_models.AlievPanfilovCellModel`
+  → :class:`finitewave.AlievPanfilov2D`, and
+  :class:`~myocard_synthetic_egm_pipeline.simulate.cell_models.CourtemancheCellModel`
+  → :class:`finitewave.Courtemanche2D`, via :func:`_build_model_2d`
 - :class:`~myocard_synthetic_egm_pipeline.simulate.specs.Patch2DGeometry`
   → :class:`finitewave.CardiacTissue2D` with anisotropic diffusion
 - :class:`~myocard_synthetic_egm_pipeline.simulate.specs.UniformRandomFibrosis`
@@ -35,6 +39,8 @@ Phase-1 limitations:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import finitewave as fw
@@ -46,6 +52,7 @@ from myocard_synthetic_egm_pipeline.backends.finitewave.egm_kernel import EGMTra
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     AlievPanfilovCellModel,
     CellModelSpec,
+    CourtemancheCellModel,
 )
 from myocard_synthetic_egm_pipeline.simulate.model_cards import card_provenance
 from myocard_synthetic_egm_pipeline.simulate.result import RawSimulationResult
@@ -85,10 +92,12 @@ backend_metadata so the bank records which backend it came from."""
 
 
 class FinitewaveBackend(SimulationBackend):
-    """Concrete backend wrapping Finitewave's AlievPanfilov2D solver.
+    """Concrete backend wrapping Finitewave's 2D monodomain solvers.
 
     Instantiate once; reuse across simulations — the backend itself
-    holds no per-simulation state.
+    holds no per-simulation state. Which membrane model integrates a given
+    simulation is the ``cell_model`` spec's business, not the backend's
+    (:func:`_build_model_2d`).
     """
 
     name: str = "finitewave"
@@ -114,14 +123,6 @@ class FinitewaveBackend(SimulationBackend):
                 "FinitewaveBackend supports only 'centered_grid_2d' electrode placement; "
                 f"got {electrodes.type!r}."
             )
-        # Refuse an unfamiliar membrane model BY NAME. Duck-typing into one we
-        # have no measured calibration for would produce numbers rather than an
-        # error, which is the worse failure. Courtemanche lands here at SEP5.
-        if not isinstance(cell_model, AlievPanfilovCellModel):
-            raise ValueError(
-                "FinitewaveBackend currently integrates only the Aliev-Panfilov "
-                f"cell model; got {cell_model.type!r}."
-            )
 
         # Strategy types are checked at runtime via the dispatch in the
         # private helpers; isinstance narrows the typing here so the
@@ -129,32 +130,19 @@ class FinitewaveBackend(SimulationBackend):
         assert isinstance(geometry, Patch2DGeometry)
         assert isinstance(electrodes, CenteredGrid2D)
 
-        # --- 2. Build the AP model and the tissue ---------------------------
+        # --- 2. Build the membrane model and the tissue ---------------------
         # Every one of these came out of a module constant or a Finitewave
         # default until S38b. They determine CV and APD, so the no-hardcoding
         # rule required them in config; they arrive here already solved from
         # physiological targets by simulate.calibration (CL-173/174).
-        model = fw.AlievPanfilov2D()
-        model.dt = cell_model.dt_model_units
-        model.dr = config.dr_model_units
-        model.D_model = cell_model.diffusion
-        model.eps = cell_model.eps
-
-        # The stability bound is a joint property: diffusion is the cell model's,
-        # the grid step is the backend's. Checked here because this is the only
-        # place both are in hand -- and because violating it does not crash, it
-        # writes a well-formed bank full of a diverged field.
-        limit = cell_model.stability_limit(dr_model_units=config.dr_model_units)
-        if cell_model.dt_model_units > limit:
-            raise ValueError(
-                f"dt={cell_model.dt_model_units} exceeds the explicit-scheme bound "
-                f"{limit:.6g} at diffusion={cell_model.diffusion}, "
-                f"dr={config.dr_model_units}. Derive dt with "
-                "simulate.cell_models.calibrate_aliev_panfilov rather than by hand."
-            )
+        native = _build_model_2d(
+            cell_model=cell_model,
+            geometry=geometry,
+            dr_model_units=config.dr_model_units,
+        )
+        model = native.model
 
         tissue = _build_tissue_2d(geometry)
-        _configure_anisotropy_2d(model, geometry)
 
         # --- 3. Apply substrate (mutates tissue.mesh in place) --------------
         substrate_meta = _apply_substrate_2d(tissue=tissue, strategy=substrate, rng=rng)
@@ -179,10 +167,9 @@ class FinitewaveBackend(SimulationBackend):
         model.t_max = t_max_model_units
 
         capture_step, fs_capture_hz = _pick_capture_step(
-            dt_model_units=cell_model.dt_model_units,
+            dt_ms=native.dt_ms,
             output_fs_hz=config.output_fs_hz,
             oversample=config.capture_oversample,
-            ap_time_unit_ms=cell_model.time_unit_ms,
         )
 
         # The tracker takes electrode positions in mesh-index units
@@ -222,7 +209,12 @@ class FinitewaveBackend(SimulationBackend):
             "t_max_model_units": float(t_max_model_units),
             "capture_step_integration": int(capture_step),
             "fs_capture_hz": float(fs_capture_hz),
-            "model_class": "AlievPanfilov2D",
+            # Which finitewave class integrated this — provenance about the
+            # solver, and nothing more. Until S18a the bank recovered the
+            # *cell model's identity* from this string; that identity now
+            # comes from the spec, so no consumer keys off a third party's
+            # class name.
+            "model_class": native.model_class,
         }
         # Physiological provenance: which named parameterisation produced this,
         # and what it was aiming at. The four solved numbers above are the
@@ -245,6 +237,147 @@ class FinitewaveBackend(SimulationBackend):
 # ---------------------------------------------------------------------------
 # Private adapters — strategy spec → Finitewave native API
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _NativeModel:
+    """A configured Finitewave model plus the two facts the caller still needs.
+
+    ``dt_ms`` and ``model_class`` are known only inside the per-model branch and
+    are needed outside it, and returning them beats re-deriving them: ``dt_ms``
+    is ``dt_model_units * time_unit_ms`` for a dimensionless model and plain
+    ``dt_model_units`` for a dimensional one, and ``type(model).__name__`` is
+    *not* a substitute for ``model_class`` — ``fw.Courtemanche2D`` is an alias
+    for ``fw.Courtemanche``, so introspection would silently rename what the
+    bank records.
+    """
+
+    model: Any
+    dt_ms: float
+    """Milliseconds per integration step. What the capture stride is chosen in."""
+    model_class: str
+    """Finitewave class name, for ``backend_metadata``. Provenance only."""
+
+
+def _build_model_2d(
+    *,
+    cell_model: CellModelSpec,
+    geometry: Patch2DGeometry,
+    dr_model_units: float,
+) -> _NativeModel:
+    """Dispatch on the cell model; return a Finitewave model configured from it.
+
+    **Refuses an unfamiliar membrane model BY NAME.** Duck-typing into one we
+    have no measured calibration for would produce numbers rather than an error,
+    which is the worse failure: every model here has constants that were
+    measured against *it*, and applying them to another is how CL-170 happened.
+
+    The anisotropy tensor is configured here too, and is deliberately
+    **model-agnostic**: :func:`_configure_anisotropy_2d` writes a pure *shape*
+    onto the stencil (``D_al = 1``, ``D_ac = 1/ratio^2``) and leaves absolute
+    scale to ``model.D_model``, so the two models' very different diffusion
+    magnitudes — 7.8 dimensionless for Aliev-Panfilov, 0.154 mm^2/ms for
+    Courtemanche — need no per-model constant in it.
+    """
+    if isinstance(cell_model, AlievPanfilovCellModel):
+        model: Any = fw.AlievPanfilov2D()
+        model.eps = cell_model.eps
+        dt_ms = cell_model.dt_model_units * cell_model.time_unit_ms
+        model_class = "AlievPanfilov2D"
+        solver = "calibrate_aliev_panfilov"
+    elif isinstance(cell_model, CourtemancheCellModel):
+        # Courtemanche's space unit is the millimetre (D is in mm^2/ms), so a
+        # `dr_model_units` that disagrees with the mesh pitch is not a rescaling
+        # — it is a different mesh from the one the geometry describes, and the
+        # wave would simply travel at the wrong speed. Aliev-Panfilov is
+        # dimensionless and has no such constraint, which is why the check lives
+        # in the branch rather than above it.
+        if not np.isclose(dr_model_units, geometry.dr_mm, rtol=1e-9):
+            raise ValueError(
+                f"Courtemanche runs in physical units: run.dr_model_units "
+                f"({dr_model_units}) must equal geometry.dr_mm ({geometry.dr_mm}), "
+                "because its diffusion coefficient is in mm^2/ms. Aliev-Panfilov "
+                "is dimensionless and may differ."
+            )
+        model = fw.Courtemanche2D()
+        _apply_conductance_scalings(model, cell_model.params)
+        dt_ms = cell_model.dt_model_units
+        model_class = "Courtemanche"
+        solver = "calibrate_courtemanche"
+    else:
+        raise ValueError(
+            "FinitewaveBackend integrates the Aliev-Panfilov and Courtemanche "
+            f"cell models; got {cell_model.type!r}."
+        )
+
+    model.dt = cell_model.dt_model_units
+    model.dr = dr_model_units
+    model.D_model = cell_model.diffusion
+
+    # The stability bound is a joint property: diffusion is the cell model's,
+    # the grid step is the backend's. Checked here because this is the only
+    # place both are in hand -- and because violating it does not crash, it
+    # writes a well-formed bank full of a diverged field. Asked *after* the
+    # dispatch so that a spec which only partly implements the Protocol reaches
+    # the refusal above — an error naming the model beats an AttributeError.
+    limit = cell_model.stability_limit(dr_model_units=dr_model_units)
+    if cell_model.dt_model_units > limit:
+        raise ValueError(
+            f"dt={cell_model.dt_model_units} exceeds the stability bound "
+            f"{limit:.6g} at diffusion={cell_model.diffusion}, "
+            f"dr={dr_model_units}. Derive dt with "
+            f"simulate.cell_models.{solver} rather than by hand."
+        )
+
+    _configure_anisotropy_2d(model, geometry)
+    return _NativeModel(model=model, dt_ms=dt_ms, model_class=model_class)
+
+
+#: Conductance-scaling names → the Finitewave attribute each one multiplies.
+#:
+#: Explicit rather than derived, so a name the solver cannot honour is refused
+#: instead of creating a dead attribute — assigning an unknown name to a Python
+#: object is not an error, which is exactly how ``anisotropy_ratio`` spent the
+#: project doing nothing (CL-172).
+#:
+#: **`g_Kur_scale` is deliberately absent and S18c will need it.** Finitewave
+#: computes I_Kur's conductance inside the kernel as a function of voltage
+#: (``gkur = 0.005 + 0.05 / (1 + exp(-(u - 15) / 13))``) rather than reading a
+#: parameter, so the cAF -49 % I_Kur scaling cannot be applied by assignment in
+#: 0.9.3. It has to be a kernel change or a fork, and finding that out at
+#: sweep time rather than here would cost a day.
+_CRN_CONDUCTANCE_ATTRS: dict[str, str] = {
+    "g_Na_scale": "gna",
+    "g_K1_scale": "gk1",
+    "g_to_scale": "gto",
+    "g_Kr_scale": "gkr",
+    "g_Ks_scale": "gks",
+    "g_CaL_scale": "gcal",
+    "g_bNa_scale": "gnab",
+    "g_bCa_scale": "gcab",
+}
+
+
+def _apply_conductance_scalings(model: Any, params: Mapping[str, float]) -> None:
+    """Multiply the named conductances in place. No patching required.
+
+    Finitewave exposes every Courtemanche conductance as a plain instance
+    attribute read at kernel-run time, so a remodelling severity is an
+    assignment rather than a subclass. The multiply is against the *shipped*
+    default, so a scaling means what its name says — a fraction of the published
+    conductance — regardless of what else was applied.
+    """
+    for name, scale in params.items():
+        attr = _CRN_CONDUCTANCE_ATTRS.get(name)
+        if attr is None:
+            raise ValueError(
+                f"Courtemanche conductance scaling {name!r} is not one this backend "
+                f"can apply. Known: {', '.join(sorted(_CRN_CONDUCTANCE_ATTRS))}. "
+                "(I_Kur has no scalar conductance in finitewave 0.9.3 — it is "
+                "computed from voltage inside the kernel.)"
+            )
+        baseline = getattr(model, attr)
+        setattr(model, attr, float(baseline) * float(scale))
 
 
 def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
@@ -460,10 +593,9 @@ def _build_planar_edge_stimulus_2d(
 
 def _pick_capture_step(
     *,
-    dt_model_units: float,
+    dt_ms: float,
     output_fs_hz: float,
     oversample: int,
-    ap_time_unit_ms: float,
 ) -> tuple[int, float]:
     """Choose the tracker's integration-step stride and report the achieved capture rate.
 
@@ -472,6 +604,13 @@ def _pick_capture_step(
     ``oversample * output_fs_hz``; the exact achieved rate is reported
     back so the runner's downsample step uses it.
 
+    Takes the step **already in milliseconds**. It used to take the step in
+    model units together with Aliev-Panfilov's ``time_unit_ms`` and multiply
+    them here, which made a dimensionless model's calibration constant an
+    argument to a function about sampling rates — and there is nothing to pass
+    for it when the model is dimensional. The conversion belongs to whoever
+    knows which model this is (:func:`_build_model_2d`), not here.
+
     Returns
     -------
     (step, achieved_capture_fs_hz)
@@ -479,8 +618,6 @@ def _pick_capture_step(
     if oversample < 1:
         raise ValueError("oversample must be >= 1.")
     target_capture_fs_hz = oversample * output_fs_hz
-    # Time per integration step in ms.
-    dt_ms = dt_model_units * ap_time_unit_ms
     step_f = (1000.0 / target_capture_fs_hz) / dt_ms
     step = max(1, round(step_f))
     achieved_capture_fs_hz = 1000.0 / (step * dt_ms)

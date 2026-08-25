@@ -63,6 +63,15 @@ from myocard_egm_contracts._generated.python.synthetic_bank import (
     UniformRandomFibrosis as ContractsUniformRandomFibrosis,
 )
 
+from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    AlievPanfilovCellModel as ProducerAlievPanfilovCellModel,
+)
+from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    CellModelSpec,
+)
+from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    CourtemancheCellModel as ProducerCourtemancheCellModel,
+)
 from myocard_synthetic_egm_pipeline.simulate.label_policy import (
     GlobalDensityLabel as ProducerGlobalDensityLabel,
 )
@@ -236,13 +245,25 @@ def backend_model(
 
     ``ap_time_unit_ms`` is deliberately excluded: it is the
     Aliev-Panfilov model-time calibration and therefore belongs to the
-    *cell model*, not the backend (see :func:`cell_model_model`).
+    *cell model*, not the backend (see :func:`cell_model_model`). Since
+    S18a no backend in this repo emits it — the cell-model spec is the
+    source — but the exclusion stays: the rule is "this fact lives on the
+    cell model", and a backend that reports it anyway must not get a
+    second, independently-editable copy of it into ``params``.
+
+    The step is looked for under each model's own key. ``crn_dt_ms`` is the
+    same fact as ``ap_dt_model_units`` — Courtemanche's model time unit *is*
+    the millisecond — so it fills the same typed field rather than falling
+    through into ``params``, where a Courtemanche bank would state its timestep
+    in a free-form bag while claiming ``dt_model_units: null``.
     """
     version = backend_metadata.get("backend_version") or backend_metadata.get(
         "finitewave_version_pin"
     )
-    dt_model_units = backend_metadata.get("dt_model_units") or backend_metadata.get(
-        "ap_dt_model_units"
+    dt_model_units = (
+        backend_metadata.get("dt_model_units")
+        or backend_metadata.get("ap_dt_model_units")
+        or backend_metadata.get("crn_dt_ms")
     )
     consumed = {
         "backend_name",
@@ -250,6 +271,7 @@ def backend_model(
         "finitewave_version_pin",
         "dt_model_units",
         "ap_dt_model_units",
+        "crn_dt_ms",
         "model_class",
         "ap_time_unit_ms",
     }
@@ -264,29 +286,45 @@ def backend_model(
     )
 
 
-def cell_model_model(backend_metadata: dict[str, Any]) -> CellModelModel:
-    """Map the backend's reported model class to a cell-model object.
+def cell_model_model(cell_model: CellModelSpec) -> CellModelModel:
+    """Map the cell-model spec the simulation ran with to its contracts object.
 
-    Phase 1.5 has no ``CellModelSpec`` yet (that is SEP5 / design note
-    D2), so the model identity is still recovered from what the backend
-    reported rather than from a spec the caller passed in. When SEP5
-    lands, this takes the spec directly and the string sniffing goes.
+    Takes the spec, like every other mapper here. It used to take
+    ``backend_metadata`` and recover the identity by **string-sniffing**
+    ``model_class`` — matching ``"AlievPanfilov2D"`` against the class
+    name finitewave happens to use — then read ``ap_time_unit_ms`` back
+    out of the same dict. Both facts were the runner's already; the round
+    trip through the backend's provenance bag existed only because
+    :class:`~...result.SimulationSpecs` had no cell model to hand over
+    (S18a).
+
+    ``ap_time_unit_ms`` is still written, because the contract's
+    ``AlievPanfilovCellModel`` still requires it. It now comes from
+    ``spec.time_unit_ms``, which is the number the backend metadata was
+    carrying a copy of, so the bank is unchanged.
+
+    The Courtemanche variant carries **no** time-unit field, in the schema
+    as here: it runs in milliseconds, so there is nothing to calibrate and
+    nothing to record. Its ``params`` are the conductance scalings, which
+    are chosen rather than derived and are what SEP11's theta-spec points
+    into by path — hence a mapping rather than named fields.
     """
-    model_class = str(backend_metadata.get("model_class", "")).strip()
-    ap_time_unit_ms = backend_metadata.get("ap_time_unit_ms")
-
-    if model_class in {"Courtemanche", "Courtemanche2D"}:
-        return CourtemancheCellModel(type="courtemanche", params=None)
-
-    if ap_time_unit_ms is None:
-        raise UnsupportedSpecError(
-            f"Cannot build a cell_model for model_class={model_class!r}: "
-            "aliev_panfilov requires ap_time_unit_ms in the backend metadata."
+    if isinstance(cell_model, ProducerAlievPanfilovCellModel):
+        return AlievPanfilovCellModel(
+            type="aliev_panfilov",
+            ap_time_unit_ms=float(cell_model.time_unit_ms),
+            params=None,
         )
-    return AlievPanfilovCellModel(
-        type="aliev_panfilov",
-        ap_time_unit_ms=float(ap_time_unit_ms),
-        params=None,
+    if isinstance(cell_model, ProducerCourtemancheCellModel):
+        return CourtemancheCellModel(
+            type="courtemanche",
+            # `or None` because the schema's field is optional and an empty
+            # mapping is the control parameterisation, not a set of scalings
+            # that happens to be empty.
+            params={str(k): float(v) for k, v in cell_model.params.items()} or None,
+        )
+    raise UnsupportedSpecError(
+        f"synthetic_bank 2.0 has no cell-model variant wired for {cell_model.type!r}."
     )
 
 
@@ -372,7 +410,7 @@ def build_simulation_columns(
         # Single-variant unions need the RootModel wrapper; multi-variant
         # ones are used directly. See the module docstring (FB-15).
         geometries.append(Geometry(geometry_model(specs.geometry)))
-        cell_models.append(cell_model_model(backend_meta))
+        cell_models.append(cell_model_model(specs.cell_model))
         substrates.append(Substrate(substrate_model(specs.substrate)))
         summaries.append(substrate_summary_model(result.substrate_realization_metadata))
         activations.append(activation_model(specs.activation))

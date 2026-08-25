@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     AlievPanfilovCellModel,
     CellModelSpec,
+    CourtemancheCellModel,
     calibrate_aliev_panfilov,
+    calibrate_courtemanche,
 )
 
 SOLVED_MATCH_RTOL: float = 1e-3
@@ -38,6 +40,18 @@ whole percent. It is not a tamper check. The tolerance has to absorb the
 rounding in a human-readable YAML file, where ``5.710`` stands for
 ``5.70983...``; demanding exactness would mean writing 17 significant figures
 into a file whose entire purpose is being read by people.
+"""
+
+MEASURED_APD_RTOL: float = 0.05
+"""How close a *measured* APD90 must land to a stated APD90 target.
+
+Applies only to a model that measures APD rather than solving it, where the
+target records what the parameters were chosen to reach rather than what a
+formula guarantees. Far looser than :data:`SOLVED_MATCH_RTOL` because it is
+absorbing a one-dimensional authoring sweep stopping at a grid point rather
+than the rounding in a YAML file: 5 % of 220 ms is 11 ms, well inside the
+literature's own spread for the quantity (95-287 ms across the cited cAF
+studies, CL-180).
 """
 
 
@@ -78,23 +92,40 @@ class ModelTargets:
 
     conduction_velocity_cm_s: float
     """Along-fibre conduction velocity. Human atrial free wall measures
-    88 +/- 9 cm/s intra-operatively in sinus rhythm (Hansson 1998)."""
+    88 +/- 9 cm/s intra-operatively in sinus rhythm (Hansson 1998).
 
-    apd90_ms: float
-    """APD90, 10 % upstroke to 90 % repolarisation.
+    **The universal half.** Every membrane model is embedded in the same
+    diffusion operator, so every one of them can be solved for a velocity, and
+    two banks stating the same figure means the same thing under both. That is
+    what makes a Courtemanche-versus-Aliev-Panfilov comparison a comparison of
+    *models* rather than of two unrelated tissues.
+    """
 
-    **Must exceed the trace duration T.** Repolarisation leaves the cropped
-    window iff ``APD > T * (1 - p)``, so ``APD >= T`` is the unconditional
-    guarantee across the whole position range. At T = 192 ms an APD of 180 —
-    plausible from the AF literature, which quotes short-cycle rates we do not
-    simulate — fails for any ``p < 0.0625`` (CL-176), reintroducing the exact
-    defect the calibration exists to remove.
+    apd90_ms: float | None = None
+    """APD90, 10 % upstroke to 90 % repolarisation. **Optional, per model.**
+
+    Aliev-Panfilov solves it: its time axis is arbitrary, so a duration in
+    milliseconds is set by choosing what a model time unit means, and a card
+    without this number cannot be solved at all. Courtemanche cannot: APD falls
+    out of the ionic equations with no time-unit constant and no closed-form
+    inverse, so it is **measured and recorded, never solved**, and a Courtemanche
+    card may legitimately state no APD target. Stating one anyway is allowed and
+    is checked against the ``measured:`` block instead of against a solve
+    (:func:`verify_targets_against_solve`) — a target nothing verifies is worse
+    than an absent one.
+
+    **Must exceed the trace duration T** where it is stated. Repolarisation
+    leaves the cropped window iff ``APD > T * (1 - p)``, so ``APD >= T`` is the
+    unconditional guarantee across the whole position range. At T = 192 ms an
+    APD of 180 — plausible from the AF literature, which quotes short-cycle
+    rates we do not simulate — fails for any ``p < 0.0625`` (CL-176),
+    reintroducing the exact defect the calibration exists to remove.
     """
 
     def __post_init__(self) -> None:
         if self.conduction_velocity_cm_s <= 0:
             raise ValueError("conduction_velocity_cm_s must be positive.")
-        if self.apd90_ms <= 0:
+        if self.apd90_ms is not None and self.apd90_ms <= 0:
             raise ValueError("apd90_ms must be positive.")
 
 
@@ -142,6 +173,7 @@ def verify_targets_against_solve(
     label: str,
     dr_mm: float,
     dr_model_units: float,
+    measured: MeasuredValues | None = None,
     dimensions: int = 2,
 ) -> None:
     """Re-solve a card's targets and confirm the recorded cell model still matches.
@@ -161,8 +193,21 @@ def verify_targets_against_solve(
 
     Dispatches on the cell-model type rather than assuming Aliev-Panfilov, so
     Courtemanche joins by adding a branch and nothing here has to be rewritten.
+
+    ``measured`` is optional and is only consulted for a target the model does
+    not solve. It is passed separately rather than read off a card so that this
+    function keeps taking the pieces it checks — the shape FB-34's move of
+    ``targets`` onto ``SubstrateStrategy`` needs.
     """
+    fields: tuple[str, ...]
     if isinstance(solved, AlievPanfilovCellModel):
+        if targets.apd90_ms is None:
+            raise ValueError(
+                f"{label} states no apd90_ms target, but Aliev-Panfilov solves its "
+                "time unit from one — without it there is nothing to verify and "
+                "nothing that fixed the recorded time_unit_ms. Add the target, or "
+                "use a model that measures APD instead of solving it."
+            )
         fresh: CellModelSpec = calibrate_aliev_panfilov(
             conduction_velocity_cm_s=targets.conduction_velocity_cm_s,
             apd90_ms=targets.apd90_ms,
@@ -172,6 +217,16 @@ def verify_targets_against_solve(
             dimensions=dimensions,
         )
         fields = ("time_unit_ms", "diffusion", "eps", "dt_model_units")
+    elif isinstance(solved, CourtemancheCellModel):
+        fresh = calibrate_courtemanche(
+            conduction_velocity_cm_s=targets.conduction_velocity_cm_s,
+            dr_mm=dr_mm,
+            dr_model_units=dr_model_units,
+            params=solved.params,
+            dimensions=dimensions,
+        )
+        fields = ("diffusion", "dt_model_units")
+        _verify_measured_apd_target(targets, measured, label=label)
     else:
         raise ValueError(
             f"no calibration is registered for cell model {solved.type!r}, so its "
@@ -203,6 +258,39 @@ def verify_targets_against_solve(
         )
 
 
+def _verify_measured_apd_target(
+    targets: ModelTargets,
+    measured: MeasuredValues | None,
+    *,
+    label: str,
+) -> None:
+    """For a model that measures APD, check the target against the measurement.
+
+    The alternative was to ignore ``apd90_ms`` on a Courtemanche card, and this
+    project has been bitten three times by a knob that silently does nothing —
+    an ``anisotropy_ratio`` that was a no-op for the life of the project being
+    the worst of them. A stated target has to be either verified or refused.
+
+    Nothing is simulated here: the card records what a run measured, so the
+    check is two recorded numbers against each other and stays load-time cheap.
+    A card that states the target but has not been measured yet is a real
+    intermediate state (the solve exists before the run does), so it passes.
+    """
+    if targets.apd90_ms is None or measured is None:
+        return
+    if not math.isclose(
+        float(measured.apd90_ms), float(targets.apd90_ms), rel_tol=MEASURED_APD_RTOL
+    ):
+        raise ValueError(
+            f"{label} aims at apd90_ms={targets.apd90_ms} but records a measured "
+            f"{measured.apd90_ms}, which is outside {MEASURED_APD_RTOL:.0%}. This "
+            "model measures APD rather than solving it, so the target is only a "
+            "claim about the parameters chosen for it — re-author them until the "
+            "measurement lands on the target, or state the target the card "
+            "actually reached."
+        )
+
+
 def verify_solved(
     card: ModelCard,
     *,
@@ -223,11 +311,13 @@ def verify_solved(
         label=f"model card {card.name!r}",
         dr_mm=dr_mm,
         dr_model_units=dr_model_units,
+        measured=card.measured,
         dimensions=dimensions,
     )
 
 
 __all__ = [
+    "MEASURED_APD_RTOL",
     "SOLVED_MATCH_RTOL",
     "MeasuredValues",
     "ModelCard",

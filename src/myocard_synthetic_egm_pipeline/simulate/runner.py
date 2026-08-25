@@ -82,8 +82,15 @@ def run_single(
     Parameters
     ----------
     geometry, substrate, activation, electrodes
-        The four strategy specs; the backend's adapters translate them
-        into the backend's native representation.
+        Four of the five strategy specs; the backend's adapters translate
+        them into the backend's native representation.
+    cell_model
+        The fifth spec (design note D2) — the membrane kinetics each node
+        runs. Handed to the backend *and* recorded on the result's
+        :class:`~myocard_synthetic_egm_pipeline.simulate.result.SimulationSpecs`,
+        which is where the bank serializer reads the model's identity
+        from (S18a). It used to read the class name the backend reported
+        instead.
     backend
         Concrete :class:`SimulationBackend`. The runner is generic over
         which backend ran.
@@ -155,6 +162,7 @@ def run_single(
         substrate=substrate,
         activation=activation,
         electrodes=electrodes,
+        cell_model=cell_model,
         config=config,
         bipolar_traces=bipolar_traces,
         activation_positions=activation_positions,
@@ -217,6 +225,7 @@ def run_probe_sweep(
             substrate=substrate,
             activation=activation,
             electrodes=electrodes,
+            cell_model=cell_model,
             config=config,
             bipolar_traces=swept.signals[point_index],
             # One value per logical simulation, repeated across its pairs
@@ -306,6 +315,7 @@ def _build_result(
     substrate: SubstrateStrategy,
     activation: ActivationSource,
     electrodes: ElectrodePlacement,
+    cell_model: CellModelSpec,
     config: RunConfig,
     bipolar_traces: npt.NDArray[np.float32],
     activation_positions: npt.NDArray[np.float64] | None,
@@ -366,6 +376,7 @@ def _build_result(
             substrate=substrate,
             activation=activation,
             electrodes=electrodes,
+            cell_model=cell_model,
         ),
         activation_positions=activation_positions,
         substrate_realization_metadata=dict(raw.substrate_realization_metadata),

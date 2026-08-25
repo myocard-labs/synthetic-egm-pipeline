@@ -66,7 +66,11 @@ DR_MODEL_UNITS = 0.25
 #: unpacking it hides exactly the argument mistakes a type checker is for.
 MESH = {"dr_mm": DR_MM, "dr_model_units": DR_MODEL_UNITS}
 
-ATRIAL = ModelTargets(conduction_velocity_cm_s=80.0, apd90_ms=220.0)
+#: Named separately because ``ModelTargets.apd90_ms`` is ``float | None`` since
+#: S18b — optional *per model*, since Courtemanche measures APD rather than
+#: solving it — and the Aliev-Panfilov solve takes a plain float.
+ATRIAL_APD90_MS = 220.0
+ATRIAL = ModelTargets(conduction_velocity_cm_s=80.0, apd90_ms=ATRIAL_APD90_MS)
 
 
 def calibrate(
@@ -82,6 +86,10 @@ def calibrate(
     still want to say *solve for these targets*, so the adaptation happens
     here rather than by widening the production signature.
     """
+    assert targets.apd90_ms is not None, (
+        "Aliev-Panfilov solves its time unit from the APD target; a card without "
+        "one is refused by verify_targets_against_solve rather than defaulted."
+    )
     return calibrate_aliev_panfilov(
         conduction_velocity_cm_s=targets.conduction_velocity_cm_s,
         apd90_ms=targets.apd90_ms,
@@ -173,7 +181,7 @@ def test_solving_away_from_the_measured_eps_is_refused() -> None:
     with pytest.raises(ValueError, match="measured at eps"):
         calibrate_aliev_panfilov(
             conduction_velocity_cm_s=ATRIAL.conduction_velocity_cm_s,
-            apd90_ms=ATRIAL.apd90_ms,
+            apd90_ms=ATRIAL_APD90_MS,
             eps=0.01,
             dr_mm=DR_MM,
             dr_model_units=DR_MODEL_UNITS,
@@ -225,6 +233,9 @@ def test_the_shipped_apd_target_clears_the_trace_duration() -> None:
     from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
 
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
+    # Stated at all, and clearing T: Aliev-Panfilov solves its time unit from
+    # this target, so a card for it without one is refused rather than defaulted.
+    assert card.targets.apd90_ms is not None
     assert card.targets.apd90_ms >= DEFAULT_TRACE_DURATION_MS
 
 
@@ -395,34 +406,9 @@ def test_a_run_config_carries_the_card_without_carrying_its_parameters() -> None
         )
 
 
-def test_the_backend_refuses_an_unfamiliar_cell_model() -> None:
-    """Refusal is by name, because the alternative is silent nonsense.
-
-    A backend that duck-typed its way into an unfamiliar membrane model would
-    integrate *something* and return numbers. Courtemanche lands here at SEP5.
-    """
-    from myocard_synthetic_egm_pipeline.backends.finitewave import FinitewaveBackend
-
-    class _Stranger:
-        type = "courtemanche"
-
-        def ms_to_model_time(self, duration_ms: float) -> float:
-            return duration_ms
-
-        def to_metadata(self) -> dict[str, object]:
-            return {}
-
-    geometry = Patch2DGeometry(size_mm=8.0, dr_mm=0.25)
-    with pytest.raises(ValueError, match="Aliev-Panfilov"):
-        FinitewaveBackend().simulate(
-            geometry=geometry,
-            substrate=UniformRandomFibrosis(density=0.0),
-            activation=PlanarEdgeStimulus(edge="left"),
-            electrodes=CenteredGrid2D.sample(geometry=geometry, rng=np.random.default_rng(0)),
-            cell_model=_Stranger(),
-            config=RunConfig(trace_duration_ms=192.0, output_fs_hz=1000.0),
-            rng=np.random.default_rng(0),
-        )
+# The backend's refusal of an unfamiliar cell model moved to
+# ``test_courtemanche.py`` when Courtemanche stopped being the unfamiliar one:
+# a test that names the supported set belongs beside the model that joined it.
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +434,6 @@ def test_solving_then_simulating_returns_the_targets() -> None:
     percent is immaterial against a literature spread of 88 +/- 9 cm/s.
     """
     from myocard_synthetic_egm_pipeline.backends.finitewave.measure import measure
-    from myocard_synthetic_egm_pipeline.simulate import Patch2DGeometry
 
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
     # Anisotropy is geometry's, not the card's (FB-34): the default is 2.0.
@@ -486,7 +471,6 @@ def test_the_realized_anisotropy_matches_the_card() -> None:
     from myocard_synthetic_egm_pipeline.backends.finitewave.measure import (
         measure_anisotropy_ratio,
     )
-    from myocard_synthetic_egm_pipeline.simulate import Patch2DGeometry
 
     card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
     geometry = Patch2DGeometry(size_mm=12.0, dr_mm=DR_MM)
@@ -518,10 +502,6 @@ def test_no_second_deflection_survives_inside_the_cropped_window() -> None:
     from myocard_egm_signal import RectifiedDerivative, detect_activation
 
     from myocard_synthetic_egm_pipeline.simulate import (
-        CenteredGrid2D,
-        Patch2DGeometry,
-        PlanarEdgeStimulus,
-        UniformRandomFibrosis,
         run_single,
     )
     from myocard_synthetic_egm_pipeline.simulate.sizing import (

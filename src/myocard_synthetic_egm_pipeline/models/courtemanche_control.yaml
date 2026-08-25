@@ -1,0 +1,167 @@
+# Control Courtemanche-Ramirez-Nattel human atrial myocyte, in tissue.
+#
+# The ionic half of SEP5's A/B: the same conduction-velocity target as
+# af_remodelled_220ms, a real human-atrial membrane instead of a phenomenological
+# one. Solved by simulate.cell_models.calibrate_courtemanche at dr_mm = 0.25,
+# dr_model_units = 0.25. The solved block is re-derived and checked every time
+# this card is loaded; if calibrate_courtemanche changes, loading raises rather
+# than silently generating different physics under the same name.
+#
+# WHAT THIS CARD IS NOT
+# ---------------------
+# It is not remodelled. Full cAF remodelling (I_to -65 %, I_CaL -65 %,
+# I_Kur -49 %, I_K1 +110 %; van Wagoner 1997, Bosch 1999, Dobrev 2001) gives
+# APD90 = 143.87 ms, which is BELOW the 192 ms trace duration and would bring
+# back the repolarisation shortcut CL-176 removed. The matched AF card reaches
+# 220 ms by partial remodelling along the same published axis, and the severity
+# that lands there is a measurement, so it is a separate step (S18c).
+
+model:
+  name: courtemanche_control
+  type: courtemanche
+
+  # --- what we asked for -------------------------------------------------
+  # PARTIAL BY DESIGN, and this is the point of the card's shape. Conduction
+  # velocity is a property of the diffusion operator, so it inverts to a
+  # diffusion coefficient for any membrane model and both shipped cards can
+  # state that they aimed at the same tissue. APD90 does not: Courtemanche has
+  # no time-unit constant and no closed-form inverse from the ionic equations,
+  # so it is MEASURED and recorded below, never solved. A target here would be
+  # a claim that something aimed at it.
+  targets:
+    # Hansson, Eur Heart J 1998;19(2):293 — intra-operative epicardial mapping
+    # of the right atrial free wall in sinus rhythm: 88 +/- 9 cm/s. The same
+    # figure af_remodelled_220ms targets, so upstroke morphology is the free
+    # variable left between the two cards — which is the scientific payoff of
+    # comparing them.
+    #
+    # GAP JUNCTIONS ARE INSIDE THIS NUMBER, NOT BESIDE IT. Wilhelms additionally
+    # reduces intracellular conductivity 30 % for AF gap-junctional remodelling
+    # in tissue simulations (Seemann 2010a). Applying that on top of a solved
+    # diffusion would double-count: this solve DERIVES diffusion from the
+    # velocity we want, so the 30 % would simply be cancelled by a 30 % larger
+    # solved D, leaving a coefficient that means nothing physical (CL-180).
+    # Whatever conduction slowing we intend belongs in this target.
+    conduction_velocity_cm_s: 80.0
+
+  # --- what calibrate_courtemanche() returned ----------------------------
+  # Derived, not chosen. Verified against a fresh solve on every load.
+  solved:
+    diffusion: 0.299142         # model.D_model, mm^2/ms
+    dt_ms: 0.02                 # ms, because the model time unit IS the ms
+
+    # Conductance scalings on top of the published defaults, {name: multiplier}.
+    # Empty means control: every conductance at its Courtemanche 1998 value.
+    # Chosen rather than derived, which is why they live here rather than being
+    # re-solved — S18c fills them in for the AF-matched card, and SEP11's
+    # theta-spec addresses them by path.
+    params: {}
+
+  # --- what a simulation actually produced -------------------------------
+  # A first beat into rested tissue on the 40 mm patch, which is what a
+  # generation run produces, measured by backends.finitewave.measure.measure.
+  #
+  # NOT the paced single-cell numbers in the validation block below. For
+  # Courtemanche the two differ by ~30 ms (323 here against 292 paced) and
+  # neither is wrong: a first beat into rested tissue is a long-cycle beat, and
+  # this model's APD falls steadily under pacing. The number that decides
+  # whether repolarisation clears the trace window is THIS one, because this is
+  # the protocol a generation run uses.
+  #
+  # CV lands 3.6 % above target. Recorded rather than tuned away: the solve is
+  # analytic and CV ~ sqrt(D) is only approximate on a mesh this coarse (see
+  # the sweep at the bottom). 3.6 % is immaterial against a literature spread
+  # of 88 +/- 9 cm/s; reporting the target as though it were the achieved value
+  # would not be.
+  measured:
+    conduction_velocity_cm_s: 82.9
+    apd90_ms: 323.2
+
+# =========================================================================
+# VALIDATION — the published vector, and the protocol without which it is
+# meaningless. Asserted by tests/test_courtemanche.py; the constants it
+# asserts against live in simulate/cell_models.py.
+# =========================================================================
+#
+# SOURCE: Wilhelms M, Hettmann H, Maleckar MMC, Koivumaki JT, Dossel O,
+# Seemann G. Benchmarking electrophysiological models of human atrial
+# myocytes. Front Physiol 2012;3:487. Table 1, column C.
+#
+# THIS CARD MATCHES AN INDEPENDENT REIMPLEMENTATION. It does not reproduce
+# Courtemanche/Ramirez/Nattel 1998's own reported table, which is paywalled and
+# could not be retrieved (CL-180). Agreement with Wilhelms is arguably the
+# stronger evidence — a second implementation is a genuine independent
+# replicate, and it gives five numbers rather than one — but it is a different
+# claim, and this card makes the weaker one.
+#
+# PROTOCOL, AND IT IS HALF THE FIXTURE:
+#   single cell (3x3 mesh, one interior node — no diffusion reaches the result)
+#   BCL              1000 ms
+#   beats            50          <- NOT optional. Courtemanche never reaches
+#                                   steady state: APD90 falls to 83 % of the
+#                                   first beat over 16 min of pacing, and APD50
+#                                   falls 42 % over 20 min. The same model
+#                                   legitimately reads 295 ms or ~245 ms
+#                                   depending when you look.
+#   stimulus         20 mV/ms for 2 ms (2 nA into Cm = 100 pF), ~1.9x the
+#                    diastolic threshold measured here (capture between 10 and
+#                    11 mV/ms).
+#   dt               0.02 ms
+#
+#   property     Wilhelms    ours      delta
+#   Amplitude    110.11 mV   106.26 mV  -3.5 %
+#   RMP          -81.04 mV   -80.63 mV  +0.5 %
+#   APD50        165.16 ms   169.62 ms  +2.7 %
+#   APD90        294.83 ms   292.40 ms  -0.8 %
+#   dV/dt max    186.58 V/s  213.03 V/s +14.2 %
+#
+# dV/dt max IS THE OUTLIER, AND THE STIMULUS IS WHY. The maximum falls inside
+# the 2 ms stimulus window rather than after it, so it carries the stimulus
+# amplitude with it: measured 165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30
+# mV/ms on the first beat. Wilhelms does not state the amplitude used, so 14 %
+# is what agreement can mean here — the test's tolerance on this quantity is
+# 20 % and says so. For context, Workman 2001 measures 203 +/- 11 V/s
+# experimentally, which our 213 sits inside.
+#
+# TIMESTEP, measured rather than inherited. The CFL bound permits dt = 0.052 ms
+# at the solved diffusion, but the fast sodium current needs far less, and
+# because Finitewave integrates the gating variables Rush-Larsen a coarse step
+# does not diverge — it quietly flattens the upstroke, which is the observable
+# SEP5 exists to compare. Same protocol, two steps:
+#
+#   dt (ms)   Amplitude   RMP       APD50     APD90     dV/dt max
+#   0.02      106.26 mV   -80.63    169.62    292.40    213.03
+#   0.01      105.55 mV   -80.83    171.34    294.23    214.37
+#   delta     -0.7 %      +0.2 %    +1.0 %    +0.6 %    +0.6 %
+#
+# Converged to ~1 % at 0.02 ms, so that is the ceiling
+# (cell_models.CRN_MAX_DT_MS) and halving it again was not run.
+#
+# =========================================================================
+# MESH PITCH — the honest limitation of this card
+# =========================================================================
+#
+# Authored at dr = 0.25 mm, where Courtemanche's ~0.59 ms upstroke spans about
+# 1.9 mesh cells; monodomain practice wants 5-10, i.e. dr ~ 0.05-0.1 mm
+# (CL-180 trap 3). The danger is silent: a CV-solve absorbs discretisation
+# error into diffusion and hits its target anyway.
+#
+# It is measurably not silent here. CV was measured along the fibres on the
+# 40 mm patch at three diffusions spanning 16x:
+#
+#   D (mm^2/ms)   measured CV   sqrt(D) law from D = 0.154   delta
+#   0.0385         24.13 cm/s    28.70 cm/s                  -15.9 %
+#   0.1540         57.40 cm/s    57.40 cm/s                   (anchor)
+#   0.6160        121.66 cm/s   114.80 cm/s                   +6.0 %
+#
+# CV ~ D^0.58 over that range, not D^0.50. The law the solve inverts is exact
+# physics and the mesh is what bends it: a smaller D means a narrower wavefront
+# means fewer cells across it means more discretisation loss. This IS the
+# under-resolution CL-180 predicted, measured rather than argued.
+#
+# Two things stand against it rather than one comment. calibrate_courtemanche
+# REFUSES any pitch other than the one its reference CV was measured at, and
+# load-time verification re-solves against geometry.dr_mm — so this card loaded
+# against a different mesh raises rather than quietly meaning something else.
+# S18c measures the convergence curve, picks a pitch on the plateau, and
+# re-authors here.

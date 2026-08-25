@@ -189,15 +189,10 @@ def build_classifier_bank_from_dataset(
     disk.
     """
     bank_path = Path(bank_path)
-    first_backend_meta: dict[str, Any] = {}
-    if dataset_result.results:
-        first_backend_meta = dict(
-            dataset_result.results[0].run_metadata.get("backend_metadata", {})
-        )
     resolved_bank_id = (
         validate_artifact_id(bank_id)
         if bank_id is not None
-        else derive_synthetic_bank_id(_cell_model_from_backend_meta(first_backend_meta))
+        else derive_synthetic_bank_id(_cell_model_name(dataset_result.results))
     )
     # The ORIGIN entry: these traces were produced by this run, not loaded
     # from another bank, so there is no source file to name. Writing one in
@@ -370,7 +365,6 @@ def build_synthetic_bank_from_dataset(
         raise ValueError("DatasetResult has no simulations to write.")
 
     first = results[0]
-    backend_meta_first = dict(first.run_metadata.get("backend_metadata", {}))
 
     simulations = build_simulation_columns(
         results=results,
@@ -421,7 +415,7 @@ def build_synthetic_bank_from_dataset(
         base_bank_id = validate_artifact_id(bank_id)
     else:
         base_bank_id = derive_synthetic_bank_id(
-            _cell_model_from_backend_meta(backend_meta_first),
+            _cell_model_name(results),
             noise_mixed=mixed_signals is not None,
         )
     resolved_bank_id = validate_artifact_id(theta_bank_id_from(base_bank_id))
@@ -476,25 +470,22 @@ def _find_bank_entry(bank: ClassifierBank, bank_type: str) -> ClassifierBankMeta
     return None
 
 
-def _cell_model_from_backend_meta(backend_meta: dict[str, Any]) -> str:
-    """Best-effort cell-model name from backend metadata.
+def _cell_model_name(results: Sequence[SimulationResult]) -> str:
+    """The cell model's name for the derived bank id.
 
-    Finitewave's :class:`AlievPanfilov2D` reports
-    ``model_class="AlievPanfilov2D"``; we lower-case-snake it for the
-    ``synthetic_bank.cell_model`` field. Future backends emitting
-    different model names land here too.
+    Read off the spec the simulation ran with. It used to be
+    reconstructed from ``backend_metadata["model_class"]`` — matching
+    finitewave's ``"AlievPanfilov2D"`` and lower-case-snaking anything
+    else — so the id of every bank this project has written depended on
+    a third party's class naming. The spec's own ``type`` is the
+    discriminator the schema uses, and it produces the same
+    ``"aliev_panfilov"`` (S18a).
+
+    ``"unknown"`` only for an empty run, which has no spec to ask.
     """
-    model_class = str(backend_meta.get("model_class", "")).strip()
-    if model_class == "AlievPanfilov2D":
-        return "aliev_panfilov"
-    if not model_class:
+    if not results:
         return "unknown"
-    out: list[str] = []
-    for i, ch in enumerate(model_class):
-        if ch.isupper() and i > 0 and not model_class[i - 1].isupper():
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
+    return str(results[0].specs.cell_model.type)
 
 
 def _fibrosis_strategy_name_from(clean_meta: dict[str, Any]) -> str:

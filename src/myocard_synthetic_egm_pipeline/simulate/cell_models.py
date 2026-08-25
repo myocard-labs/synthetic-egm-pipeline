@@ -37,7 +37,9 @@ and nothing upstream has to know why.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
@@ -72,6 +74,124 @@ MODEL_UNIT_CV: float = 1.6328
 
 ``CV`` scales as ``sqrt(D)`` — measured 0.797 / 1.612 / 3.248 at D = 0.25 / 1 / 4
 against a sqrt-law prediction of 0.5 / 1.0 / 2.0 in ratio.
+"""
+
+# ---------------------------------------------------------------------------
+# Measured properties of Courtemanche as Finitewave integrates it
+# ---------------------------------------------------------------------------
+
+CRN_REFERENCE_DIFFUSION: float = 0.154
+"""Finitewave's shipped ``Courtemanche.D_model``, in mm^2/ms.
+
+Used only as the point the CV measurement below was taken at; the operative
+value is solved from a conduction-velocity target, exactly as Aliev-Panfilov's
+is. Note it is three orders of magnitude below Aliev-Panfilov's calibrated
+``diffusion`` (~7.8) — the two models carry different units, which is why the
+number cannot be carried across a model swap and why it lives on the spec.
+"""
+
+CRN_REFERENCE_CV_CM_S: float = 57.400
+"""Along-fibre conduction velocity in cm/s at :data:`CRN_REFERENCE_DIFFUSION`,
+control conductances and :data:`CRN_CALIBRATION_DR_MM`. **Measured**, like
+:data:`MODEL_UNIT_CV` — Finitewave publishes no such number.
+
+Measured 2026-08-15 on clean tissue, along the fibres, on the 40 mm production
+patch, by the same least-squares fit over the central 30-70 % of the mesh that
+fills a card's ``measured`` block. The ``sqrt(D)`` law it is extrapolated with
+was checked rather than assumed — see the sweep recorded in
+``models/courtemanche_control.yaml``.
+"""
+
+CRN_CALIBRATION_DR_MM: float = 0.25
+"""Mesh pitch :data:`CRN_REFERENCE_CV_CM_S` was measured at.
+
+**Not a free parameter of the solve.** Discretisation widens the upstroke
+relative to the mesh, so the measured CV constant is a property of the model
+*and this pitch*; using it at another pitch would be reading a number off the
+wrong axis, which this project has already done once (CL-170). Courtemanche is
+the model where that matters most: its upstroke is ~0.59 ms wide, about 1.9
+cells at 0.25 mm, where monodomain practice wants 5-10 (CL-180 trap 3). S18c
+measures the convergence curve and re-measures this constant at the pitch it
+picks; until then a card solved here is a card valid at 0.25 mm only, which
+:func:`calibrate_courtemanche` enforces rather than trusts.
+"""
+
+CRN_MAX_DT_MS: float = 0.02
+"""Ceiling on the integration step, in ms. **Measured**, not inherited.
+
+The explicit-diffusion CFL bound is not the binding constraint for Courtemanche:
+at ``D = 0.154`` and ``dr = 0.25`` it permits ``dt = 0.101``, while the fast
+sodium current needs far less. Finitewave integrates the gating variables
+Rush-Larsen, so the model does not diverge at a coarse step — it quietly
+mis-reports the upstroke, which is the observable SEP5 exists to compare.
+
+Chosen from a convergence check of the pinned single-cell protocol over
+``dt = 0.02 / 0.01 / 0.005`` — see the numbers in
+``models/courtemanche_control.yaml``. This is a *ceiling*: the CFL bound still
+applies and :meth:`CourtemancheCellModel.stability_limit` returns whichever is
+smaller.
+"""
+
+CRN_PACING_BCL_MS: float = 1000.0
+"""Basic cycle length of the single-cell protocol the published vector is read at.
+
+**Half of a two-part pin, and neither half is optional** — see
+:data:`CRN_PACING_BEATS`.
+"""
+
+CRN_PACING_BEATS: int = 50
+"""Number of paced beats before the properties below are read.
+
+**Courtemanche never reaches steady state** (Wilhelms 2012 §3.1): APD90 falls to
+83 % of its first-beat value over the first 16 minutes of pacing, and APD50
+falls 42 % over 20 minutes at BCL 1 s. So "Courtemanche's APD90" is not a
+number — the same model legitimately reads 295 ms or ~245 ms depending on when
+you look, and a test that pins only the cycle length would drift with whatever
+run length it happened to use. Wilhelms paces **50 s at BCL 1 s**, so that is
+what the reference vector below means and what
+:func:`~...backends.finitewave.measure.measure_single_cell` runs by default.
+"""
+
+CRN_STIMULUS_AMPLITUDE_MV_PER_MS: float = 20.0
+"""Single-cell stimulus, as the ``dV/dt`` Finitewave's ``StimCurrent`` adds.
+
+20 mV/ms for 2 ms is the textbook Courtemanche protocol — 2 nA into
+``Cm = 100 pF`` — and about 1.9x the diastolic threshold measured here
+(capture between 10 and 11 mV/ms at this duration).
+
+**It is pinned because ``dV/dt max`` depends on it**, and not weakly: measured
+165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30 mV/ms on the first beat, because
+the maximum falls inside the 2 ms stimulus window rather than after it. That
+sensitivity is a property of the protocol, not of the model, which is precisely
+why the protocol is part of the fixture instead of an incidental choice.
+"""
+
+CRN_STIMULUS_DURATION_MS: float = 2.0
+"""Duration of the single-cell stimulus. See
+:data:`CRN_STIMULUS_AMPLITUDE_MV_PER_MS`."""
+
+WILHELMS_2012_CRN_CONTROL: Mapping[str, float] = MappingProxyType(
+    {
+        "amplitude_mv": 110.11,
+        "rmp_mv": -81.04,
+        "apd50_ms": 165.16,
+        "apd90_ms": 294.83,
+        "dvdt_max_v_s": 186.58,
+    }
+)
+"""Control Courtemanche at BCL 1 s, from **Wilhelms et al., Front Physiol
+2012;3:487**, Table 1, column C.
+
+**This is an independent reimplementation, not the original paper's own table.**
+Courtemanche/Ramirez/Nattel 1998 is paywalled and its table could not be
+retrieved (CL-180). Matching Wilhelms is therefore a claim that our
+implementation agrees with *someone else's* — arguably the stronger check, since
+it is a five-element vector rather than one number and a second implementation
+is a genuine independent replicate — but it is a **different** claim from
+"reproduces the original", and the card says which.
+
+Only meaningful together with :data:`CRN_PACING_BEATS` and
+:data:`CRN_PACING_BCL_MS`.
 """
 
 DT_SAFETY_FACTOR: float = 0.9
@@ -110,8 +230,35 @@ class CellModelSpec(Protocol):
         """
         ...
 
+    @property
+    def dt_model_units(self) -> float:
+        """Integration step, in this model's own time units.
+
+        On the Protocol rather than in each backend's narrowed branch because
+        every consumer of a cell model needs it and none of them cares which
+        model it is: the runner sizes a capture with it, the backend checks it
+        against a stability bound, the bank records it. What the *unit* is
+        varies (milliseconds for a dimensional model, arbitrary for a
+        dimensionless one), which is what :meth:`ms_to_model_time` is for.
+
+        A read-only ``@property`` for the same reason ``type`` is — a frozen
+        dataclass field satisfies it, a settable declaration would not.
+        """
+        ...
+
     def ms_to_model_time(self, duration_ms: float) -> float:
         """Convert a physical duration to this model's own time units."""
+        ...
+
+    def stability_limit(self, *, dr_model_units: float, dimensions: int = 2) -> float:
+        """Largest ``dt`` this model tolerates on a grid of the given pitch.
+
+        The bound is a **joint** property — diffusion belongs to the model, the
+        grid step to the backend — so it is a method taking the half the model
+        does not own. Which bound binds is the model's business: an explicit
+        diffusion CFL condition for a smooth reaction term, something tighter
+        where a stiff current sets the pace.
+        """
         ...
 
     def to_metadata(self) -> dict[str, Any]:
@@ -173,13 +320,143 @@ class AlievPanfilovCellModel:
         return (dr_model_units * dr_model_units) / (2.0 * dimensions * self.diffusion)
 
     def to_metadata(self) -> dict[str, Any]:
+        """Provenance for ``backend_metadata``.
+
+        ``time_unit_ms`` is **not** here. It used to be, and the bank's
+        cell-model object was rebuilt from that copy — the round trip
+        S18a removed. It never reached disk through this path anyway
+        (:func:`~...bank_config.backend_model` excludes it from
+        ``params`` precisely because it belongs to the cell model), so
+        what remains here is what genuinely has nowhere else to go.
+        """
         return {
             "cell_model_type": self.type,
-            "ap_time_unit_ms": float(self.time_unit_ms),
             "ap_diffusion": float(self.diffusion),
             "ap_membrane_eps": float(self.eps),
             "ap_dt_model_units": float(self.dt_model_units),
         }
+
+
+@dataclass(frozen=True)
+class CourtemancheCellModel:
+    """Courtemanche-Ramirez-Nattel 1998, the human-atrial ionic model (SEP5).
+
+    **Deliberately shorter than its Aliev-Panfilov sibling.** Aliev-Panfilov is
+    phenomenological, so every knob that produces a physiological observable has
+    to be solved for. Courtemanche's membrane is already human atrium: its
+    conductances are measured quantities, not fitting parameters, and its time
+    axis is already milliseconds. What is left to solve is the *tissue* half —
+    how fast the wave travels — which is diffusion, not membrane.
+
+    So the split is:
+
+    - ``diffusion`` is **solved** from a conduction-velocity target, exactly as
+      it is for Aliev-Panfilov (``CV ~ sqrt(D)`` is a property of the diffusion
+      operator and survives the model swap).
+    - APD90 is **measured, never solved**. There is no ``time_unit_ms`` to
+      divide by and no closed-form inverse from the ionic equations; it is what
+      the conductances produce. A card records it under ``measured:``.
+    - ``params`` are **chosen**, not derived — see below.
+    """
+
+    diffusion: float
+    """``model.D_model`` in mm^2/ms. Solved by :func:`calibrate_courtemanche`.
+
+    Physical units, unlike Aliev-Panfilov's, which is why the two models' values
+    differ by three orders of magnitude and why neither can be read as a
+    correction of the other."""
+
+    dt_model_units: float
+    """Integration step. **The model time unit is the millisecond**, so this is
+    a step in ms and no conversion applies — the same identity that makes
+    :meth:`ms_to_model_time` the identity function.
+
+    The field keeps the sibling's name because the backend and the bank schema
+    ask every cell model for "the step in its own time units", and answering
+    "the same as ms" is the honest answer rather than a missing one."""
+
+    params: Mapping[str, float] = field(default_factory=dict)
+    """Conductance scalings applied on top of the model's published defaults,
+    as ``{name: multiplier}`` — ``{}`` for control.
+
+    **Chosen, not derived**, which is why they are a free-form mapping rather
+    than solved fields: which conductances are worth varying is an experimental
+    question (the schema's ``CourtemancheCellModel.params`` is deliberately open
+    for the same reason, and SEP11's theta-spec points into it by path). The
+    backend owns the mapping from these names to its solver's attributes and
+    refuses a name it cannot apply — a scaling that silently did nothing would
+    be the ``anisotropy_ratio`` no-op again (CL-172).
+
+    S18c fills this in for the AF-remodelled card by sweeping severity along the
+    van Wagoner / Bosch / Dobrev axis; S18b ships control only."""
+
+    type: str = "courtemanche"
+
+    def __post_init__(self) -> None:
+        for name in ("diffusion", "dt_model_units"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive.")
+        for key, value in self.params.items():
+            if value <= 0:
+                raise ValueError(
+                    f"conductance scaling {key!r} must be positive; got {value}. "
+                    "A zero knocks the current out entirely and a negative one "
+                    "reverses it — neither is a remodelling severity."
+                )
+        # Frozen means the *field* cannot be rebound; without this the mapping
+        # behind it could still be edited in place, and a card's parameters are
+        # provenance.
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+    def ms_to_model_time(self, duration_ms: float) -> float:
+        """The identity. **This is the seam** :class:`CellModelSpec` exists for.
+
+        Courtemanche integrates in milliseconds, so there is nothing to convert.
+        The method is not decoration: before S38a callers wrote
+        ``duration_ms / config.ap_time_unit_ms`` inline, and the Courtemanche
+        version of that expression is a division by a constant that does not
+        exist — which in Python is not an error but a ``0.0`` or an
+        ``AttributeError`` three call frames from the cause, depending on what
+        happened to be in scope. Returning the argument unchanged is asserted in
+        the tests for exactly that reason.
+        """
+        return duration_ms
+
+    def stability_limit(self, *, dr_model_units: float, dimensions: int = 2) -> float:
+        """Largest usable ``dt``, in ms. **Two bounds, and the CFL one rarely wins.**
+
+        Aliev-Panfilov's limit is purely the explicit-diffusion CFL condition:
+        its reaction term is smooth, so the diffusion operator is what
+        destabilises. Courtemanche's fast sodium current is stiff — the upstroke
+        is ~0.59 ms — and Finitewave integrates the gating variables
+        Rush-Larsen, which keeps a coarse step from *diverging* while it quietly
+        flattens the upstroke. A limit that reported only the CFL bound would
+        therefore be reporting the slack constraint: 0.101 ms at the shipped
+        mesh, five times the step the upstroke actually needs.
+
+        Returning the smaller of the two keeps the backend's one-line check
+        ("is dt inside the limit?") meaningful for both models without the
+        backend having to know which bound bit.
+        """
+        cfl = (dr_model_units * dr_model_units) / (2.0 * dimensions * self.diffusion)
+        return min(cfl, CRN_MAX_DT_MS)
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Provenance for ``backend_metadata``.
+
+        The conductance scalings are flattened one key per scaling rather than
+        nested, because ``backend_metadata`` lands in HDF5 attributes where a
+        nested mapping has no representation. ``crn_`` prefixes keep them
+        distinguishable from Aliev-Panfilov's ``ap_`` block in a bank that
+        someone is comparing across models, which is the whole point of SEP5.
+        """
+        meta: dict[str, Any] = {
+            "cell_model_type": self.type,
+            "crn_diffusion": float(self.diffusion),
+            "crn_dt_ms": float(self.dt_model_units),
+        }
+        meta.update({f"crn_param_{key}": float(value) for key, value in self.params.items()})
+        return meta
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +541,126 @@ def calibrate_aliev_panfilov(
     )
 
 
+def calibrate_courtemanche(
+    *,
+    conduction_velocity_cm_s: float,
+    dr_mm: float,
+    dr_model_units: float,
+    params: Mapping[str, float] | None = None,
+    dimensions: int = 2,
+) -> CourtemancheCellModel:
+    """Solve Courtemanche's tissue knobs from a conduction-velocity target.
+
+    .. math::
+        D = D^{*} \\left(\\frac{\\text{CV}}{\\text{CV}^{*}}\\right)^{2}
+        \\qquad
+        \\Delta t = \\min\\left(
+            \\alpha \\frac{\\Delta r^{2}}{2\\,\\text{dim}\\,D},\\;
+            \\Delta t_{\\max}
+        \\right)
+
+    **Conduction velocity only, and the asymmetry is the design.** Its sibling
+    solves two targets because Aliev-Panfilov's time axis is arbitrary, so APD
+    is set by choosing what a model time unit means. Courtemanche has no such
+    constant: APD90 falls out of the ionic equations and the conductance
+    scalings with no closed-form inverse, so it is **measured and recorded**,
+    never solved. A card's ``targets`` block is therefore per-model partial —
+    the shared half is the conduction velocity, which is what lets an
+    Aliev-Panfilov bank and a Courtemanche bank state that they aimed at the
+    same tissue and makes the A/B between them interpretable.
+
+    ``CV ~ sqrt(D)`` survives the model swap because it is a property of the
+    diffusion operator rather than of the membrane; what does *not* survive is
+    the constant of proportionality, which is why
+    :data:`CRN_REFERENCE_CV_CM_S` had to be measured for this model rather than
+    scaled from :data:`MODEL_UNIT_CV`.
+
+    **Gap junctions are inside the target, not beside it.** Wilhelms additionally
+    reduces intracellular conductivity 30 % for AF gap-junctional remodelling in
+    tissue. Applying that here as well would double-count: this solve *derives*
+    diffusion from the velocity we want, so a 30 % reduction would simply be
+    cancelled by a 30 % larger solved ``D`` — a no-op that leaves a diffusion
+    coefficient meaning nothing physical (CL-180 trap 2). Conduction slowing
+    belongs in ``conduction_velocity_cm_s``.
+    """
+    if conduction_velocity_cm_s <= 0:
+        raise ValueError("conduction_velocity_cm_s must be positive.")
+    if dr_mm <= 0 or dr_model_units <= 0:
+        raise ValueError("dr_mm and dr_model_units must be positive.")
+    if dimensions < 1:
+        raise ValueError("dimensions must be >= 1.")
+    if not math.isclose(dr_model_units, dr_mm, rel_tol=1e-9):
+        # Aliev-Panfilov is dimensionless, so its mesh may be scaled freely and
+        # `space_unit_mm = dr_mm / dr_model_units` absorbs the difference.
+        # Courtemanche's diffusion is in mm^2/ms, so its space unit IS the
+        # millimetre and the two steps are the same number or the solve is
+        # describing a different mesh from the one being simulated.
+        raise ValueError(
+            f"Courtemanche is dimensional: its space unit is the millimetre, so "
+            f"dr_model_units must equal dr_mm. Got dr_model_units={dr_model_units} "
+            f"and dr_mm={dr_mm}. (Aliev-Panfilov may differ; it is dimensionless.)"
+        )
+    if not math.isclose(dr_mm, CRN_CALIBRATION_DR_MM, rel_tol=1e-9):
+        # Same guard, same reason, as calibrate_aliev_panfilov's eps check: the
+        # constant was measured on one axis and is evidence about that axis only.
+        raise ValueError(
+            f"CRN_REFERENCE_CV_CM_S was measured at dr={CRN_CALIBRATION_DR_MM} mm; "
+            f"got dr_mm={dr_mm}. Conduction velocity on a discrete mesh depends on "
+            "the pitch — that is the whole content of CL-180's trap 3, where a "
+            "CV-solve absorbs discretisation error into diffusion and hits the "
+            "target anyway with a number that is no longer physical. Re-measure "
+            "the constant at the new pitch first (S18c)."
+        )
+
+    scalings = dict(params or {})
+    if scalings:
+        # The reference CV was measured at control conductances. Sodium
+        # conductance in particular moves CV directly, so a remodelled set makes
+        # the constant an answer to a different question.
+        raise ValueError(
+            f"CRN_REFERENCE_CV_CM_S was measured at control conductances; got "
+            f"scalings {sorted(scalings)}. A remodelled set changes conduction "
+            "velocity, so solving through this constant would put the error into "
+            "diffusion. Measure the reference CV for the remodelled set and "
+            "register it before calibrating against it (S18c)."
+        )
+
+    velocity_ratio = conduction_velocity_cm_s / CRN_REFERENCE_CV_CM_S
+    diffusion = CRN_REFERENCE_DIFFUSION * velocity_ratio * velocity_ratio
+
+    cfl = (dr_model_units * dr_model_units) / (2.0 * dimensions * diffusion)
+    dt_model_units = min(DT_SAFETY_FACTOR * cfl, CRN_MAX_DT_MS)
+
+    if not math.isfinite(dt_model_units) or dt_model_units <= 0:
+        raise ValueError(
+            f"derived dt is not usable ({dt_model_units}). A very high conduction "
+            "velocity drives diffusion up and the step to zero."
+        )
+
+    return CourtemancheCellModel(
+        diffusion=diffusion,
+        dt_model_units=dt_model_units,
+        params=scalings,
+    )
+
+
 __all__ = [
     "AP_EPS_PUBLISHED",
+    "CRN_CALIBRATION_DR_MM",
+    "CRN_MAX_DT_MS",
+    "CRN_PACING_BCL_MS",
+    "CRN_PACING_BEATS",
+    "CRN_REFERENCE_CV_CM_S",
+    "CRN_REFERENCE_DIFFUSION",
+    "CRN_STIMULUS_AMPLITUDE_MV_PER_MS",
+    "CRN_STIMULUS_DURATION_MS",
     "DT_SAFETY_FACTOR",
     "MODEL_UNIT_APD90",
     "MODEL_UNIT_CV",
+    "WILHELMS_2012_CRN_CONTROL",
     "AlievPanfilovCellModel",
     "CellModelSpec",
+    "CourtemancheCellModel",
     "calibrate_aliev_panfilov",
+    "calibrate_courtemanche",
 ]

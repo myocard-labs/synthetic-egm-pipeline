@@ -30,6 +30,7 @@ import numpy as np
 import numpy.typing as npt
 
 if TYPE_CHECKING:
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
     from myocard_synthetic_egm_pipeline.simulate.specs import (
         ActivationSource,
         ElectrodePlacement,
@@ -61,14 +62,23 @@ class SimulationSpecs:
     **Guardrail 2 note.** This adds a field to the concrete, public
     :class:`SimulationResult` — a *widening*: every existing reader
     keeps working untouched and only the runner (the sole producer of
-    the type) changes. The four strategy Protocols are not modified. See
+    the type) changes. The five strategy Protocols are not modified. See
     ``project/architecture.md`` → Guardrails.
+
+    ``cell_model`` is the fifth spec (design note D2), added at S18a in
+    the same widening category. Until then the bank recovered the model's
+    identity by **string-sniffing** the class name the backend happened
+    to report in ``backend_metadata["model_class"]`` — a dependency on a
+    third party's naming standing in for a fact the runner had in hand
+    all along. Carrying the spec here is what lets the serializer be
+    handed the object that ran.
     """
 
     geometry: GeometrySpec
     substrate: SubstrateStrategy
     activation: ActivationSource
     electrodes: ElectrodePlacement
+    cell_model: CellModelSpec
 
 
 @dataclass(frozen=True)

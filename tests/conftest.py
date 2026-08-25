@@ -35,11 +35,25 @@ from myocard_synthetic_egm_pipeline.simulate import (
     SimulationSpecs,
     UniformRandomFibrosis,
 )
+from myocard_synthetic_egm_pipeline.simulate.cell_models import AlievPanfilovCellModel
 from myocard_synthetic_egm_pipeline.simulate.specs import Edge
 
 # ---------------------------------------------------------------------------
 # Simulation specs
 # ---------------------------------------------------------------------------
+
+
+#: The cell model the hand-built fixtures below ran with. Its numbers match
+#: what those fixtures already claim in ``backend_metadata``
+#: (``ap_time_unit_ms`` 1.97, ``ap_dt_model_units`` 0.01) rather than the
+#: shipped card's, so the fixture stays internally consistent — a fixture that
+#: disagreed with itself about the model is how a previous one went wrong.
+FIXTURE_CELL_MODEL = AlievPanfilovCellModel(
+    time_unit_ms=1.97,
+    diffusion=1.0,
+    eps=0.002,
+    dt_model_units=0.01,
+)
 
 
 #: Trace length used by every fixture below, in samples at 1 kHz. Tied to the
@@ -71,6 +85,7 @@ def minimal_specs() -> SimulationSpecs:
             positions_mm=np.zeros((8, 3), dtype=np.float64),
             bipolar_pairs=tuple((i, i + 1) for i in range(4)),
         ),
+        cell_model=FIXTURE_CELL_MODEL,
     )
 
 
@@ -170,6 +185,7 @@ def _make_simulation_result(
             positions_mm=electrode_positions,
             bipolar_pairs=bipolar_pairs,
         ),
+        cell_model=FIXTURE_CELL_MODEL,
     )
     return SimulationResult(
         bipolar_traces=bipolar_traces,
@@ -197,6 +213,11 @@ def _make_simulation_result(
                 "backend_name": "mock",
                 "finitewave_version_pin": "0.9.3",
                 "ap_dt_model_units": 0.01,
+                # Neither of these is read for identity any more (S18a): the
+                # cell model comes from `specs.cell_model`. They stay here on
+                # purpose — this fixture is the one producer that still emits
+                # them, so `backend_model`'s promise to keep them out of
+                # `params` is tested against something rather than nothing.
                 "ap_time_unit_ms": 1.97,
                 "model_class": "AlievPanfilov2D",
             },
@@ -445,7 +466,6 @@ class _MockBackend:
                 "finitewave_version_pin": "0.9.3",
                 "ap_dt_model_units": float(cell_model.dt_model_units),
                 "ap_dr_model_units": float(config.dr_model_units),
-                "ap_time_unit_ms": float(cell_model.time_unit_ms),
                 "capture_step_integration": 4,
                 "fs_capture_hz": float(config.output_fs_hz * config.capture_oversample),
                 "model_class": "AlievPanfilov2D",

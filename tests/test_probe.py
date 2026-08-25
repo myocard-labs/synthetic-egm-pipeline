@@ -282,7 +282,14 @@ def test_a_sweep_holds_the_substrate_constant(
     _classifier_path, theta_path = _run_probe(tmp_path, mock_backend, monkeypatch)
     simulations = read_synthetic_bank_hdf5(theta_path).simulations
 
-    for field_name in ("substrate", "substrate_summary", "activation", "geometry", "electrodes"):
+    for field_name in (
+        "substrate",
+        "substrate_summary",
+        "activation",
+        "geometry",
+        "electrodes",
+        "cell_model",
+    ):
         column = getattr(simulations, field_name)
         assert all(entry == column[0] for entry in column), (
             f"{field_name} differs across grid points; the sweep is not one solve"

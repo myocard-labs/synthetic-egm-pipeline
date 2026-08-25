@@ -41,6 +41,7 @@ rather than either alone (S13 / B13).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ from myocard_synthetic_egm_pipeline.simulate.calibration import (
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     AlievPanfilovCellModel,
     CellModelSpec,
+    CourtemancheCellModel,
 )
 
 #: Package subdirectory holding the shipped cards.
@@ -76,6 +78,50 @@ def _require(block: dict[str, Any], key: str, where: str) -> Any:
     return block[key]
 
 
+def _parse_aliev_panfilov_solved(block: dict[str, Any]) -> CellModelSpec:
+    """The four knobs ``calibrate_aliev_panfilov`` returns."""
+    return AlievPanfilovCellModel(
+        time_unit_ms=float(_require(block, "time_unit_ms", "model.solved")),
+        diffusion=float(_require(block, "diffusion", "model.solved")),
+        eps=float(_require(block, "eps", "model.solved")),
+        dt_model_units=float(_require(block, "dt_model_units", "model.solved")),
+    )
+
+
+def _parse_courtemanche_solved(block: dict[str, Any]) -> CellModelSpec:
+    """The two knobs ``calibrate_courtemanche`` returns, plus chosen scalings.
+
+    ``dt_ms`` rather than ``dt_model_units`` in the file: Courtemanche's model
+    time unit *is* the millisecond, and a card is read by people. The spec field
+    keeps the shared name because the backend asks every model the same
+    question.
+
+    ``params`` is optional and empty means control — the shipped card. Its
+    values are **chosen**, not solved, so unlike the two fields above they are
+    carried through verification rather than re-derived.
+    """
+    params_block = block.get("params") or {}
+    if not isinstance(params_block, dict):
+        raise ValueError("model.solved.params must be a mapping of scaling names to numbers.")
+    return CourtemancheCellModel(
+        diffusion=float(_require(block, "diffusion", "model.solved")),
+        dt_model_units=float(_require(block, "dt_ms", "model.solved")),
+        params={str(key): float(value) for key, value in params_block.items()},
+    )
+
+
+#: Card ``type`` → the parser for its ``solved:`` block.
+#:
+#: A table rather than an if-chain because the *set of keys* differs per model —
+#: Aliev-Panfilov has ``eps`` and ``time_unit_ms``, Courtemanche has neither and
+#: has ``params`` instead — so there is nothing shared to factor out, and a
+#: missing entry is what refuses an unknown model by name.
+_CARD_PARSERS: dict[str, Callable[[dict[str, Any]], CellModelSpec]] = {
+    "aliev_panfilov": _parse_aliev_panfilov_solved,
+    "courtemanche": _parse_courtemanche_solved,
+}
+
+
 def parse_model_card(doc: dict[str, Any], *, source: str) -> ModelCard:
     """Build a :class:`ModelCard` from parsed YAML. No filesystem access."""
     if not isinstance(doc, dict) or "model" not in doc:
@@ -85,14 +131,16 @@ def parse_model_card(doc: dict[str, Any], *, source: str) -> ModelCard:
         raise ModelCardError(f"{source}: 'model:' must be a mapping.")
 
     # `type` selects which cell model the `solved` block describes. Dispatch
-    # rather than assume: Courtemanche joins by adding a branch, and an unknown
-    # type is refused by name instead of being mis-parsed as Aliev-Panfilov.
+    # rather than assume: an unknown type is refused by name instead of being
+    # mis-parsed as Aliev-Panfilov, which would read a `diffusion` in mm^2/ms as
+    # a dimensionless one and differ by three orders of magnitude in silence.
     model_type = str(block.get("type", "aliev_panfilov"))
-    if model_type != "aliev_panfilov":
+    if model_type not in _CARD_PARSERS:
         raise ModelCardError(
             f"{source}: no card parser is registered for cell model {model_type!r}. "
-            "A new membrane model needs its own measured calibration constants "
-            "before a card can be written for it."
+            f"Known: {', '.join(sorted(_CARD_PARSERS))}. A new membrane model needs "
+            "its own measured calibration constants before a card can be written "
+            "for it."
         )
 
     targets_block = _require(block, "targets", "model")
@@ -103,14 +151,15 @@ def parse_model_card(doc: dict[str, Any], *, source: str) -> ModelCard:
             conduction_velocity_cm_s=float(
                 _require(targets_block, "conduction_velocity_cm_s", "model.targets")
             ),
-            apd90_ms=float(_require(targets_block, "apd90_ms", "model.targets")),
+            # Optional, and per model: Courtemanche measures APD rather than
+            # solving it, so a card for it may state no APD target at all. The
+            # solve-side branch refuses a *missing* target for a model that
+            # needs one, so absence cannot slip past as a default.
+            apd90_ms=(
+                None if targets_block.get("apd90_ms") is None else float(targets_block["apd90_ms"])
+            ),
         )
-        solved: CellModelSpec = AlievPanfilovCellModel(
-            time_unit_ms=float(_require(solved_block, "time_unit_ms", "model.solved")),
-            diffusion=float(_require(solved_block, "diffusion", "model.solved")),
-            eps=float(_require(solved_block, "eps", "model.solved")),
-            dt_model_units=float(_require(solved_block, "dt_model_units", "model.solved")),
-        )
+        solved: CellModelSpec = _CARD_PARSERS[model_type](solved_block)
     except (TypeError, ValueError) as exc:
         raise ModelCardError(f"{source}: {exc}") from exc
 
@@ -210,9 +259,13 @@ def card_provenance(card: ModelCard) -> dict[str, Any]:
     provenance: dict[str, Any] = {
         "model_card_name": card.name,
         "model_target_conduction_velocity_cm_s": float(card.targets.conduction_velocity_cm_s),
-        "model_target_apd90_ms": float(card.targets.apd90_ms),
         **card.solved.to_metadata(),
     }
+    # Omitted rather than written as a null when the card states no APD target:
+    # backend_metadata lands in HDF5 attributes, which have no null, so the
+    # alternative is a sentinel number that reads as a target.
+    if card.targets.apd90_ms is not None:
+        provenance["model_target_apd90_ms"] = float(card.targets.apd90_ms)
     if card.measured is not None:
         provenance["model_measured_conduction_velocity_cm_s"] = float(
             card.measured.conduction_velocity_cm_s
