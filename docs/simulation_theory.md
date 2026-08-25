@@ -93,15 +93,15 @@ CenteredGrid2D               ←──────┘
 Four different durations appear in this pipeline. They were two until cropping
 landed, which is why they are easy to run together. Worked example: the shipped
 production settings, `trace_duration_ms: 192`, `output_fs_hz: 1000`,
-`capture_oversample: 4`, `activation_position: [0.25, 0.75]`, `ap_time_unit_ms:
-1.97`.
+`capture_oversample: 4`, `activation_position: [0.25, 0.75]`, and the shipped
+model card, whose solved time-unit constant is 5.709836 ms per model time unit.
 
 | # | Length | Where it comes from | Worked value |
 |---|---|---|---|
 | 1 | **Window / output length `T`** | `run.trace_duration_ms` × `output_fs_hz` | **192 samples** (192 ms) |
-| 2 | **Capture duration** | *derived* — how long the solver must run for a `T`-window to fit around the activation | **335 ms** |
-| 3 | **Solver time** | capture ÷ `ap_time_unit_ms`, in AP's dimensionless units | **170.05 model units** |
-| 4 | **Capture at the capture rate** | capture × (`output_fs_hz` × `capture_oversample`) | **1309 samples** @ 3905 Hz |
+| 2 | **Capture duration** | *derived* — how long the solver must run for a `T`-window to fit around the activation | **671 ms** |
+| 3 | **Solver time** | capture ÷ the card's time-unit constant, in the model's dimensionless units | **117.52 model units** |
+| 4 | **Capture at the capture rate** | capture × (`output_fs_hz` × `capture_oversample`) | **2684 samples** @ 4000 Hz |
 
 Read as a chain, with the array shapes the code actually produces:
 
@@ -109,16 +109,16 @@ Read as a chain, with the array shapes the code actually produces:
 config: trace_duration_ms = 192 ms          ... this is T, the OUTPUT window
            |
            v   derived: + back-overhang for the crop (+ stimulus delay, if set)
-capture_duration_ms = 335 ms
+capture_duration_ms = 671 ms
            |
-           v   / ap_time_unit_ms
-solver runs t_max = 170.05 model units      ... Finitewave's clock
+           v   / the card's time-unit constant (5.709836 ms per unit)
+solver runs t_max = 117.52 model units      ... Finitewave's clock
            |
            v   captured at 4 x 1000 Hz
-unipolar (1309, n_electrodes)
+unipolar (2684, n_electrodes)
            |
            v   Step 6: bipolar pairing
-bipolar  (1309, 20)                         @ 3905 Hz
+bipolar  (2684, 20)                         @ 4000 Hz
            |
            v   Step 7: downsample to 1 kHz
 bipolar  (335, 20)   -> transposed to (20, 335)
@@ -404,21 +404,30 @@ directions, so we want directionally-balanced training data.
 
 ## Step 3 — AP solver
 
-**What the code does.** Finitewave runs the Aliev-Panfilov model
-([Aliev 1996]) on the 160×160 mesh for ``effective_capture_duration_ms /
-AP_TIME_UNIT_MS`` model time units, with ``dt = 0.01`` model units per
-integration step.
+**What the code does.** Finitewave runs the chosen cell model on the 160×160
+mesh for as long as the capture requires, with the integration step and the
+diffusion coefficient both taken from the run's **model card** rather than from
+constants in the source.
 
-> **This used to read ``trace_duration_ms``, and that is now wrong.** The two
-> were the same number until controlled-position cropping (SEP2) arrived: the
-> solver ran for exactly as long as the trace it produced. It no longer does —
-> a window placed around the activation needs signal either side of it, so the
-> solver runs **longer** than the trace. ``trace_duration_ms`` now means *the
-> length of the output window*, not the length of the simulation. See
-> **The four lengths** below; they are easy to conflate and this doc conflated
-> two of them. AP_TIME_UNIT_MS = 1.97 ms is the calibration constant
-that maps AP non-dimensional time → physical milliseconds (re-run the
-calibration when ``dr`` or the model changes).
+> **Two things in this section used to be wrong and are worth naming.**
+>
+> **The duration.** This used to read ``trace_duration_ms``. The two were the
+> same number until controlled-position cropping arrived: the solver ran for
+> exactly as long as the trace it produced. It no longer does — a window placed
+> around the activation needs signal either side of it, so the solver runs
+> **longer** than the trace. ``trace_duration_ms`` now means *the length of the
+> output window*, not the length of the simulation. See **The four lengths**
+> below; they are easy to conflate and this document conflated two of them.
+>
+> **The time-unit constant.** This used to quote a fixed 1.97 ms per model time
+> unit. That value was set by hand to reach a conduction-velocity target and it
+> left action-potential duration at about a quarter of any physiological value.
+> Membrane parameters are no longer constants at all: they are **solved from
+> physiological targets** and travel on a named model card, re-derived and
+> checked every time one is loaded. At the shipped targets the constant is
+> 5.709836 ms per model time unit — but the number is an output, and quoting it
+> here as though it were a setting is the mistake this note replaces. See
+> **Cell-model calibration — the equations**.
 
 **What this represents.** The membrane potential of each cell evolves
 in time according to a small system of ODEs (Aliev-Panfilov has two
@@ -457,10 +466,23 @@ Phase 1 uses **Aliev-Panfilov** because:
   on which cell model is plugged in; we can swap to a richer model
   later without redoing anything downstream.
 
-The richer model for Phase 2 is **Courtemanche 1998**, a human atrial
-ionic model with individually-modelled Na/K/Ca channels, gating
-variables, and physiologically-tuned APD. It is far more expensive but
-produces morphology that matches recorded atrial EGMs more faithfully.
+The richer model is **Courtemanche 1998**, a human atrial ionic model
+with individually-modelled Na/K/Ca channels, gating variables, and
+physiologically-tuned APD. It is far more expensive but produces
+morphology that matches recorded atrial EGMs more faithfully — its
+upstroke is ~200 V/s against Aliev-Panfilov's smooth broad one, and EGM
+amplitude scales with ``dV/dt``, which is the realism difference the two
+models are meant to isolate.
+
+**It ships in Phase 1.5**, ahead of the Phase-2 plan above, as the
+``courtemanche_control`` model card (SEP5 / S18b). Both shipped cards
+target the same conduction velocity, so a bank generated under each
+differs in membrane behaviour and nothing else. Two caveats travel with
+it and are recorded on the card: it is authored at ``dr = 0.25 mm``,
+where its upstroke spans about 1.9 mesh cells rather than the 5-10
+monodomain practice wants, and its published-vector validation is
+against an independent reimplementation (Wilhelms 2012) rather than the
+original paper's own table.
 
 **What this does to the signal.** Generates ``V_m(t, i, j)`` — a movie
 of the transmembrane potential field across the patch. This is the
@@ -771,10 +793,16 @@ distorting the morphology. We omit an anti-alias filter at this step
 - AP membrane dynamics have minimal energy above a few hundred Hz.
 - The source rate is 4× the target.
 
-For Phase 2 / Courtemanche (faster wavefronts, sharper activation
-deflections), we will swap the linear interpolation for
-``scipy.signal.resample_poly`` with a proper polyphase filter; the
-existing function-signature stays the same.
+**Courtemanche makes this a live question rather than a Phase-2 one.**
+Its upstroke is ~0.59 ms against Aliev-Panfilov's broad one, so its
+activation deflections carry more energy near the 500 Hz Nyquist of the
+1 kHz output — the condition the first bullet above says does not arise.
+How much survives the ``1/r`` spatial integration of the pseudo-EGM,
+which smooths the field considerably, **has not been measured**; the
+plan is unchanged, swapping the linear interpolation for
+``scipy.signal.resample_poly`` with a proper polyphase filter behind the
+same function signature, but it should now be decided from a spectrum of
+a Courtemanche bank rather than from the phase number.
 
 **Code:**
 - Resample function: `simulate/pseudo_egm.py::downsample` (integer
@@ -1006,6 +1034,237 @@ classification.
   termination of conducted action potentials.* Numerical study of
   why thin-strip stimulation reliably initiates a propagating wave.
 
+## Cell-model calibration — the equations
+
+A cell model does not come with units. Aliev–Panfilov is **non-dimensional**: its
+equations produce a number that behaves like a voltage, on a clock that ticks in
+"model time units", across a mesh measured in "model space units". Nothing in the
+model, and nothing in the solver, says how long a model time unit is. **Every
+physical claim we make about a synthetic trace — that it conducts at 80 cm/s,
+that its action potential lasts 220 ms — is a mapping we chose and must defend.**
+
+This section is that mapping: what the free parameters are, why two of them
+cannot be chosen independently, and why the second cell model inverts only half
+of the system.
+
+### Symbols
+
+| symbol | meaning | units |
+|---|---|---|
+| $K$ | milliseconds per model time unit | ms / t.u. |
+| $s$ | millimetres per model space unit, $s = \texttt{dr\_mm} / \texttt{dr\_model\_units}$ | mm / s.u. |
+| $D$ | diffusion coefficient handed to the solver | s.u.² / t.u. |
+| $\varepsilon$ | Aliev–Panfilov recovery rate | — |
+| $\text{APD}^{*}(\varepsilon)$ | action-potential duration **in model units** | t.u. |
+| $c^{*}$ | conduction velocity in model units at $D = 1$ | s.u. / t.u. |
+| $\text{APD}_{ms}$ | the physical duration we are targeting | ms |
+| $\text{CV}$ | the physical conduction velocity we are targeting | cm/s |
+| $\Delta t$ | integration step | t.u. |
+| $T$ | cropped window length | samples |
+
+Two of these are **measured properties of the model as this solver integrates
+it**, not values from a paper — Aliev–Panfilov's original publication assigns no
+units, so there is nothing to look up:
+
+$$
+\text{APD}^{*}(0.002) = 38.53 \ \text{t.u.} \qquad c^{*} = 1.6328 \ \text{s.u./t.u.}
+$$
+
+### The two physical observables
+
+$$
+\text{APD}_{ms} = \text{APD}^{*}(\varepsilon) \cdot K
+$$
+
+$$
+\text{CV} = c^{*} \sqrt{D} \cdot \frac{s}{K}
+$$
+
+The first is a unit conversion: a duration in model ticks times milliseconds per
+tick. The second is a velocity: model-units-per-tick, converted to mm per ms by
+the space and time scales, with $\sqrt{D}$ because in a reaction–diffusion system
+the wave speed scales as the square root of the diffusion coefficient.
+
+### Why one knob cannot serve two targets
+
+Look at where $K$ appears. It **multiplies** in the first equation and
+**divides** in the second:
+
+$$
+\text{APD}_{ms} \propto K \qquad\text{but}\qquad \text{CV} \propto \frac{1}{K}
+$$
+
+Raise $K$ to lengthen the action potential and conduction slows by the same
+factor. Lower it to speed conduction and the action potential shortens. **A
+calibration that adjusts $K$ alone can satisfy one target or the other, never
+both** — it slides along a curve in $(\text{APD}, \text{CV})$ space rather than
+reaching a point.
+
+This is not hypothetical. An earlier calibration of this pipeline set $K$ by hand
+to reach a conduction-velocity target and left action-potential duration at
+**51 ms** — roughly a quarter of any physiological value — for two months. The
+number was wrong in a way that no test could catch, because nothing recorded what
+the number was *for*.
+
+### What makes a two-target solve possible
+
+The system is only solvable because it turns out to be **triangular** rather than
+fully coupled. Three properties, all measured on this solver:
+
+**1. Action-potential duration in model units does not depend on diffusion.**
+Sweeping $D$ over a sixteen-fold range moves $\text{APD}^{*}$ by less than 0.1 %:
+
+| $D$ | 0.25 | 1 | 2 | 4 | 16 |
+|---|---|---|---|---|---|
+| $\text{APD}^{*}$ (t.u.) | 25.89 | 25.89 | 25.89 | 25.88 | 25.87 |
+
+**2. Conduction velocity follows the square-root law.** Measured $c^{*}$ at
+$D = 0.25, 1, 4$ gives $0.797, 1.612, 3.248$ — ratios of $0.49 : 1 : 2.01$
+against a predicted $0.5 : 1 : 2$.
+
+**3. $\varepsilon$ is very nearly a pure duration knob.** It moves
+$\text{APD}^{*}$ substantially while leaving conduction velocity almost
+untouched — under 2 % over a ten-fold range:
+
+| $\varepsilon$ | 0.002 | 0.004 | 0.010 | 0.020 |
+|---|---|---|---|---|
+| $\text{APD}^{*}$ (t.u.) | 38.53 | 33.03 | 25.92 | 20.76 |
+
+roughly $\text{APD}^{*} \propto \varepsilon^{-0.27}$.
+
+Together these say: **duration is set by $(\varepsilon, K)$ and velocity is then
+set by $D$.** Fix $\varepsilon$, solve $K$ from the duration target, and $D$
+falls out of the velocity target with nothing feeding back.
+
+We hold $\varepsilon$ at **0.002**, the value in Aliev–Panfilov's own paper. It
+is also the cheaper end: it maximises $\text{APD}^{*}$, which minimises the $K$
+needed, which by the relations below keeps $D$ small and $\Delta t$ large. The
+solver's own default is 0.01, five times larger — defensible for a package whose
+examples claim no physical time scale, but we inherited it without noticing.
+
+### The solve
+
+$$
+K = \frac{\text{APD}_{ms}}{\text{APD}^{*}(\varepsilon)}
+\qquad\qquad
+D = \left( \frac{\text{CV} \cdot K}{c^{*} \cdot s} \right)^{2}
+$$
+
+Two divisions and a square. It is deliberately **analytic and simulation-free**,
+so it costs microseconds and can therefore run on every model-card load rather
+than once in a notebook — which is what lets a card be re-derived and checked
+instead of trusted.
+
+At the shipped targets of 80 cm/s and 220 ms:
+
+$$
+K = 5.709836 \ \text{ms/t.u.} \qquad D = 7.826387 \qquad \Delta t = 0.001797 \ \text{t.u.}
+$$
+
+### The integration step is not free
+
+The solver uses an explicit scheme, which is stable only below
+
+$$
+\Delta t \le \frac{\Delta r^{2}}{2 \, d \, D}
+$$
+
+for $d$ spatial dimensions. We take **90 %** of that bound. The margin is cheap —
+10 % more integration steps — and the failure it prevents is not:
+**violating this bound does not raise an error.** The integration diverges and
+the pipeline writes a perfectly well-formed bank full of a diverged field.
+
+Note the coupling this creates: $D$ appears in the denominator, so a *faster*
+conduction target means a larger $D$, a smaller $\Delta t$, and a longer run. The
+cost of physiological realism is paid in wall-clock.
+
+### Why the measured value never equals the target
+
+The solve treats the mesh as continuous. It is not. Spatial discretisation
+widens the upstroke relative to the grid, which makes the wave arrive slightly
+early, so **measured conduction velocity lands a few percent above target** —
+about 1.5 % at $D \approx 5$ and 8 % at $D \approx 10$. Duration is unaffected,
+landing within 0.5 %.
+
+At the shipped working point the round trip gives **83.3 cm/s and 219.8 ms**
+against targets of 80 and 220. Duration is 0.09 % off, confirming the
+separability argument above; velocity is 4.1 % high, matching the predicted
+discretisation excess at $D = 7.83$. The achieved 83.3 cm/s also sits inside the
+$88 \pm 9$ cm/s measured intra-operatively on human right-atrial free wall
+([Hansson 1998]), so the *realised* value is arguably a better number than the
+target was.
+
+**Both are recorded.** A model card carries the targets, the solved parameters
+and the measured outcome as three separate blocks. Reporting a target as though
+it were an achievement would be a small dishonesty in a document meant to be
+cited.
+
+### One constraint that comes from the window, not the physiology
+
+The stored trace is a $T$-sample window cut around the activation at fractional
+position $p$. Repolarisation falls outside that window only if
+
+$$
+\text{APD}_{ms} > T \,(1 - p)
+$$
+
+and since $p$ can approach 0, the guarantee that holds for every trace is
+
+$$
+\boxed{\ \text{APD}_{ms} \ \ge \ T\ }
+$$
+
+At $T$ = 192 ms this is why the shipped duration target is 220 ms and not a
+shorter figure from the atrial-fibrillation literature. Below the bound, a second
+deflection appears inside every synthetic window at a **fixed offset** after the
+activation — at 51 ms duration it sat $51.2 \pm 1.0$ ms after every activation at
+9–21 % of activation amplitude. A marker present in all synthetic traces and no
+real ones is a shortcut a classifier can learn instead of the morphology, which
+makes this a correctness constraint rather than a cosmetic one.
+
+### Courtemanche: only half the system inverts
+
+The second cell model is biophysical rather than phenomenological, and the
+asymmetry that follows is the reason its model card looks incomplete beside the
+first one.
+
+**There is no $K$.** Courtemanche is dimensional — it already runs in
+milliseconds — so the unit conversion that made $\text{APD}_{ms}$ solvable does
+not exist. Its duration emerges from twelve interacting membrane currents and has
+no closed-form inverse. Nothing can be solved from a duration target.
+
+**But conduction velocity still inverts**, and for a reason worth stating
+plainly: velocity is a property of how cells are *coupled*, not of what a cell
+*is*. In the monodomain equation
+
+$$
+\frac{\partial V}{\partial t} = \underbrace{\nabla \cdot (D \nabla V)}_{\text{tissue}} - \underbrace{\frac{I_{\text{ion}}}{C_m}}_{\text{cell model}}
+$$
+
+the $\sqrt{D}$ scaling comes from the first term, which knows nothing about the
+second. So a conduction target inverts to a diffusion coefficient for *any*
+membrane model, and two cards built on different cell models can honestly claim
+the same tissue.
+
+The consequence for calibration practice: **for a biophysical model, duration is
+not chosen but obtained.** Pick conductances, run the model, measure what
+happened, and record it. Where the phenomenological model has a solve, the
+biophysical one has a search.
+
+**And its mesh requirement is harsher.** The wavefront occupies
+$\text{(upstroke duration)} \times \text{CV}$ of tissue. Aliev–Panfilov's upstroke
+is smooth and broad; Courtemanche's is about 0.59 ms, which at 83 cm/s is 0.49 mm
+— fewer than two cells at $\Delta r = 0.25$ mm, against the five to ten that
+monodomain practice expects. The signature is visible in the exponent: fitting
+$\text{CV} \propto D^{\,n}$ over measured points gives $n = 0.625$ then $0.542$,
+converging on the exact $\tfrac12$ only as the mesh begins to resolve the
+wavefront. **A calibration will absorb that error into $D$ and hit the velocity
+target anyway**, leaving a coefficient that is no longer physical — which is why
+the resolution a card was solved at is recorded on the card and re-checked when
+it loads.
+
+[Hansson 1998]: https://doi.org/10.1053/euhj.1997.0742
+
 ## Capture sizing for controlled-position cropping — the equations
 
 The goal is to window a synthetic trace the way an IAFDB trace is windowed. A
@@ -1133,22 +1392,27 @@ k(p_{lo}) = \operatorname{round}(0.4 \times 191) = 76
 $$
 
 $$
-N = 115 + 192 + 192 - 76 = 423 \text{ samples} = 423 \text{ ms}
+N = D + V + T - k(p_{lo}) = 115 + 384 + 192 - 76 = 615 \text{ samples} = 615 \text{ ms}
 $$
 
-Then the solver clock, at `ap_time_unit_ms` = 1.97:
+using the travel allowance $V = 2T = 384$ — see **The travel allowance** above for
+why it is twice the window and not once.
+
+Then the solver clock, at the shipped card's time-unit constant $K = 5.709836$
+ms per model time unit:
 
 $$
-t_{\max} = \frac{N_{\text{ms}}}{\texttt{ap\_time\_unit\_ms}} = \frac{423}{1.97} = 214.7 \text{ model units}
+t_{\max} = \frac{N_{\text{ms}}}{K} = \frac{615}{5.709836} = 107.7 \text{ model units}
 $$
 
 Sanity check on the extremes. The activation lands somewhere in
-$a \in [115,\, 307]$:
+$a \in [115,\, 499]$, i.e. between the stimulus delay and the delay plus the full
+travel allowance:
 
 - earliest ($a = 115$), latest position ($p = 0.6$): window starts at
   $115 - 115 = 0$ — flush against the front, nothing spare;
-- latest ($a = 307$), earliest position ($p = 0.4$): window ends at
-  $307 - 76 + 192 = 423$ — flush against the back, nothing spare.
+- latest ($a = 499$), earliest position ($p = 0.4$): window ends at
+  $499 - 76 + 192 = 615$ — flush against the back, nothing spare.
 
 Both bounds are tight, which is the point: the capture is the smallest one that
 cannot fail.

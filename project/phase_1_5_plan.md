@@ -2,12 +2,17 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 23/44 steps done — **Wave 1 complete; Wave 2 underway**
-(S38 split into S38a/S38b/S38c and S16 into S16a/S16b, hence 44; **S17 absorbed by S38c**, which
+**Status:** in progress · **Progress:** 27/47 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 as a local step = 47; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
-**Next:** back to the planned Wave-2 order at **S16**. The pseudo-EGM / calibration cluster
-(S37 · S39 · S40 · S38a · S38b · S38c) is **complete and round-trip verified**; CL-167's
-detection-curve unification still rides with a later step.
+**Next:** **S18c** — the two measurements Courtemanche is waiting on: the `dr` convergence sweep
+(S18b measured CV ~ `D^0.58` rather than `D^0.50` at 0.25 mm, which is under-resolution with a
+number on it) and the cAF severity sweep to a matched 220 ms. S18a/S18b shipped 2026-08-15, so the
+ionic model runs end to end against a published control vector. The pseudo-EGM / calibration cluster
+(S37 · S39 · S40 · S38a · S38b · S38c) is **complete and round-trip verified**, and S16a/S16b
+shipped 2026-08-16; CL-167's detection-curve unification still rides with a later step — S16a made
+the curve *selectable*, which is the precondition for measuring whether unifying it matters, not the
+unification itself.
 **Repo estimate:** **85.5–152 h** active (40 complexity points; cold-start ranges — the
 `estimation_ledger.csv` is empty, so every estimate here is by analogy against the §8 reference
 anchors, not `points × measured rate`)
@@ -27,7 +32,7 @@ execution order**, matching the Steps section below.
 | CL-143 **+ B13** | 2 | **One ClassifierBank, one θ bank** — the clean intermediate gets its own id base (B13) and its own θ bank, so the join stops refusing it | S (2) | 2–4 h | S13 |
 | SEP10 | 2 | Anchoring opt-in flag — `UniformPositionGenerator(p, p)` is the fixed arm; config-only | XS (1) | *(absorbed)* | S15 |
 | SEP13 **+ CL-167 half** | 2 | Positional-sensitivity probe bank — one sim, crop offset swept on a grid, morphology/seed held constant. **Plus the configurable detection curve** folded in 2026-08-16: `crop_traces` always accepted a `preprocessor` the runner never passed, so the seam was unreachable from config | M (3) | 4–8 h | S16a · S16b |
-| SEP5 | 2 | Courtemanche 1998 human-atrial cell model alongside Aliev–Panfilov | L (5) | 11–20 h | S17–S20 |
+| SEP5 | 2 | Courtemanche 1998 human-atrial cell model alongside Aliev–Panfilov. **S17 absorbed by S38c**; S18 split into S18a (spec-carried cell model, pure refactor) + S18b (the model itself) | L (5) | 11–20 h | S18a · S18b · S18c · S19 · S20 |
 | B12 | 2 | Resource / CPU cap on a generation run | S (2) | 2–4 h | S21 |
 | SEP11 | 2 | θ-sweep harness + `generation_params` writer + pluggable sampler (OAT first, then LHS/grid) — one capability, run twice per §8.2 | L (5) | 12–20 h | S22–S25 |
 | SEP1 | 2 | Band-pass out of the mixer into a general, independently-runnable post-processing stage | M (3) | 6–9 h | S26–S28 |
@@ -994,7 +999,29 @@ trailing "docs" step, each landing a handful of lines. Two rules apply from here
   big patch, which would make both options ways of buying flat lead-in and turn this into a study-design
   question about how back-bounded `p` may be. Cost note: 40→60 mm is ~3x per simulation, a §8 input.
 
-### S16 — Positional-sensitivity probe bank + configurable detection curve (SEP13) ☐ (4–8 h)
+### S16 — Positional-sensitivity probe bank + configurable detection curve (SEP13) ✅ (4–8 h)
+
+**Done 2026-08-16** as S16a (curve) then S16b (probe), four commits. Gate green, and Daniel
+generated a probe bank and **opened it in egm-studio** — the end-to-end check that matters, since
+egm-studio is the consumer whose uniqueness rule the first attempt violated. 22 probe tests +
+19 curve tests; every verify bullet below has one.
+
+**S16b was reworked once, and the lesson is worth more than the step.** The first cut tiled the
+trace axis to `(pair × grid point)` inside one simulation and added a `pair_index_per_trace` field
+to keep it straight. It shipped a bank with `pair_index` running 0–59 against 20 real pairs.
+I had reviewed that design twice and written a careful audit table for keeping the three array
+lengths consistent — which made the wrong shape *look* rigorous. **The audit was real; it was
+auditing a structure that should not have existed.** Daniel found it from the generated data in
+about a minute by asking whether `pair_index` still meant what it says. Checking that a structure
+is internally consistent is not the same as checking it is the right structure.
+
+**One scope reduction, recorded because it was not agreed:** `grid.pair_indices` — the optional
+pair subset Daniel selected when choosing the probe shape — **did not ship**. It is rejected by
+name with a pointer, which is the right mechanism, and the workaround (select pairs when analysing
+the bank) is real. But a subset would not reintroduce the tiling; it would need the result to carry
+a *subset index*, which stays unique and legal. So the knob is deferrable, not impossible, and the
+shipped error message states the reason more strongly than the facts support. Revisit if a sweep
+ever gets expensive enough that cropping 20 pairs instead of 3 matters.
 - **Change:** a probe generation mode — run **one** simulation, then emit one trace per grid point by
   cropping that same simulation output at each offset, morphology and seed held constant. Reuses
   S14's sizing rule (the sim must reach the widest grid point) and SEP12's writer; **no schema
@@ -1211,20 +1238,275 @@ on its own and the landmine stays armed. Make both banks read the *same* array.
   against a known-good prior fixture.
 - **Depends on:** S10. **Total stays 43** — this is a step accounted for, not a step deleted.
 
-### S18 — `Courtemanche` concrete + backend dispatch + config block (SEP5) ☐ (4–7 h)
-- **Change:** `Courtemanche` spec (curated conductance scalings as a params dict, so SEP11 can
-  address them by `path`) + `_build_model_2d` dispatch in `backends/finitewave/backend.py`, **plus
-  the `cell_model:` config block and its dispatch in `cli/_config.py`** so the model is reachable
-  from a config file in the same commit that introduces it.
+### S18a — `SimulationSpecs` carries the cell model; delete the string-sniffing ✅ (1–2 h)
+
+**Done 2026-08-15.** `SimulationSpecs` grew `cell_model` (the fifth spec, D2), the runner passes
+the object it already had, `cell_model_model()` takes the spec, and both string-sniffs are gone —
+`bank_config`'s identity dispatch *and* `builders._cell_model_from_backend_meta`, which named every
+bank this project has written after finitewave's class. Full gate green (296 fast + 11 slow).
+
+**The "nothing moved" check, and the one place the entry's wording could not be met.** A bank
+regenerated before and after is **not byte-comparable as a file**: `created_utc` is stamped at write
+time and HDF5 object headers carry `track_times`, so *two runs of unchanged code* already differ on
+disk — verified, not assumed. The check is therefore exact **content** comparison — every group,
+dataset, attribute, dtype and shape, floats compared bit-for-bit — with `created_utc` excluded and
+nothing else. Both controls were run before trusting it: unchanged code twice → identical, and a
+one-ULP float / one-character string edit → caught. Two configs, since an explicit `output.bank_id`
+bypasses the derived-id path that also changed: **identical on both, both banks, all 118 keys.** The
+"before" for the derived-id run came from `git archive HEAD` into a scratch tree shadowed by
+`PYTHONPATH`, so it is genuinely the old code, not a reconstruction of it.
+
+- **`ap_time_unit_ms` in `backend_metadata`: removed, after grepping every reader.** The only
+  consumers were the sniffing mapper and `backend_model`'s exclusion list, which existed to keep it
+  *out* of `params` — so it reached disk through no path and its removal moves no number. The
+  backend's own `dt_ms = dt_model_units * ap_time_unit_ms` is untouched: it reads the cell model
+  directly, never the metadata. The exclusion entry stays as a rule about where the fact lives.
+- **`model_class` is still emitted, and no longer read by anything.** It is honest provenance about
+  which finitewave class integrated the run; it was never in `params` either. Two tests pin the
+  change: metadata that *lies* (`model_class="TotallyDifferentModel3D"`, `ap_time_unit_ms` × 3) must
+  not disturb the bank. Both fail on HEAD for the stated reason — checked by running HEAD's own
+  functions against the same lever: `"totally_different_model3_d"` and `5.91`.
+- **Not done here:** the Courtemanche branch that the old mapper carried for a `model_class` string
+  no backend emits is gone rather than re-keyed on a spec that does not exist yet. `cell_model_model`
+  now refuses an unwired spec by name, which is the extension point S18b lands in.
+
+**A behaviour-preserving refactor, and it exists to recover a check S17 lost.** S17's entry argued
+a pure refactor earns its own commit *because* its whole verification is "nothing changed
+numerically" — then S17 was absorbed into S38c, which moved every number on purpose, so that check
+was never available. This is the same category of change and it can still be verified that way, so
+take it **before** Courtemanche rather than folding it in.
+
+- **Change:** `SimulationSpecs` bundles four specs and the cell model is not one of them, so
+  `bank_config.cell_model_model()` recovers the model identity by **string-sniffing**
+  `backend_metadata["model_class"]` and reading `ap_time_unit_ms` back out of backend metadata. Its
+  own docstring says "Phase 1.5 has no `CellModelSpec` yet … when SEP5 lands, this takes the spec
+  directly and the string sniffing goes" — S38c landed the spec and left the sniffing. Add
+  `cell_model` to `SimulationSpecs`, have `bank_config` take the spec, delete the sniffing and the
+  `ap_time_unit_ms` round-trip through `backend_metadata` that only exists to feed it.
+- **Why it blocks Courtemanche:** that function is the dispatch point where a Courtemanche bank
+  would be recognised. Building on a string-sniff means the new model is identified by the class
+  name finitewave happens to use, which is a dependency on a third party's naming.
+- **Verify:** **every existing fixture numerically unchanged** — that is the whole point; a
+  regenerated AP bank must be byte-identical. `model_class` no longer read anywhere for identity.
+- **Depends on:** S16.
+
+### S18b — `Courtemanche` cell model, card and backend dispatch (SEP5) ✅ (5–9 h)
+
+**Done 2026-08-15.** `CourtemancheCellModel`, `calibrate_courtemanche`, both card branches, the
+`_build_model_2d` dispatch and the `courtemanche_control` card. Full gate green (324 fast + 14 slow, up from 296 + 11).
+
+**The published vector reproduces, at the pinned protocol** — 50 beats at BCL 1 s, single cell,
+20 mV/ms × 2 ms stimulus, `dt = 0.02 ms`. Against Wilhelms Table 1 C: amplitude **−3.5 %**, RMP
+**+0.5 %**, APD50 **+2.7 %**, APD90 **−0.8 %**, dV/dt max **+14.2 %**. The last one is the outlier
+and the stimulus is why — the maximum falls *inside* the 2 ms stimulus window, so it carries the
+amplitude with it (measured 165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30 mV/ms), and Wilhelms does
+not state what it used. The test's tolerance on that quantity is 20 % and says so; the other four
+are 3–15 %. Workman 2001's experimental 203 ± 11 V/s brackets our 213.
+
+**Trap 3 is real, and it is now measured rather than argued.** CV was measured at three diffusions
+spanning 16×: `D = 0.0385 → 24.13`, `0.154 → 57.40`, `0.616 → 121.66` cm/s. A pure `sqrt(D)` law
+anchored at the middle point predicts 28.70 and 114.80 — so **−15.9 % and +6.0 %**, i.e. CV ~ `D^0.58`
+rather than `D^0.50` at `dr = 0.25 mm`. The law is exact physics; the mesh is what bends it, and the
+direction is right for under-resolution (smaller `D` ⇒ narrower wavefront ⇒ fewer cells across it).
+The solved point is only 1.94× from the anchor, so the residual is small: solved for 80 cm/s,
+**measured 82.9** (+3.6 %), recorded on the card the way S38b recorded Aliev-Panfilov's. **This is
+the number S18c's convergence sweep should watch** — the exponent returning toward 0.50 is what
+"converged" looks like.
+
+**Two things landed that the entry did not call for, both because the alternative was a silent
+no-op.** (1) `ModelTargets.apd90_ms` became `float | None` as the entry required, which raised the
+question of what a *stated* APD target means on a card that cannot solve for one; it is checked
+against the card's own `measured:` block (`MEASURED_APD_RTOL`, 5 %) rather than ignored, because
+this repo has been bitten three times by a knob that quietly did nothing. S18c's matched card is
+what will exercise it. (2) The conductance-scaling names are an explicit backend registry, and a
+name outside it is refused — which surfaced the finding below at authoring time rather than at sweep
+time.
+
+**S18c blocker found early: `g_Kur_scale` cannot be applied by assignment.** finitewave 0.9.3
+computes I_Kur's conductance *inside* the kernel as a function of voltage
+(`gkur = 0.005 + 0.05 / (1 + exp(-(u - 15) / 13))`); there is no `gkur` parameter. Three of CL-180's
+four cAF scalings (`I_to`, `I_CaL`, `I_K1`) are plain attributes and work; the fourth needs a kernel
+change or a fork. The backend refuses the name rather than accepting it into a dead attribute, so
+the severity sweep cannot silently move three currents and report four.
+
+**One thing Courtemanche makes live that was filed under "Phase 2":** the capture→output downsample
+has **no anti-alias filter**, justified in `docs/simulation_theory.md` by Aliev-Panfilov having
+"minimal energy above a few hundred Hz". A 0.59 ms upstroke does not obviously satisfy that at a
+1 kHz output. How much survives the pseudo-EGM's `1/r` spatial integration, which smooths heavily,
+is **not measured** — the doc now says so rather than carrying the phase-number justification.
+Worth a spectrum of a Courtemanche bank before S20's runtime characterisation.
+
+**Not done here, deliberately:** `dt` and `dr` were both authored at what could be *measured*, not
+chosen. `CRN_MAX_DT_MS = 0.02` comes from a convergence check (0.02 vs 0.01 moves every property by
+≤ 1 %); `dr` stays at 0.25 mm because S18c owns that measurement, and the card records the pitch it
+was solved at so `calibrate_courtemanche` and load-time verification both refuse another one.
+
+**Reconciled 2026-08-16 — the original entry predated S38 and was wrong in two ways.** It called for
+"the `cell_model:` config block and its dispatch in `cli/_config.py`". There is no such block: S38b
+made the cell model come from a **model card** named by `backend.model`, and adding a parallel block
+would restore precisely the two-sources-for-one-number failure the card exists to prevent.
+Courtemanche arrives as a **card type**. It also placed the spec in `specs.py`; the fifth spec lives
+in `cell_models.py`. The extension points are already cut and named — `parse_model_card` refuses an
+unregistered type, and `verify_targets_against_solve` says "add a branch here when the model gains
+a solve."
+
+**Card shape: partial targets — CV solved, APD measured (Daniel, 2026-08-16).** The card was built
+around a dimensionless model that needs a solve; Courtemanche is dimensional and mostly does not.
+The physics splits cleanly and the card follows it:
+
+- **CV stays solvable.** `CV ∝ √D` is a property of diffusion, not of the membrane, so a
+  `conduction_velocity_cm_s` target inverts to `diffusion` and `dt` exactly as it does for
+  Aliev–Panfilov. Load-time verification keeps working on this half.
+- **APD does not.** There is no time-unit constant; APD90 falls out of the ionic equations and the
+  conductance scalings, with no closed-form inverse. It is recorded as **measured**, never solved.
+- **Conductance scalings are `params`** — chosen, not derived. The contract already fixed this half:
+  `CourtemancheCellModel` is `type` plus an open `params` dict, deliberately open because "which
+  conductances are worth varying is an experimental question", and the θ-spec points into it by
+  `path` when SEP11 sweeps one.
+
+So `targets` becomes **per-model partial** rather than a fixed pair. That is the cost, and it is
+the right one: it keeps an AP bank and a Courtemanche bank able to state that they aimed at the
+same conduction velocity, which is what makes the A/B between them interpretable at all.
+
+**Research answered in CL-180 (2026-08-16), and it splits this step in two.** Source throughout is
+**Wilhelms et al., *Front Physiol* 2012;3:487**, an independent reimplementation with a stated
+protocol — *not* CRN 1998's own table, which research could not retrieve. That is arguably the
+better fixture (matching someone else's implementation validates ours, and it gives a five-element
+vector rather than one number) but it is a **different claim**, and the card must say which.
+
+**CRN control, BCL 1 s** — Amplitude 110.11 mV · RMP −81.04 mV · APD50 165.16 ms ·
+**APD90 294.83 ms** · **dV/dt max 186.58 V/s**. Control **clears `T = 192` with margin**, which is
+what makes it authorable now.
+
+**Full cAF remodelling does NOT clear `T`** — `I_to` −65 %, `I_CaL` −65 %, `I_Kur` −49 %,
+`I_K1` +110 % (van Wagoner 1997 · Bosch 1999 · Dobrev 2001) gives **APD90 143.87 ms < 192**, so the
+shortcut CL-176 removed would come straight back. The fix is **partial** remodelling along the same
+published axis via a severity scalar `s ∈ [0,1]`, swept once until measured APD90 = 220 ms
+(`s ≈ 0.4–0.6`). That sweep is a **measurement**, so it gets its own step.
+
+**Three traps, all from CL-180, all capable of producing a wrong number that looks right:**
+
+1. **CRN never reaches steady state.** APD90 falls to 83 % of first-beat over 16 min; APD50 falls
+   42 % over 20 min at BCL 1 s. "CRN's APD90" is meaningless without a beat count — the same model
+   legitimately reads 295 ms or ~245 ms depending when you look. **Pin BCL *and* number of beats in
+   the card and the test** (Wilhelms paces 50 s at BCL 1 s). Most likely cause of a flaky failure.
+2. **Do not also apply Wilhelms' 30 % intracellular-conductivity reduction.** Our card *solves* CV
+   from diffusion, so applying both double-counts: the solve would simply raise `diffusion` to
+   cancel it — a no-op with extra steps, leaving a `diffusion` that means nothing physical. The
+   gap-junction effect belongs **inside** the CV target; say so on the card.
+3. **`dr = 0.25 mm` is under-resolved for CRN, and the failure is silent.** CRN's upstroke is
+   ≈ 0.59 ms ⇒ a wavefront ≈ 0.47 mm wide ⇒ **1.9 cells** at today's `dr`. Monodomain practice wants
+   5–10. **A CV-solve will absorb the discretisation error into `diffusion` and hit the target
+   anyway**, leaving a physical-looking number that is not — the same shape as S38b's measured
+   "CV ran 8 % high at D ≈ 10". Cost is **f⁴**, not f²: refining by f costs f² nodes *and* f²
+   timesteps, since holding CV forces `D ∝ f²` which tightens the stability bound equally.
+
+   | `dr_mm` | grid | cells across the upstroke | mesh cost |
+   |---|---|---|---|
+   | 0.25 (today) | 160² | 1.9 | 1× |
+   | 0.10 | 400² | 4.7 | **39×** |
+   | 0.05 | 800² | 9.4 | 625× |
+
+   With CRN's per-node cost over AP (21 state variables and gating exponentials vs 2) this is
+   **roughly 400–1200× an AP simulation** at `dr = 0.1`. **Daniel's call, 2026-08-16: proceed
+   anyway** — a desktop and an overnight run cover it, and a capability that is expensive to run
+   beats not having it. SEP5 needs *one good* CRN bank for a comparison, not a corpus.
+   **Note the useful coupling already in place:** a card records the `dr` it was solved at and
+   `verify_targets_against_solve` re-solves on every load, so a card authored at `dr = 0.1` and
+   loaded against `geometry.dr_mm: 0.25` **raises**. Under-resolution cannot happen silently through
+   the card path; it is caught by machinery that already exists.
+
+- **Change:** `CourtemancheCellModel` in `cell_models.py` — `ms_to_model_time` returns its argument
+  unchanged (the seam `CellModelSpec` was cut for), `to_metadata`, and its own stability limit;
+  a `calibrate_courtemanche` solving CV → `diffusion`/`dt`; the `parse_model_card` and
+  `verify_targets_against_solve` branches; `_build_model_2d` dispatch in
+  `backends/finitewave/backend.py` and removal of the AP-only refusal. **Ships the `courtemanche_control`
+  card** — fully sourced from Wilhelms Table 1, clears `T` with margin, and gives the end-to-end
+  path a real target. The AF-matched card waits for S18c.
   **Availability confirmed 2026-07-28** (see the decisions log): finitewave 0.9.3 ships
   `fw.Courtemanche` with a `fw.Courtemanche2D` back-compat alias, so the dispatch is the same idiom
   as today's `fw.AlievPanfilov2D()`. Conductances (`gna`, `gk1`, `gto`, `gkr`, `gks`, `gcal`, …) are
   plain instance attributes read at kernel-run time, so scalings are set by assignment — no patching
-  of the model, and SEP11 can address them by `path`.
-- **Verify:** a short Courtemanche sim produces a physiologically plausible AP upstroke + plateau
-  (assert upstroke velocity and APD90 fall in published human-atrial ranges, not just "runs");
-  config tests cover the new block + an unknown-model error.
-- **Depends on:** S17.
+  of the model, and SEP11 can address them by `path`. **Confirmed on landing, with one exception:
+  `gkur` is not among them** — see the note above the change list.
+- **Verify:** a short Courtemanche sim produces a physiologically plausible AP upstroke + plateau —
+  **assert upstroke velocity and APD90 fall in published human-atrial ranges, not just "it runs"**;
+  the solved diffusion reaches the measured CV target within the same tolerance S38b accepted;
+  an AP card still loads and verifies unchanged; a card naming an unregistered model is refused by
+  name; `ms_to_model_time` is the identity for Courtemanche and is *asserted* to be, since a silent
+  division by a time unit that does not exist is the failure this seam was cut to prevent.
+- **No known-good prior fixture, and that is a consequence worth stating.** S17 was meant to leave a
+  clean numerical baseline for exactly this step; absorbed into S38c, it did not. So Courtemanche is
+  validated against **Wilhelms' published vector** rather than against a previous run of our own.
+  That is weaker, and it is why the five values are asserted rather than eyeballed.
+- **Depends on:** S18a.
+
+### S41 — Process identifiers out of `src/` and `docs/` ☐ (2–4 h)
+- **Daniel, 2026-08-25**, on finding a step id in a `cell_models.py` comment: comments may cite
+  papers and physics but must not reference project phases, coordination-log entries, or
+  implementation steps. Confirmed to cover **both `src/` and `docs/`**; `project/` keeps everything.
+- **Why:** these packages are going to PyPI. `CL-176` means nothing to an external reader and never
+  will, and once a phase is archived the number is noise internally too. A citation stays verifiable
+  forever; a process id rots. It slots into the existing `project/` (internal) / `docs/` (external)
+  split rather than inventing a new rule.
+- **Scale, measured:** **~133 references across 20 files in `src/`** — 42 `CL-NNN`, 47 step ids,
+  26 `SEP-NN`, 13 `FB-NN`, 5 design notes — plus **14 in `docs/`**. Worst offenders
+  `cell_models.py` 13, `bank_config.py` 11, `runner.py` 8, `cli/_config.py` 8.
+- **This is NOT a find-and-delete, and treating it as one will make the codebase worse.** Most of
+  these pointers stand *in place of* the reasoning rather than beside it. `calibration.py`'s "APD
+  MUST EXCEED the trace duration … (CL-176)" becomes an unjustified assertion the moment the tag
+  goes. **Promote the reasoning inline:** "…because otherwise the repolarisation deflection lands
+  inside every cropped window at a fixed offset — a marker present in all synthetic traces and no
+  real ones." Self-contained, and better than the pointer was. A regex over 133 sites would leave
+  133 bare assertions — the scripted-bulk-edit trap CLAUDE.md already names.
+- **Own commit, not folded into S18.** Half-converting the nine files S18 touches while leaving the
+  other eleven is worse than either end state, and this needs real review attention precisely
+  because it *looks* mechanical and is not.
+- **Also update `CLAUDE.md`** — done 2026-08-25; it previously documented the opposite convention.
+- **Verify:** zero matches for `CL-[0-9]`, `SEP[0-9]`, `FB-[0-9]`, step ids and `design note D[0-9]`
+  under `src/` and `docs/`; `project/` unchanged; **every site that lost a tag gained a reason** —
+  spot-check that no comment now asserts a constraint without saying why; full gate green.
+- **Sibling repos are unchecked** and almost certainly carry the same pattern, since it was authored
+  consistently across the constellation. Out of scope here (one repo at a time); worth a backlog
+  entry or a note to the project-lead.
+- **Depends on:** S18b committed.
+
+### S18c — Mesh convergence, the cAF severity sweep, and the matched card (SEP5) ☐ (4–7 h)
+- **Change:** the two **measurements** CL-180 asks for, then the card they produce.
+  **(a) Mesh convergence** — sweep `dr` on a **1D strip, not the 40 mm patch**; CV and dV/dt max
+  versus `dr`, continued until both plateau. Pick the coarsest `dr` on the plateau and record the
+  curve. A strip is cheap and answers the same question, so the 39–625× patch cost is paid once for
+  the shipped card rather than once per candidate `dr`.
+  **(b) The cAF severity sweep** — single cell, no mesh at all, so it is nearly free: sweep
+  `s ∈ [0,1]` over `g_to ×(1−0.65s)` · `g_CaL ×(1−0.65s)` · `g_Kur ×(1−0.49s)` · `g_K1 ×(1+1.10s)`
+  until measured APD90 = 220 ms. Linear interpolation between 294.83 (s=0) and 143.87 (s=1) puts
+  `s ≈ 0.5`; the relation is nonlinear, so expect 0.4–0.6 and take the swept value.
+  **(c)** Author `af_remodelled_crn_220ms` — named to mirror `af_remodelled_220ms` so the shared
+  target is visible in the filename — recording `s`, the resulting scalings, the pinned BCL and beat
+  count, and the `dr` it was solved at. Write `investigations/courtemanche_calibration.md` beside
+  `ap_model_calibration.md` (research left that file to us deliberately).
+- **Why partial remodelling is defensible rather than a fudge:** it stays **on the published
+  parameter axis** — less far along van Wagoner / Bosch / Dobrev, not a new direction; AF remodelling
+  is **progressive**, so an intermediate stage is a real physiological state that ablation cohorts
+  span; and the card records `s` so a reader sees exactly how far we went. It also preserves the
+  architecture: **APD stays measured, never solved** — the sweep is a one-time authoring step,
+  exactly as `calibrate()` is run once for AP.
+- **The modality tension is real and must be stated, not smoothed.** In-vivo MAP gives 219–245 ms
+  for AF patients (Franz, CL-176) while isolated cAF myocytes give 95–144 ms — a ~2× disagreement.
+  They are different measurements at different remodelling stages. **We simulate in-vivo tissue
+  during a mapping procedure, so the MAP line is the matched modality**, which is why the AP card is
+  at 220 ms and why CRN follows it. Christ 2008's 287 ± 16 ms puts 220 inside the published cAF
+  range regardless.
+- **Verify:** measured APD90 within tolerance of 220 ms at the pinned protocol; measured CV matched
+  to the AP card's, so **upstroke morphology is the only free variable left** — that is the actual
+  scientific payoff of SEP5, since AP's upstroke is smooth and broad while CRN's is ~190–210 V/s and
+  EGM amplitude scales with dV/dt; the convergence curve is committed, not just its conclusion.
+- **If the sweep cannot reach 220 ms** while staying monotone and stable, CL-180 offers control CRN
+  (294.83 ms) as the fallback. **Take that only after escalating**, because it silently breaks
+  CL-180's own Q4 answer: two cards at different APDs describe different atria, and SEP5 stops being
+  model-vs-model. Prefer reopening the shared *target* over reopening the *matching*. **Do not
+  reopen `T`** — it is fixed by the classifier's multiple-of-64 constraint and by IAFDB extraction.
+- **Depends on:** S18b.
 
 ### S19 — Anisotropy + time-base for an ionic model (SEP5) ☐ (2–4 h)
 - **Change:** `_configure_anisotropy_2d_courtemanche` sibling; Courtemanche runs in real ms so the
@@ -1455,7 +1737,8 @@ same class as the `anisotropy_ratio = 3` passages in `simulation_theory.md` abov
 - **Change:** **rework the `examples/` config set** — it has drifted (Daniel, 2026-08-01: new configs
   added ad hoc during the phase) and is no longer a good cross-section of the runs we actually want
   to demonstrate. Decide the set deliberately — one clean baseline, one noise-mixed, one calibration,
-  one sweep (SEP11), one probe (SEP13) — rather than accreting one per experiment. Also trim
+  one sweep (SEP11), one probe (SEP13 — **already shipped as `examples/synthegm_probe.yaml` in
+  S16b**, so only the remaining four are open) — rather than accreting one per experiment. Also trim
   `roadmap.md` of everything shipped (the Phase 1.5 cluster, the polymorphic
   `stimulation` entry, and the `RunConfig.cell_model` open question closed by D2); finalize
   `CHANGELOG.md`; make sure `project/architecture.md` reflects the fifth spec, the `SimulationResult`

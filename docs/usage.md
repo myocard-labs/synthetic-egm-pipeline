@@ -146,6 +146,7 @@ backend:
   # back to bare constants, because uncalibrated physics that looks like a
   # normal run is the failure S38 exists to remove.
   model: af_remodelled_220ms               # default; targets CV 80 cm/s, APD90 220 ms
+  # model: courtemanche_control            # the human-atrial ionic model (SEP5)
 
 geometry:
   type: patch_2d                           # default 'patch_2d' (Phase 1: only option)
@@ -261,7 +262,7 @@ Per-field reference:
 | `dataset.master_seed` | int | 0 | Master RNG seed; per-sim seeds derive from this. |
 | `dataset.show_progress` | bool | true | tqdm bar over the simulator loop. |
 | `backend.type` | `finitewave` | `finitewave` | Backend dispatch. Phase 1 only has finitewave. |
-| `backend.model` | shipped card name or path | `af_remodelled_220ms` | **Membrane parameterisation.** Names a card under `src/myocard_synthetic_egm_pipeline/models/`, or a path to your own. The card states physiological *targets* (CV, APD90) and the *solved* Aliev-Panfilov knobs that reach them; the solve is re-run and checked against the recorded values on **every load**, so a card cannot drift from the routine that produced it. Not optional-with-a-fallback: omitting it still loads the default card, because a run producing uncalibrated physics that looks normal is the failure this replaced. To change the physics, write a card — do not look for knobs in `run:`. |
+| `backend.model` | shipped card name or path | `af_remodelled_220ms` | **Membrane parameterisation, and which cell model runs.** Names a card under `src/myocard_synthetic_egm_pipeline/models/`, or a path to your own. The card states physiological *targets* and the *solved* knobs that reach them; the solve is re-run and checked against the recorded values on **every load**, so a card cannot drift from the routine that produced it. Not optional-with-a-fallback: omitting it still loads the default card, because a run producing uncalibrated physics that looks normal is the failure this replaced. To change the physics, write a card — do not look for knobs in `run:`. See the shipped cards below. |
 | `geometry.type` | `patch_2d` | `patch_2d` | Geometry dispatch. Phase 1 only has patch_2d. |
 | `geometry.size_mm` | float | 40.0 | Patch edge length. |
 | `geometry.dr_mm` | float | 0.25 | Spatial step (mesh cell size). |
@@ -288,7 +289,7 @@ Per-field reference:
 | `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise (CL-112). With `activation_position` set this is *not* how long the solver runs; see that block. |
 | `run.output_fs_hz` | float | 1000.0 | Output sample rate. Shared with IAFDB by decision, not coincidence — catch22 lag features depend on it — so changing it is a both-sides-or-neither call. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
-| `run.dr_model_units` | float | 0.25 | The solver's own space step, in the backend's units. Backend/scheme, not physiology: it is paired with the model card's `dt` through the explicit-scheme stability bound `dt <= dr^2 / (2 · dim · D)`. |
+| `run.dr_model_units` | float | 0.25 | The solver's own space step, in the backend's units. Backend/scheme, not physiology: it is paired with the model card's `dt` through the explicit-scheme stability bound `dt <= dr^2 / (2 · dim · D)`. **Must equal `geometry.dr_mm` for a Courtemanche card** — that model's diffusion coefficient is in mm²/ms, so its space unit is the millimetre and a different value simulates a different mesh from the one the geometry describes. Aliev-Panfilov is dimensionless and has no such constraint. Refused rather than absorbed. |
 | `run.travel_allowance_ms` | float > 0 | `2 × trace_duration_ms` (384 ms at T=192) | **Assumed upper bound** on stimulus-to-pair travel time; sizes the capture via `N = D + V + T - k(low)`. Raise it when the crop reports a window off the **BACK**. **This is an assumption, not a bound** — the true value is distance/CV, and neither term is known at config time. It has already been too small twice: originally `T`, which failed on a fibrosis run; now `2T`, which failed at density 0.5 (measured travel 414 ms). Heavy fibrosis conducts far slower than a clean patch, so **a dense substrate needs a larger allowance**, and because density is drawn per simulation the failure is a *tail event* — a config that ran fine yesterday can fail today on a different draw. Over-estimating costs solver time; under-estimating costs the run. FB-36 replaces it with a derived value. |
 | `activation_position.low` | float 0..1 | (required if block present) | Smallest fractional activation position. **Sizes the capture** — the smaller it is, the more signal a window needs after the activation, so the longer the solver runs. |
 | `activation_position.high` | float 0..1 | (required if block present) | Largest fractional position. Kept below 1: the front cannot be extended, so a far-back position fills the window with flat pre-activation baseline. |
@@ -307,6 +308,41 @@ Per-field reference:
 | `mix.master_seed` | int | 0 | Mixer RNG seed. Independent of `dataset.master_seed`. |
 | `mix.show_progress` | bool | true | Progress bar over the mixing loop. |
 | `mix.description` | str | `""` | Stamped into the mixed bank's metadata. |
+
+#### Shipped model cards
+
+`backend.model` picks both the parameterisation **and the cell model** — the
+card's `type` says which membrane the backend integrates.
+
+| Card | Cell model | Targets | What it is |
+|---|---|---|---|
+| `af_remodelled_220ms` | `aliev_panfilov` | CV 80 cm/s, APD90 220 ms | The Phase-1.5 default. Phenomenological, two-variable, cheap. |
+| `courtemanche_control` | `courtemanche` | CV 80 cm/s | Courtemanche-Ramirez-Nattel 1998 human atrial myocyte, control (un-remodelled) conductances. The ionic half of the SEP5 A/B. |
+
+Both cards target the **same conduction velocity**, which is what makes a
+comparison between them a comparison of *membrane models* rather than of two
+unrelated tissues: the free variable left is upstroke morphology, and EGM
+amplitude scales with `dV/dt`.
+
+`courtemanche_control` states **no APD90 target**, and that is deliberate rather
+than an omission. Aliev-Panfilov solves its time-scale constant from an APD
+target; Courtemanche has no such constant and no closed-form inverse from the
+ionic equations, so its APD is **measured and recorded** under `measured:`
+instead. Card targets are therefore per-model partial. A Courtemanche card *may*
+state an APD90 target — S18c's AF-matched card will, since its conductances are
+chosen to reach one — and where it does, loading checks it against the card's own
+`measured:` block rather than against a solve.
+
+Two costs worth knowing before you generate with it:
+
+- **It is far more expensive.** 21 state variables and gating exponentials per
+  node against Aliev-Panfilov's 2, at a timestep the sodium current pins to
+  0.02 ms.
+- **It is authored at `dr = 0.25 mm`, which is under-resolved for it.** The
+  upstroke spans about 1.9 mesh cells where monodomain practice wants 5-10. The
+  card says so, and the machinery refuses rather than absorbing it: loading
+  `courtemanche_control` against any other `geometry.dr_mm` raises, because the
+  reference conduction velocity it solves through was measured at that pitch.
 
 #### Retired keys — these error rather than being ignored
 

@@ -78,7 +78,8 @@ src/myocard_synthetic_egm_pipeline/
 ├── simulate/
 │   ├── __init__.py               ← re-exports public API
 │   ├── specs.py                  ← 4 strategy Protocols + concretes (pure data)
-│   ├── cell_models.py            ← CellModelSpec, the FIFTH strategy spec (D2) + the AP solve
+│   ├── cell_models.py            ← CellModelSpec, the FIFTH strategy spec (D2) + the
+│   │                                Aliev-Panfilov and Courtemanche concretes and their solves
 │   ├── calibration.py            ← physiological targets, measured values, ModelCard
 │   ├── model_cards.py            ← load/verify a named parameterisation
 │   ├── bank_config.py            ← specs → synthetic_bank 2.0 per-sim config
@@ -664,6 +665,22 @@ Keeping the specs as objects rather than widening `run_metadata` further
 is the point: a dict of scalars cannot express a point stimulus's
 coordinate, an S1–S2 protocol's timings, or a cell model's conductance
 scalings, and those are exactly what Phase 1.5+ adds.
+
+**Second widening: `cell_model`, the fifth spec (S18a).** `SimulationSpecs`
+now bundles five, not four — design note D2's `CellModelSpec` joined the
+other four. Same category, same reasoning: the concrete result widened,
+no Protocol changed, and `run_single` is still the only producer.
+
+The reason it could not wait for Courtemanche is the failure it removes.
+With no cell model on the result, the `synthetic_bank` writer recovered
+the model's *identity* by matching `backend_metadata["model_class"]`
+against `"AlievPanfilov2D"` — the class name finitewave happens to use —
+and read `ap_time_unit_ms` back out of the same provenance bag. Both
+facts were the runner's already. A bank's account of its own physics
+therefore depended on a third party's naming, and a rename upstream would
+have written a bank that mislabelled itself while every test stayed
+green. This is the same shape as the anisotropy no-op: a proxy standing
+in for the thing, agreeing with it right up until it doesn't.
 
 ### Guardrail 3: backend-internal types stay backend-internal
 

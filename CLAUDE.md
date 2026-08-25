@@ -102,5 +102,27 @@ in config or a model card. Membrane knobs come from a named card
 
 `project/phase_1_5_plan.md` is the implementation plan (steps, status, design
 notes D1–D9). Cross-repo decisions and their evidence live in
-`../intracardiac-platform/project/investigations/` and the phase coordination log
-(`CL-NNN` references throughout the code point there).
+`../intracardiac-platform/project/investigations/` and the phase coordination log.
+
+**Process identifiers stay in `project/`. Never in `src/` or `docs/`.**
+
+| | may reference |
+|---|---|
+| `src/`, `docs/` | papers, physics, measured numbers — anything externally verifiable |
+| `project/` | all of the above **plus** `CL-NNN`, `SEP-NN`, `FB-NN`, step ids (`S18c`), design notes (`D6`), phase names |
+
+This package is going to PyPI. `CL-176` means nothing to an external reader and
+never will, and once the phase is archived the number is noise even internally.
+A citation stays verifiable forever; a process id rots.
+
+**The rule is not "delete the tag" — it is "write the reason instead."** Most of
+these pointers stand in *place of* the reasoning rather than beside it. A comment
+reading "APD must exceed the trace duration (CL-176)" becomes an unjustified
+assertion the moment the tag is stripped. Promote the content:
+
+> must exceed the trace duration, because otherwise the repolarisation deflection
+> lands inside every cropped window at a fixed offset — a marker present in all
+> synthetic traces and no real ones.
+
+Self-contained, and better than the pointer was. A regex that removes tags
+without promoting the reasoning leaves the codebase worse than it found it.
