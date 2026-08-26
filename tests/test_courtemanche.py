@@ -33,11 +33,13 @@ from myocard_synthetic_egm_pipeline.simulate.calibration import (
 )
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     CRN_CALIBRATION_DR_MM,
+    CRN_DIASTOLIC_THRESHOLD_MV_PER_MS,
     CRN_MAX_DT_MS,
     CRN_PACING_BCL_MS,
     CRN_PACING_BEATS,
     CRN_REFERENCE_CV_CM_S,
     CRN_REFERENCE_DIFFUSION,
+    CRN_STIMULUS_AMPLITUDE_MV_PER_MS,
     WILHELMS_2012_CRN_CONTROL,
     AlievPanfilovCellModel,
     CellModelSpec,
@@ -264,6 +266,62 @@ def test_the_shipped_courtemanche_card_states_no_apd_target() -> None:
     assert card.targets.apd90_ms is None
     assert card.measured is not None
     assert card.measured.apd90_ms > 0
+
+
+def test_the_card_records_both_upstrokes_and_says_which_is_which() -> None:
+    """Two upstrokes, and conflating them is what produced the 14 % outlier.
+
+    The card's ``measured.upstroke_v_s`` is the **propagated** one — dV/dt max
+    at the patch centre, 20 mm from the stimulus, driven by the arriving
+    wavefront. The **stimulated** single-cell figure is a different
+    measurement, recorded in the card's validation block, and it is the one a
+    published cell table reports.
+
+    They are not close: 131 against 215 V/s. An isolated cell puts all its
+    sodium current into its own membrane, while a cell in tissue spends much of
+    it charging the cells ahead. Asserting they differ substantially is what
+    stops a future edit from filling one field with the other's number, which
+    would read as perfectly plausible.
+    """
+    card = shipped_card()
+    assert card.measured is not None
+    propagated = card.measured.upstroke_v_s
+    assert propagated is not None, (
+        "the Courtemanche card records no propagated upstroke; it is the card's "
+        "physical claim about what a stored trace sees"
+    )
+
+    assert 100.0 < propagated < 180.0, (
+        f"a propagated upstroke of {propagated} V/s is outside the range loaded "
+        "tissue produces — check it has not been filled with the single-cell value"
+    )
+    stimulated = WILHELMS_2012_CRN_CONTROL["dvdt_max_v_s"]
+    assert propagated < 0.8 * stimulated, (
+        f"the propagated upstroke ({propagated}) is not clearly below the "
+        f"stimulated single-cell figure ({stimulated}); the two have most likely "
+        "been conflated"
+    )
+
+    provenance = card_provenance(card)
+    assert provenance["model_measured_propagated_upstroke_v_s"] == propagated, (
+        "the bank records the upstroke under a name that does not say which of "
+        "the two measurements it is"
+    )
+
+
+def test_an_aliev_panfilov_card_records_no_upstroke() -> None:
+    """A rate of change of a dimensionless ``u`` is not a volts-per-second.
+
+    Optional rather than universal, so the field is absent on a card that
+    cannot fill it honestly rather than carrying a number in units it does not
+    have — which would invite exactly the cross-model comparison the units
+    forbid.
+    """
+    card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
+
+    assert card.measured is not None
+    assert card.measured.upstroke_v_s is None
+    assert "model_measured_propagated_upstroke_v_s" not in card_provenance(card)
 
 
 def test_the_measured_courtemanche_apd_clears_the_trace_duration() -> None:
@@ -615,22 +673,73 @@ def test_the_provenance_a_courtemanche_bank_carries() -> None:
 
 #: Per-property tolerance on the Wilhelms comparison, as a fraction.
 #:
-#: Stated per quantity rather than as one number because the quantities are not
-#: equally determined by the model. RMP and APD90 are membrane properties read
-#: off a settled trace and should land close. ``dV/dt max`` is the loosest, and
-#: honestly so: it is measured *inside* the 2 ms stimulus window, so it carries
-#: the stimulus amplitude with it — 165 to 227 V/s across a plausible range of
-#: stimulus strengths — and Wilhelms does not state the amplitude used. 20 % on
-#: that quantity is what agreement with an independent reimplementation can
-#: mean when the protocol is only partly specified; a tighter figure would be a
-#: claim we cannot support.
+#: **Built from measured sources of variation, not from the observed miss.**
+#: Now that the stimulus is pinned at twice the measured capture threshold
+#: rather than at an unstated amplitude, there are only three things left that
+#: can legitimately move a number here, and all three have been measured:
+#:
+#: 1. **Where in the pacing train it is read.** Courtemanche never settles, so
+#:    "50 beats" is part of the fixture. Measured at 40 / 45 / 50 / 55 / 60
+#:    beats, moving the read point by +/- 10 beats moves APD50 by 0.9 %, APD90
+#:    by 0.25 %, and amplitude, RMP and ``dV/dt max`` by under 0.1 % each.
+#: 2. **The integration step.** Halving it to 0.01 ms moves amplitude 0.7 %,
+#:    APD50 1.0 %, APD90 0.6 %, ``dV/dt max`` 0.6 %, RMP 0.2 %.
+#: 3. **The stimulus duration, which Wilhelms does not state.** Measured at 1,
+#:    2, 5 and 10 ms — each at twice *its own* threshold — amplitude spans
+#:    4.5 %, RMP 1.1 %, APD50 1.9 %, APD90 1.9 %, and ``dV/dt max`` spans
+#:    **179.6 to 215.1 V/s**, which is -3.8 % to +15.3 % of the published
+#:    figure.
+#:
+#: Summing the three per property and rounding up gives the numbers below. Four
+#: of the five tighten substantially — APD50 from 15 % to 6 %, APD90 from 10 %
+#: to 5 %.
+#:
+#: ``dV/dt max`` barely tightens, from 20 % to 18 %, and that is the honest
+#: answer rather than a disappointing one: **term 3 dominates it entirely**.
+#: The upstroke happens *while the stimulus is still on*, so the measured
+#: maximum includes the stimulus's own contribution — raising the amplitude by
+#: 1.82 mV/ms raised the measured maximum by 2.13 V/s — and an unstated
+#: duration is therefore an unstated fraction of the number. A tolerance under
+#: 16 % would be asserting that Wilhelms used our duration, which is not known.
+#: The card records the arithmetic that makes the residual interpretable, and
+#: records a **propagated** upstroke that no stimulus touches.
 WILHELMS_TOLERANCE: dict[str, float] = {
-    "amplitude_mv": 0.10,
+    "amplitude_mv": 0.07,
     "rmp_mv": 0.03,
-    "apd50_ms": 0.15,
-    "apd90_ms": 0.10,
-    "dvdt_max_v_s": 0.20,
+    "apd50_ms": 0.06,
+    "apd90_ms": 0.05,
+    "dvdt_max_v_s": 0.18,
 }
+
+
+@pytest.mark.slow
+def test_the_shipped_stimulus_is_still_twice_the_measured_threshold() -> None:
+    """The protocol constant, re-derived rather than trusted.
+
+    :data:`CRN_STIMULUS_AMPLITUDE_MV_PER_MS` is written as twice
+    :data:`CRN_DIASTOLIC_THRESHOLD_MV_PER_MS`, and the threshold is a *measured*
+    property of the cell — of its sodium and inward-rectifier conductances, and
+    of the stimulus duration. Change any of those and the shipped amplitude
+    quietly stops being twice threshold, while every number that depends on it
+    carries on looking reasonable. This is the test that notices.
+
+    1 % rather than exact: the search bisects to 0.005 mV/ms and stops there.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave.measure import (
+        measure_capture_threshold,
+    )
+
+    solved = shipped_card().solved
+    assert isinstance(solved, CourtemancheCellModel)
+    threshold = measure_capture_threshold(solved=solved)
+
+    assert threshold == pytest.approx(CRN_DIASTOLIC_THRESHOLD_MV_PER_MS, rel=0.01), (
+        f"the capture threshold measured {threshold:.4f} mV/ms against a recorded "
+        f"{CRN_DIASTOLIC_THRESHOLD_MV_PER_MS} — the shipped stimulus is no longer "
+        "twice threshold, so the protocol has drifted from the one the published "
+        "comparison is made under"
+    )
+    assert pytest.approx(2.0 * threshold, rel=0.01) == CRN_STIMULUS_AMPLITUDE_MV_PER_MS
 
 
 @pytest.mark.slow
@@ -644,6 +753,11 @@ def test_courtemanche_reproduces_the_published_control_vector() -> None:
     numbers rather than the cycle length alone, which is the most likely cause
     of a spurious failure in this module.
 
+    **The stimulus is twice the measured capture threshold**, which is the
+    protocol Wilhelms states, rather than the round 20 mV/ms an earlier version
+    of this test used because it was the textbook 2 nA. Those are nearly the
+    same number by luck; only one of them is a protocol.
+
     This is a claim about agreement with an **independent reimplementation**,
     not about reproducing CRN 1998's own table, which could not be retrieved.
     """
@@ -651,7 +765,9 @@ def test_courtemanche_reproduces_the_published_control_vector() -> None:
 
     card = shipped_card()
     assert isinstance(card.solved, CourtemancheCellModel)
-    measured = measure_single_cell(solved=card.solved)
+    measured = measure_single_cell(
+        solved=card.solved, stimulus_mv_per_ms=CRN_STIMULUS_AMPLITUDE_MV_PER_MS
+    )
 
     misses = {
         name: (measured[name], published)

@@ -653,3 +653,52 @@ def test_negative_stimulus_delay_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="stimulus_delay_ms must be >= 0"):
         build_generate_dataset_config(doc)
+
+
+# ---------------------------------------------------------------------------
+# The anti-alias corner — what band a bank is allowed to contain
+# ---------------------------------------------------------------------------
+
+
+def test_the_antialias_corner_defaults_to_the_shipped_design(tmp_path: Path) -> None:
+    """Omitting the keys still band-limits. There is no unfiltered mode.
+
+    The filter is correctness, not a preference: decimating without it puts
+    content from above the output Nyquist back inside the band, where nothing
+    downstream can tell it from signal. So the keys tune the corner and cannot
+    switch it off.
+    """
+    cfg = build_generate_dataset_config(_base_doc(tmp_path))
+
+    assert cfg.run_config.antialias_cutoff_fraction == pytest.approx(0.8)
+    assert cfg.run_config.antialias_order == 8
+
+
+def test_the_antialias_corner_is_configurable(tmp_path: Path) -> None:
+    """Because matching some other corpus's acquisition band is a live question."""
+    doc = _base_doc(tmp_path)
+    doc["run"] = {"antialias_cutoff_fraction": 0.6, "antialias_order": 4}
+
+    cfg = build_generate_dataset_config(doc)
+
+    assert cfg.run_config.antialias_cutoff_fraction == pytest.approx(0.6)
+    assert cfg.run_config.antialias_order == 4
+
+
+@pytest.mark.parametrize("fraction", [0.0, -0.2, 1.4])
+def test_a_corner_outside_the_unit_interval_is_refused(tmp_path: Path, fraction: float) -> None:
+    """At 1.0 the corner sits on the output Nyquist, where a Butterworth gives
+    6 dB — no filter at all, while a config reads as though there were one."""
+    doc = _base_doc(tmp_path)
+    doc["run"] = {"antialias_cutoff_fraction": fraction}
+
+    with pytest.raises(ConfigError, match="antialias_cutoff_fraction"):
+        build_generate_dataset_config(doc)
+
+
+def test_a_sub_one_filter_order_is_refused(tmp_path: Path) -> None:
+    doc = _base_doc(tmp_path)
+    doc["run"] = {"antialias_order": 0}
+
+    with pytest.raises(ConfigError, match="antialias_order"):
+        build_generate_dataset_config(doc)

@@ -74,6 +74,10 @@ from myocard_synthetic_egm_pipeline.simulate.model_cards import (
     load_model_card,
 )
 from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid
+from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
+    ANTIALIAS_CUTOFF_FRACTION,
+    ANTIALIAS_ORDER,
+)
 from myocard_synthetic_egm_pipeline.simulate.sizing import (
     WINDOW_LENGTH_MULTIPLE,
     required_capture_duration_ms,
@@ -641,11 +645,31 @@ def _build_run_config(
             "values, write your own card and point backend.model at it."
         )
 
+    # The anti-alias corner decides what band the stored trace can contain, so
+    # it is refused rather than clamped when set somewhere useless: at 1.0 it
+    # sits on the output Nyquist itself, where a Butterworth gives 6 dB of
+    # rejection — the same as no filter, while reading as though there were one.
+    cutoff_fraction = float(
+        _optional(block, "antialias_cutoff_fraction", default=ANTIALIAS_CUTOFF_FRACTION)
+    )
+    if not 0.0 < cutoff_fraction <= 1.0:
+        raise ConfigError(
+            f"run.antialias_cutoff_fraction={cutoff_fraction} must lie in (0, 1]. It "
+            "is a fraction of the OUTPUT NYQUIST — the same convention egm-signal's "
+            "decimate uses — so 1.0 is that Nyquist itself and the shipped 0.8 is "
+            "400 Hz at a 1 kHz output."
+        )
+    antialias_order = int(_optional(block, "antialias_order", default=ANTIALIAS_ORDER))
+    if antialias_order < 1:
+        raise ConfigError(f"run.antialias_order={antialias_order} must be >= 1.")
+
     return RunConfig(
         trace_duration_ms=trace_duration_ms,
         output_fs_hz=output_fs_hz,
         capture_oversample=int(_optional(block, "capture_oversample", default=4)),
         capture_duration_ms=capture_duration_ms,
+        antialias_cutoff_fraction=cutoff_fraction,
+        antialias_order=antialias_order,
         dr_model_units=float(_optional(block, "dr_model_units", default=0.25)),
         model_card=model_card,
     )

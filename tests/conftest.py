@@ -484,32 +484,74 @@ def mock_backend() -> SimulationBackend:
 # ---------------------------------------------------------------------------
 
 
-def ambiguous_complex(n_samples: int) -> npt.NDArray[np.float64]:
-    """One trace at 1 kHz holding two candidate activations.
+def ambiguous_complex(n_samples: int, fs_hz: float = 1000.0) -> npt.NDArray[np.float64]:
+    """One trace holding three candidate activations, one per detection curve.
 
-    The 100 Hz burst below is written in ms, so this is only the shape
-    described here at that rate.
+    Every feature is written in **milliseconds** and sampled at ``fs_hz``, so
+    the waveform is the same shape whatever rate it is built at. That matters
+    more than it looks: this trace goes through the runner's anti-alias filter
+    and rate conversion, and a shape defined in *samples* would mean something
+    different either side of them.
 
-    A one-sample biphasic spike at ``n/4`` — steepest thing in the trace, so
-    ``rectified_derivative`` anchors there — and a broader, larger 100 Hz Gabor
-    burst at ``n/2``, which carries most of the energy inside Botteron's
-    40-250 Hz band and so wins the smoothed envelope. Teager-Kaiser tracks
-    amplitude x frequency and lands on the burst too, one sample earlier than
-    the envelope.
+    Each curve anchors on a **different feature**, by the property that curve
+    measures:
+
+    - a monophasic Gaussian pulse at ``0.25 n``, sigma 1 ms — no carrier, so
+      ``x * x''`` is strongly negative at its peak and **Teager-Kaiser**
+      (``x'^2 - x x''``) lands here;
+    - a 250 Hz burst at ``0.40 n``, sigma 2 ms — the steepest carrier crossing
+      in the trace, so **rectified-derivative** lands here;
+    - a broad 100 Hz burst at ``0.625 n``, sigma 6 ms — squarely inside
+      Botteron's 40-250 Hz band and carrying by far the most in-band energy, so
+      the **smoothed envelope** lands here.
+
+    All three sit in the middle 25-63 % of the capture on purpose: a probe
+    sweeps windows across a range of activation positions, and an anchor near
+    either end leaves no room for the window at one end of that range.
 
     Three curves, three indices: that is what makes a bank-to-bank diff mean
     "the curve reached the crop" rather than "the seed differed".
-    """
-    sharp_at = n_samples // 4
-    broad_at = n_samples // 2
-    t = np.arange(n_samples, dtype=np.float64)
 
-    signal = np.zeros(n_samples, dtype=np.float64)
-    signal[sharp_at] += 1.0
-    signal[sharp_at + 1] -= 1.0
-    envelope = np.exp(-0.5 * ((t - broad_at) / 6.0) ** 2)
-    signal += 2.0 * envelope * np.sin(2.0 * np.pi * 100.0 * (t - broad_at) / 1000.0)
-    return signal
+    **The separation is structural, not sub-sample.** Measured over every
+    capture length from 400 to 1200 samples, in both the paths this fixture is
+    used in — built at 1 kHz and handed straight to a curve, and built at the
+    capture rate and taken through the runner's band-limit plus rate conversion
+    — the three indices stay on their own features with a **minimum gap of 60
+    samples**, and never once collapse.
+
+    That robustness is the point of the three-feature shape, and it was learned
+    the hard way. **The first version separated the curves with a one-sample
+    biphasic spike**, which worked until the anti-alias filter arrived: a
+    one-sample spike at 1 kHz is a delta, its spectrum is flat past Nyquist,
+    and band-limiting removes precisely the content that made it the steepest
+    feature. Two curves then agreed and the fixture silently stopped testing
+    what it claimed. The obvious repair — a fast band-limited burst instead of
+    the delta — does not hold either: rectified-derivative peaks at the
+    steepest *carrier crossing* while Teager-Kaiser peaks at the *envelope*
+    maximum, and for a single burst those sit a quarter carrier period apart,
+    which at a 1 kHz output is at most one sample and rounds to zero for a
+    quarter of all capture lengths. Giving each curve its own feature is what
+    makes the fixture depend on what the curves measure rather than on where
+    the sample grid happens to fall.
+    """
+    t_ms = np.arange(n_samples, dtype=np.float64) * 1000.0 / fs_hz
+    pulse_at = t_ms[round(0.250 * n_samples)]
+    fast_at = t_ms[round(0.400 * n_samples)]
+    broad_at = t_ms[round(0.625 * n_samples)]
+
+    def envelope(centre_ms: float, sigma_ms: float) -> npt.NDArray[np.float64]:
+        return np.asarray(np.exp(-0.5 * ((t_ms - centre_ms) / sigma_ms) ** 2), dtype=np.float64)
+
+    def burst(centre_ms: float, sigma_ms: float, freq_hz: float) -> npt.NDArray[np.float64]:
+        carrier = np.sin(2.0 * np.pi * freq_hz * (t_ms - centre_ms) / 1000.0)
+        return np.asarray(envelope(centre_ms, sigma_ms) * carrier, dtype=np.float64)
+
+    return np.asarray(
+        2.0 * envelope(pulse_at, 1.0)
+        + 1.5 * burst(fast_at, 2.0, 250.0)
+        + 2.0 * burst(broad_at, 6.0, 100.0),
+        dtype=np.float64,
+    )
 
 
 class _AmbiguousComplexBackend:
@@ -534,18 +576,14 @@ class _AmbiguousComplexBackend:
     def simulate(self, **kwargs: Any) -> Any:
         raw = self._inner.simulate(**kwargs)
         n_capture, n_electrodes = raw.unipolar_traces.shape
-        oversample = int(kwargs["config"].capture_oversample)
-        assert n_capture % oversample == 0, (
-            f"capture of {n_capture} samples does not divide by the oversample "
-            f"factor {oversample}; the hold below would not survive the runner's "
-            "stride-downsample"
-        )
-        # Sample-and-hold upsample: the runner downsamples by taking every
-        # `oversample`-th sample, so the trace it crops is exactly the waveform
-        # above rather than a resampled approximation of it.
-        held = np.repeat(ambiguous_complex(n_capture // oversample), oversample)
+        # Built directly at the capture rate rather than sample-and-held from
+        # the output rate. The hold that used to be here produced a staircase,
+        # whose images above the output Nyquist are exactly what the runner's
+        # anti-alias filter now removes — so the decimated trace would no
+        # longer be the waveform this fixture claims to place.
+        waveform = ambiguous_complex(n_capture, fs_hz=raw.fs_capture_hz)
         amplitudes = np.arange(1, n_electrodes + 1, dtype=np.float64)
-        return replace(raw, unipolar_traces=held[:, None] * amplitudes[None, :])
+        return replace(raw, unipolar_traces=waveform[:, None] * amplitudes[None, :])
 
 
 def ambiguous_complex_backend_for(inner: SimulationBackend) -> SimulationBackend:

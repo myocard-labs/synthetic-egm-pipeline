@@ -172,9 +172,14 @@ def parse_model_card(doc: dict[str, Any], *, source: str) -> ModelCard:
     measured = None
     measured_block = block.get("measured") or {}
     if measured_block.get("conduction_velocity_cm_s") is not None:
+        # `upstroke_v_s` is optional even here: it is only meaningful for a
+        # model whose potential is in millivolts, so an Aliev-Panfilov card
+        # leaves it out rather than writing a number in units it does not have.
+        upstroke = measured_block.get("upstroke_v_s")
         measured = MeasuredValues(
             conduction_velocity_cm_s=float(measured_block["conduction_velocity_cm_s"]),
             apd90_ms=float(_require(measured_block, "apd90_ms", "model.measured")),
+            upstroke_v_s=None if upstroke is None else float(upstroke),
         )
 
     return ModelCard(
@@ -273,6 +278,11 @@ def card_provenance(card: ModelCard) -> dict[str, Any]:
             card.measured.conduction_velocity_cm_s
         )
         provenance["model_measured_apd90_ms"] = float(card.measured.apd90_ms)
+        if card.measured.upstroke_v_s is not None:
+            # Named `propagated` on disk, because the distinction from a
+            # stimulated single-cell upstroke is the whole point of recording
+            # it and a bare `upstroke` would invite reading it as the other one.
+            provenance["model_measured_propagated_upstroke_v_s"] = float(card.measured.upstroke_v_s)
     return provenance
 
 

@@ -52,6 +52,7 @@ from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.cropping import crop_traces
 from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid, sweep_capture
 from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
+    band_limit,
     bipolar_from_unipolar,
     downsample,
 )
@@ -264,9 +265,26 @@ def _capture_bipolar(
     )
 
     # --- 1. Bipolar pairing at the capture rate -------------------------
+    # Pairing before filtering rather than after: both are linear, so they
+    # commute, and there are fewer pairs than electrodes.
     bipolar_capture = bipolar_from_unipolar(raw.unipolar_traces, raw.bipolar_pairs)
 
-    # --- 2. Downsample to the output rate -------------------------------
+    # --- 2. Band-limit, THEN convert the rate ---------------------------
+    # Two steps rather than one resampler, because the rate ratio is not
+    # rational (4.0609 and 4.1667 at the two shipped cards) and because a
+    # filter that can be inspected on its own is one that can be defended.
+    #
+    # Zero-phase, and that is load-bearing: a causal filter's group delay
+    # would move every detected activation index, hence every realized
+    # `activation_position`, and the run would look entirely healthy.
+    bipolar_capture = band_limit(
+        bipolar_capture,
+        fs_hz=raw.fs_capture_hz,
+        output_fs_hz=config.output_fs_hz,
+        cutoff_fraction=config.antialias_cutoff_fraction,
+        order=config.antialias_order,
+    )
+
     bipolar_target = downsample(
         bipolar_capture,
         source_fs_hz=raw.fs_capture_hz,
@@ -355,6 +373,11 @@ def _build_result(
         "patch_size_mm": getattr(geometry, "size_mm", None),
         "patch_dr_mm": getattr(geometry, "dr_mm", None),
         "fibrosis_density_requested": getattr(substrate, "density", None),
+        # What band the stored trace can contain. Recorded because it changes
+        # every sample: a bank filtered at a different corner is not comparable
+        # with this one, and nothing else on disk would say so.
+        "antialias_cutoff_hz": (config.antialias_cutoff_fraction * 0.5 * config.output_fs_hz),
+        "antialias_order": int(config.antialias_order),
         "backend_metadata": dict(raw.backend_metadata),
     }
 

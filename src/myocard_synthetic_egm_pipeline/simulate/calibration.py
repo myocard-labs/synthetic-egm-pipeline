@@ -148,6 +148,29 @@ class MeasuredValues:
     conduction_velocity_cm_s: float
     apd90_ms: float
 
+    upstroke_v_s: float | None = None
+    """Maximum ``dV/dt`` of the **propagated** action potential, in V/s.
+
+    Optional because it is only meaningful for a model whose potential is in
+    millivolts — an Aliev-Panfilov ``u`` is dimensionless and a rate of change
+    of it is not a volts-per-second.
+
+    **Propagated, and that word is the whole content of the field.** It is
+    measured at a node far from the stimulus, where the upstroke is driven by
+    the arriving wavefront and nothing else. The number a published single-cell
+    table reports is a *stimulated* upstroke, measured at the cell the current
+    was injected into — and for a 2 ms stimulus the upstroke happens while the
+    stimulus is still on, so roughly a tenth of it *is* the stimulus. The two
+    answer different questions, and conflating them is what produced a 14 %
+    disagreement with a reference that turned out not to be a disagreement at
+    all.
+
+    This is the one a bank inherits: no electrode in a real recording sits on a
+    stimulus site, so the wavefront every stored trace sees is a propagated
+    one. Electrogram amplitude scales with ``dV/dt``, which makes this the
+    number a model-versus-model comparison actually rests on.
+    """
+
 
 @dataclass(frozen=True)
 class ModelCard:

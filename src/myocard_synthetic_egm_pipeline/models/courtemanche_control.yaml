@@ -76,9 +76,29 @@ model:
   # the sweep at the bottom). 3.6 % is immaterial against a literature spread
   # of 88 +/- 9 cm/s; reporting the target as though it were the achieved value
   # would not be.
+  #
+  # THE UPSTROKE IS RECORDED TWICE, AND THE TWO ARE DIFFERENT MEASUREMENTS.
+  # `upstroke_v_s` below is the PROPAGATED one: dV/dt max at the patch centre,
+  # 20 mm from the stimulus edge, driven by the arriving wavefront and by
+  # nothing else. The validation block further down records the STIMULATED
+  # single-cell figure, 215.2 V/s, which is what a published cell table reports
+  # and what Wilhelms is compared against.
+  #
+  # They differ by 39 % — 131.1 against 215.2 — and neither is wrong. An
+  # isolated cell has no neighbours to charge, so all of its sodium current
+  # goes into its own membrane; a cell in tissue spends much of that current
+  # depolarising the cells ahead of it, and its own upstroke is correspondingly
+  # slower. On top of that, roughly a tenth of the single-cell figure IS the
+  # stimulus, which is still on while the upstroke happens.
+  #
+  # THE PROPAGATED ONE IS THE CARD'S PHYSICAL CLAIM, because no electrode in a
+  # real recording sits on a stimulus site. Every trace a bank stores sees a
+  # propagated wavefront, and electrogram amplitude scales with dV/dt — so this
+  # is the number a model-versus-model comparison actually rests on.
   measured:
     conduction_velocity_cm_s: 82.9
     apd90_ms: 323.2
+    upstroke_v_s: 131.1        # PROPAGATED, at the patch centre
 
 # =========================================================================
 # VALIDATION — the published vector, and the protocol without which it is
@@ -106,25 +126,53 @@ model:
 #                                   falls 42 % over 20 min. The same model
 #                                   legitimately reads 295 ms or ~245 ms
 #                                   depending when you look.
-#   stimulus         20 mV/ms for 2 ms (2 nA into Cm = 100 pF), ~1.9x the
-#                    diastolic threshold measured here (capture between 10 and
-#                    11 mV/ms).
+#   stimulus         21.81 mV/ms for 2 ms — TWICE THE MEASURED CAPTURE
+#                    THRESHOLD, which is the protocol Wilhelms states. The
+#                    threshold is measured by bisection, not assumed: 10.906
+#                    mV/ms at this duration, stable to 0.3 % between a rested
+#                    cell and one 49 beats into the train.
 #   dt               0.02 ms
 #
-#   property     Wilhelms    ours      delta
-#   Amplitude    110.11 mV   106.26 mV  -3.5 %
-#   RMP          -81.04 mV   -80.63 mV  +0.5 %
-#   APD50        165.16 ms   169.62 ms  +2.7 %
-#   APD90        294.83 ms   292.40 ms  -0.8 %
-#   dV/dt max    186.58 V/s  213.03 V/s +14.2 %
+#   property     Wilhelms    ours       delta
+#   Amplitude    110.11 mV   108.11 mV   -1.8 %
+#   RMP          -81.04 mV   -80.59 mV   +0.6 %
+#   APD50        165.16 ms   166.68 ms   +0.9 %
+#   APD90        294.83 ms   290.98 ms   -1.3 %
+#   dV/dt max    186.58 V/s  215.16 V/s  +15.3 %
 #
-# dV/dt max IS THE OUTLIER, AND THE STIMULUS IS WHY. The maximum falls inside
-# the 2 ms stimulus window rather than after it, so it carries the stimulus
-# amplitude with it: measured 165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30
-# mV/ms on the first beat. Wilhelms does not state the amplitude used, so 14 %
-# is what agreement can mean here — the test's tolerance on this quantity is
-# 20 % and says so. For context, Workman 2001 measures 203 +/- 11 V/s
-# experimentally, which our 213 sits inside.
+# An earlier version of this comparison used a round 20 mV/ms — the textbook
+# 2 nA into Cm = 100 pF, which is 1.83x threshold by coincidence — and read
+# amplitude -3.5 %, APD50 +2.7 %, dV/dt max +14.2 %. Pinning the stated
+# protocol halved three of the four small residuals. It did not fix the fifth.
+#
+# dV/dt max IS THE OUTLIER, AND THE STIMULUS DURATION IS WHY. The upstroke
+# happens WHILE THE STIMULUS IS STILL ON — the maximum falls at 1.86 ms of a
+# 2 ms stimulus — so the measured value includes the stimulus's own
+# contribution. Raising the stimulus by 1.82 mV/ms raised the measured maximum
+# by 2.13 V/s, so the stimulus contributes roughly its own amplitude plus a
+# little of the sodium current it recruits. Wilhelms states "twice threshold"
+# but not the DURATION, and threshold scales with duration, so an unstated
+# duration is an unstated fraction of this number:
+#
+#   duration   threshold   2x        dV/dt max    delta vs Wilhelms
+#   1 ms       21.343      42.687    200.46 V/s   +7.4 %
+#   2 ms       10.910      21.821    215.08 V/s   +15.3 %   <- shipped
+#   5 ms        4.535       9.070    195.39 V/s   +4.7 %
+#   10 ms       2.416       4.832    179.57 V/s   -3.8 %
+#
+# 2 ms is kept because it is the conventional single-cell duration and because
+# the textbook 2 nA stimulus sits at 1.83x our measured threshold, which
+# cross-validates the threshold. It is NOT kept because it matches — it is the
+# worst of the four. Subtracting the stimulus's own contribution gives 193.3
+# V/s at 2 ms and 186.3 at 5 ms against Wilhelms' 186.58, which suggests the
+# residual is protocol rather than membrane; that arithmetic is an observation
+# recorded here, not the quantity the test asserts on.
+#
+# The test's tolerance on this property is 18 %, and it is 18 % because the
+# duration spread above is 19 % wide. For context, Workman 2001 measures
+# 203 +/- 11 V/s experimentally, which our 215 sits just outside and our
+# propagated 131 sits well below — a propagated upstroke in loaded tissue is
+# not the quantity a patch-clamp study reports.
 #
 # TIMESTEP, measured rather than inherited. The CFL bound permits dt = 0.052 ms
 # at the solved diffusion, but the fast sodium current needs far less, and

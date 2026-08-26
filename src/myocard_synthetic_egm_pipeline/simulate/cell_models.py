@@ -161,23 +161,63 @@ what the reference vector below means and what
 :func:`~...backends.finitewave.measure.measure_single_cell` runs by default.
 """
 
-CRN_STIMULUS_AMPLITUDE_MV_PER_MS: float = 20.0
+CRN_DIASTOLIC_THRESHOLD_MV_PER_MS: float = 10.906
+"""Smallest stimulus that fires a rested cell at :data:`CRN_STIMULUS_DURATION_MS`.
+**Measured**, by bisection, not read from anywhere.
+
+Recorded as a constant so the stimulus below is a stated multiple of something
+rather than a bare number, and re-derivable at any time with
+:func:`~...backends.finitewave.measure.measure_capture_threshold`. Stable to
+0.3 % between a rested cell and one 49 beats into the pacing train, and
+independent of the amplitude those beats were delivered at, so "diastolic
+threshold" needs no further qualification here.
+
+**It is a property of the stimulus duration, not of the cell alone** — the
+strength-duration relation, measured at the pinned cycle length:
+
+======== ============ =================
+duration  threshold    2x threshold
+======== ============ =================
+1 ms      21.343       42.687
+2 ms      10.906       21.812
+5 ms       4.535        9.070
+10 ms      2.416        4.832
+======== ============ =================
+
+Each is a bisection to 0.005 mV/ms, which is the resolution the recorded value
+is good to and the reason the regression test allows 1 %.
+"""
+
+CRN_STIMULUS_AMPLITUDE_MV_PER_MS: float = 2.0 * CRN_DIASTOLIC_THRESHOLD_MV_PER_MS
 """Single-cell stimulus, as the ``dV/dt`` Finitewave's ``StimCurrent`` adds.
 
-20 mV/ms for 2 ms is the textbook Courtemanche protocol — 2 nA into
-``Cm = 100 pF`` — and about 1.9x the diastolic threshold measured here
-(capture between 10 and 11 mV/ms at this duration).
+**Twice the measured threshold, because that is the reference protocol.**
+Wilhelms §2 states it — twice threshold for single cell, 20 % above threshold
+for tissue — and an earlier version of this measurement used a round 20 mV/ms
+instead, which is *nearly* the same number by luck (the textbook 2 nA into
+``Cm = 100 pF``, and 1.83x threshold as it turns out) but is not the protocol.
+Stating the multiple rather than the value is what makes it one.
 
 **It is pinned because ``dV/dt max`` depends on it**, and not weakly: measured
-165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30 mV/ms on the first beat, because
-the maximum falls inside the 2 ms stimulus window rather than after it. That
-sensitivity is a property of the protocol, not of the model, which is precisely
-why the protocol is part of the fixture instead of an incidental choice.
+165 / 195 / 218 / 227 V/s at 12 / 15 / 21 / 30 mV/ms, because the maximum falls
+*inside* the 2 ms stimulus window rather than after it — the stimulus
+contributes 21.8 of the 215 V/s directly, 10 % of its own measurement. That
+sensitivity is a property of the protocol, not of the model, which is why the
+protocol is part of the fixture rather than an incidental choice, and why the
+card also records a **propagated** upstroke that no stimulus touches.
 """
 
 CRN_STIMULUS_DURATION_MS: float = 2.0
-"""Duration of the single-cell stimulus. See
-:data:`CRN_STIMULUS_AMPLITUDE_MV_PER_MS`."""
+"""Duration of the single-cell stimulus.
+
+2 ms is the conventional single-cell figure and is what the shipped threshold
+was measured at. It is **not** a free parameter of the comparison: threshold
+scales with it (see :data:`CRN_DIASTOLIC_THRESHOLD_MV_PER_MS`), and because the
+upstroke happens *during* the stimulus, so does the measured ``dV/dt max`` —
+215.1, 195.4 and 179.6 V/s at 2, 5 and 10 ms, all at twice their own threshold.
+Wilhelms does not state a duration, so that spread is the honest width of the
+protocol ambiguity and is what the comparison tolerance has to cover.
+"""
 
 WILHELMS_2012_CRN_CONTROL: Mapping[str, float] = MappingProxyType(
     {

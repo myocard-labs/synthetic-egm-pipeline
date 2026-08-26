@@ -29,6 +29,8 @@ question that turned out to be an electrode transpose.
 
 from __future__ import annotations
 
+from typing import Any
+
 import finitewave as fw
 import numpy as np
 import numpy.typing as npt
@@ -39,7 +41,6 @@ from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     CRN_PACING_BEATS,
     CRN_REFERENCE_CV_CM_S,
     CRN_REFERENCE_DIFFUSION,
-    CRN_STIMULUS_AMPLITUDE_MV_PER_MS,
     CRN_STIMULUS_DURATION_MS,
     MODEL_UNIT_APD90,
     MODEL_UNIT_CV,
@@ -304,6 +305,16 @@ def measure(
     )
     ms_per_model_time = _ms_per_model_time(solved)
 
+    # The centre node sits half a patch from the stimulus edge — 20 mm at the
+    # production geometry — so its upstroke is driven by the arriving wavefront
+    # and carries nothing of the stimulus. Only reported for a model whose
+    # potential is in millivolts; a rate of change of a dimensionless ``u`` is
+    # not a volts-per-second, and writing one would invite the comparison.
+    upstroke_v_s = None
+    if isinstance(solved, CourtemancheCellModel):
+        dt_ms = solved.dt_model_units * ms_per_model_time
+        upstroke_v_s = float(np.diff(potential).max() / dt_ms)
+
     return MeasuredValues(
         conduction_velocity_cm_s=_velocity_from_activation(
             activation,
@@ -317,6 +328,7 @@ def measure(
             time_unit_ms=ms_per_model_time,
             activated_above=_activation_threshold(solved),
         ),
+        upstroke_v_s=upstroke_v_s,
     )
 
 
@@ -416,9 +428,119 @@ def measure_anisotropy_ratio(
 # ---------------------------------------------------------------------------
 
 
+def _single_cell_model(solved: CourtemancheCellModel) -> Any:
+    """A one-node Courtemanche cell: 3x3 mesh, one interior point.
+
+    Shared by the paced measurement and the threshold search so the two cannot
+    drift on what "one cell" means — a threshold measured on a differently
+    configured cell would be a threshold for a different protocol.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave import backend as _backend
+
+    tissue = fw.CardiacTissue2D(shape=(3, 3))
+    model = fw.Courtemanche2D()
+    model.dt = float(solved.dt_model_units)
+    model.dr = 1.0  # No neighbours to diffuse to; the value cannot reach a result.
+    model.cardiac_tissue = tissue
+    model.prog_bar = False
+    _backend._apply_conductance_scalings(model, solved.params)
+    return model
+
+
+def _stimulate(model: Any, *, beat: int, amplitude: float, bcl_ms: float, first: bool) -> None:
+    """Arm one stimulus and integrate one cycle.
+
+    One stimulus in the sequence at a time, re-armed per beat rather than 50
+    queued at once: ``StimSequence.stimulate_next`` walks the whole list on
+    every integration step, so a queued protocol costs ``n_beats`` python calls
+    per step -- 125 million of them over a 50-beat run.
+
+    Single-threaded deliberately: the mesh is one node, so every extra thread
+    contributes a barrier and no work. Measured 1.57 s per beat on one thread
+    against 2.9 s on eight.
+    """
+    stim_sequence = fw.StimSequence()
+    stim_sequence.add_stim(
+        fw.StimCurrentCoord2D(
+            time=beat * bcl_ms,
+            curr_value=amplitude,
+            duration=CRN_STIMULUS_DURATION_MS,
+            x1=1,
+            x2=2,
+            y1=1,
+            y2=2,
+        )
+    )
+    model.stim_sequence = stim_sequence
+    model.t_max = (beat + 1) * bcl_ms
+    if first:
+        model.run(initialize=True, num_of_threads=1)
+    else:
+        # `initialize=False` keeps the state variables, which is the whole point
+        # of pacing; the new stimulus has to be armed by hand because that is
+        # what the skipped `initialize` would have done.
+        stim_sequence.initialize(model)
+        model.run(initialize=False, num_of_threads=1)
+
+
+def measure_capture_threshold(
+    *,
+    solved: CourtemancheCellModel,
+    bcl_ms: float = CRN_PACING_BCL_MS,
+    resolution: float = 0.005,
+) -> float:
+    """Smallest stimulus amplitude that fires a rested cell, in mV/ms.
+
+    **The number the pacing protocol is defined against.** Wilhelms states the
+    single-cell stimulus as *twice the threshold amplitude*, which is only a
+    protocol if the threshold is measured rather than guessed — and it is not
+    guessable, because it depends on the stimulus *duration* through the
+    strength-duration relation. At the pinned 2 ms this returns ~10.9 mV/ms;
+    at 1, 5 and 10 ms it returns 21.3, 4.5 and 2.4.
+
+    Measured on a **rested** cell rather than mid-train, which costs nothing in
+    accuracy: at a 1 s cycle length the cell is fully recovered by the next
+    stimulus, and the threshold after 49 conditioning beats measured 10.884
+    against the rested 10.912 — 0.3 % apart, and independent of the amplitude
+    those 49 beats were delivered at.
+
+    Bisection, so the cost is ``log2(range / resolution)`` single-beat runs
+    rather than a sweep.
+    """
+    if resolution <= 0:
+        raise ValueError("resolution must be positive.")
+
+    def fires(amplitude: float) -> bool:
+        model = _single_cell_model(solved)
+        tracker = fw.ActionPotential2DTracker()
+        tracker.cell_ind = [[1, 1]]
+        tracker.step = 1
+        sequence = fw.TrackerSequence()
+        sequence.add_tracker(tracker)
+        model.tracker_sequence = sequence
+        _stimulate(model, beat=0, amplitude=amplitude, bcl_ms=bcl_ms, first=True)
+        peak = float(np.asarray(tracker.output, dtype=np.float64).max())
+        return peak > _ACTIVATION_THRESHOLD_MV
+
+    low, high = 0.2, 80.0
+    if not fires(high):
+        raise ValueError(
+            f"a {high} mV/ms stimulus does not fire the cell, so no threshold "
+            "exists in the searched range. Check the conductance scalings."
+        )
+    while high - low > resolution:
+        middle = 0.5 * (low + high)
+        if fires(middle):
+            high = middle
+        else:
+            low = middle
+    return high
+
+
 def measure_single_cell(
     *,
     solved: CourtemancheCellModel,
+    stimulus_mv_per_ms: float,
     n_beats: int = CRN_PACING_BEATS,
     bcl_ms: float = CRN_PACING_BCL_MS,
 ) -> dict[str, float]:
@@ -439,27 +561,25 @@ def measure_single_cell(
 
     **The protocol is the fixture.** Courtemanche never reaches steady state
     (:data:`CRN_PACING_BEATS`), so a beat count is as much a part of the
-    measurement as the cycle length, and ``dV/dt max`` additionally depends on
-    the stimulus that elicited it (:data:`CRN_STIMULUS_AMPLITUDE_MV_PER_MS`).
-    Both are arguments with pinned defaults rather than free choices made here.
+    measurement as the cycle length. ``dV/dt max`` additionally depends on the
+    stimulus that elicited it, which is why ``stimulus_mv_per_ms`` is
+    **required** rather than defaulted: the reference protocol defines it as
+    twice the measured capture threshold (:func:`measure_capture_threshold`),
+    and a default here would let a caller take the measurement at whatever
+    amplitude happened to be convenient — which is exactly how this number came
+    to disagree with its reference by 14 % in the first place.
 
     Cost: ``n_beats * bcl_ms / dt`` integration steps of a 21-state membrane —
     around two minutes at the shipped defaults, which is why this is a slow test
     and an authoring tool rather than a load-time guard.
     """
-    from myocard_synthetic_egm_pipeline.backends.finitewave import backend as _backend
-
     if n_beats < 1:
         raise ValueError("n_beats must be >= 1.")
+    if stimulus_mv_per_ms <= 0:
+        raise ValueError("stimulus_mv_per_ms must be positive.")
     dt = float(solved.dt_model_units)
 
-    tissue = fw.CardiacTissue2D(shape=(3, 3))
-    model = fw.Courtemanche2D()
-    model.dt = dt
-    model.dr = 1.0  # No neighbours to diffuse to; the value cannot reach a result.
-    model.cardiac_tissue = tissue
-    model.prog_bar = False
-    _backend._apply_conductance_scalings(model, solved.params)
+    model = _single_cell_model(solved)
 
     tracker = fw.ActionPotential2DTracker()
     tracker.cell_ind = [[1, 1]]
@@ -471,36 +591,14 @@ def measure_single_cell(
     sequence.add_tracker(tracker)
     model.tracker_sequence = sequence
 
-    # One stimulus in the sequence at a time, re-armed per beat rather than 50
-    # stimuli queued at once: `StimSequence.stimulate_next` walks the whole list
-    # on every integration step, so a queued protocol costs `n_beats` python
-    # calls per step -- 125 million of them over this run.
     for beat in range(n_beats):
-        stim_sequence = fw.StimSequence()
-        stim_sequence.add_stim(
-            fw.StimCurrentCoord2D(
-                time=beat * bcl_ms,
-                curr_value=CRN_STIMULUS_AMPLITUDE_MV_PER_MS,
-                duration=CRN_STIMULUS_DURATION_MS,
-                x1=1,
-                x2=2,
-                y1=1,
-                y2=2,
-            )
+        _stimulate(
+            model,
+            beat=beat,
+            amplitude=stimulus_mv_per_ms,
+            bcl_ms=bcl_ms,
+            first=(beat == 0),
         )
-        model.stim_sequence = stim_sequence
-        model.t_max = (beat + 1) * bcl_ms
-        # Single-threaded deliberately: the mesh is one node, so every extra
-        # thread contributes a barrier and no work. Measured 1.57 s per beat on
-        # one thread against 2.9 s on eight.
-        if beat == 0:
-            model.run(initialize=True, num_of_threads=1)
-        else:
-            # `initialize=False` keeps the state variables, which is the whole
-            # point of pacing; the new stimulus has to be armed by hand because
-            # that is what the skipped `initialize` would have done.
-            stim_sequence.initialize(model)
-            model.run(initialize=False, num_of_threads=1)
 
     return _action_potential_properties(
         np.asarray(tracker.output, dtype=np.float64).ravel(), dt_ms=dt

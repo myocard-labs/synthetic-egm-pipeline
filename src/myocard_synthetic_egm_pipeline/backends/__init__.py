@@ -33,6 +33,10 @@ import numpy as np
 
 from myocard_synthetic_egm_pipeline.simulate.calibration import ModelCard
 from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
+from myocard_synthetic_egm_pipeline.simulate.pseudo_egm import (
+    ANTIALIAS_CUTOFF_FRACTION,
+    ANTIALIAS_ORDER,
+)
 from myocard_synthetic_egm_pipeline.simulate.result import RawSimulationResult
 from myocard_synthetic_egm_pipeline.simulate.specs import (
     ActivationSource,
@@ -57,10 +61,12 @@ class RunConfig:
         ``capture_oversample`` times this rate; the runner then
         downsamples.
     capture_oversample
-        Backend captures at ``capture_oversample * output_fs_hz``;
-        runner downsamples to ``output_fs_hz``. Phase 1 default 4 —
-        4x oversampling is enough margin to avoid aliasing without an
-        explicit anti-alias filter at the AP membrane bandwidth.
+        Backend captures at ``capture_oversample * output_fs_hz``; the runner
+        band-limits and then downsamples to ``output_fs_hz``. Default 4.
+        Oversampling alone does **not** prevent aliasing — it only moves the
+        capture Nyquist up, leaving everything between the output Nyquist and
+        the capture Nyquist to fold on decimation. What prevents it is
+        ``antialias_cutoff_fraction`` below.
 
     **No cell-model parameters live here.** Membrane kinetics, the model-time
     mapping and the diffusion coefficient ride on a
@@ -75,6 +81,22 @@ class RunConfig:
     output_fs_hz: float
     capture_oversample: int = 4
     capture_duration_ms: float | None = None
+
+    antialias_cutoff_fraction: float = ANTIALIAS_CUTOFF_FRACTION
+    """Anti-alias corner as a fraction of the **output Nyquist**, applied to
+    the capture before the rate conversion. 0.8 -> 400 Hz at the shipped rate.
+
+    A knob rather than a constant because it is the one number that decides
+    what band a generated bank contains, and matching some other corpus's
+    acquisition band is a live question — but **not** an on/off switch: an
+    unfiltered decimation puts content above the output Nyquist back into the
+    band a classifier reads, which is a defect rather than a setting.
+    """
+
+    antialias_order: int = ANTIALIAS_ORDER
+    """Butterworth order of the anti-alias low-pass, before the zero-phase
+    pass squares its magnitude response. See
+    :data:`~...simulate.pseudo_egm.ANTIALIAS_ORDER`."""
 
     dr_model_units: float = 0.25
     """The solver's own space step. **Backend/scheme, not cell model.**

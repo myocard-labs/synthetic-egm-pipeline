@@ -258,10 +258,11 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Activate the scipy override once any module imports scipy directly.
-# Strict mypy flags unused overrides under ``warn_unused_configs``.
-# [[tool.mypy.overrides]]
-# module = [
-#   "scipy.*",
-# ]
-# ignore_missing_imports = true
+# scipy is imported directly by tests/test_antialias.py, which builds the
+# causal filter that proves the production one is zero-phase. The production
+# path reaches scipy only through egm-signal, which ships py.typed.
+[[tool.mypy.overrides]]
+module = [
+  "scipy.*",
+]
+ignore_missing_imports = true
