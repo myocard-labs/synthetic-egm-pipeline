@@ -787,28 +787,79 @@ bipolar atrial EGM is typically 30-300 Hz, so 1 kHz output respects
 Nyquist by ~3×).
 
 **What this does to the signal.** Reduces sample count without
-distorting the morphology. We omit an anti-alias filter at this step
-(Phase 1) because:
+distorting the morphology — but only because the capture is
+**band-limited first**. The two steps are separate calls, and the order
+is not a detail:
 
-- AP membrane dynamics have minimal energy above a few hundred Hz.
-- The source rate is 4× the target.
+1. `band_limit` low-passes the capture at 0.8 × the output Nyquist
+   (400 Hz at a 1 kHz output), zero-phase;
+2. `downsample` converts the rate.
 
-**Courtemanche makes this a live question rather than a Phase-2 one.**
-Its upstroke is ~0.59 ms against Aliev-Panfilov's broad one, so its
-activation deflections carry more energy near the 500 Hz Nyquist of the
-1 kHz output — the condition the first bullet above says does not arise.
-How much survives the ``1/r`` spatial integration of the pseudo-EGM,
-which smooths the field considerably, **has not been measured**; the
-plan is unchanged, swapping the linear interpolation for
-``scipy.signal.resample_poly`` with a proper polyphase filter behind the
-same function signature, but it should now be decided from a spectrum of
-a Courtemanche bank rather than from the phase number.
+**Why the filter is not optional.** Decimation does not discard content
+above the output Nyquist; it *mirrors* it back inside the band, where
+nothing downstream can distinguish it from signal that was really there.
+Real electrophysiology front-ends low-pass ahead of the ADC, so a real
+recording cannot contain such content — an unfiltered synthetic trace
+can, and that is a difference between the synthetic and real corpora
+that no consumer could attribute. Aliasing is also irreversible and
+undetectable after the fact: you cannot look at an output trace and tell.
+
+**Why it was not needed before, and is now.** This step used to argue
+the filter away on the grounds that "AP membrane dynamics have minimal
+energy above a few hundred Hz". That was true, and it stopped being the
+whole story when the ionic model landed. Measured on a fibrotic 16 mm
+patch, as a percentage of total trace power:
+
+| band | AP capture | AP output | CRN capture | CRN output, no filter | CRN output, filtered |
+|---|---|---|---|---|---|
+| 0–100 Hz | 98.031 | 97.960 | 65.985 | 65.690 | 66.752 |
+| 100–250 Hz | 1.968 | 2.038 | 30.314 | 30.819 | 30.904 |
+| 250–400 Hz | 0.0016 | 0.0020 | 2.500 | 2.764 | 2.314 |
+| 400–500 Hz | 0.0000 | 0.0000 | 0.460 | **0.692** | **0.031** |
+| above 500 Hz | 0.0000 | — | **0.741** | — | — |
+
+Read the Courtemanche columns across. The capture holds **0.74 %** of its
+power above the 500 Hz output Nyquist and 0.46 % in the 400–500 Hz band.
+Decimate without filtering and the output's 400–500 Hz band comes out at
+0.69 % — *more* than the capture had there, and the excess is the folded
+energy arriving. Band-limit first and it reads 0.031 %.
+
+Aliev-Panfilov, by contrast, is unchanged to three decimal places in
+every band and keeps 99.89 % of its output power; Courtemanche keeps
+99.14 %. That difference is the whole content of this change.
+
+**What the filter costs, stated rather than hidden.** A corner at 400 Hz
+means content between 400 and 500 Hz — genuine signal that would not
+have aliased — is attenuated too. That is unavoidable: a filter needs a
+transition band, and cornering at the Nyquist itself would give 6 dB of
+rejection exactly where folding begins. A physical front-end pays the
+same price.
+
+**Zero-phase, and that is load-bearing.** The filter is `sosfiltfilt`,
+applied forwards and backwards. A causal filter of the same design has
+group delay, which moves the **detected activation index**, which moves
+`activation_position` — a stored column, an asserted value, and the axis
+the controlled-position crop is built on. Measured on a synthetic
+activation, the causal version shifts the detected sample by 2 at the
+output rate: 0.010 in realized position, on every trace in every bank,
+with nothing in the output that looks wrong.
+
+**Not folded in: matching IAFDB's acquisition band.** The real records
+came through some front-end whose response we do not know. Reproducing
+it is a larger realism question, it is not required for correctness
+here, and bundling it would make this change impossible to attribute.
+`run.antialias_cutoff_fraction` is the knob that step would turn.
 
 **Code:**
+- Band-limit: `simulate/pseudo_egm.py::band_limit`, delegating to
+  egm-signal's `lowpass` so one filter implementation serves both
+  corpora.
 - Resample function: `simulate/pseudo_egm.py::downsample` (integer
-  stride + linear-interp fallback), called from
-  `simulate/runner.py::run_single` immediately after
-  `bipolar_from_unipolar`.
+  stride + linear-interp fallback; **the interpolation branch is the one
+  that runs** — the capture rate falls out of the integration step, so
+  the ratio is 4.0609 and 4.1667 at the two shipped cards, never an
+  integer). Both are called from `simulate/runner.py::_capture_bipolar`
+  immediately after `bipolar_from_unipolar`.
 - Exact-T pinning: `simulate/runner.py::run_single` (the
   truncate/pad block after the downsample, so every trace in a
   dataset shares T).

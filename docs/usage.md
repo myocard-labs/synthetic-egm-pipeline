@@ -187,6 +187,8 @@ run:
   trace_duration_ms: 192.0                 # default (192 = 3x64; T must be a multiple of 64)
   output_fs_hz: 1000.0                     # default (matches IAFDB)
   capture_oversample: 4                    # default; backend captures at 4x output_fs_hz
+  antialias_cutoff_fraction: 0.8           # default; 0.8 of the OUTPUT Nyquist = 400 Hz
+  antialias_order: 8                       # default; Butterworth, applied zero-phase
   dr_model_units: 0.25                     # default; the solver's own space step
   # Upper bound on how long the wave may take to reach a pair, which sizes the
   # capture. Default 2 x trace_duration_ms (384 ms at T=192). THIS IS AN
@@ -288,7 +290,9 @@ Per-field reference:
 | `label_policy.radius_mm` | float | 2.0 | Used by `local_density` only. |
 | `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise, because egm-classifier's 1D MobileViT halves the sequence six times and an off-grid length fails outright at the first ragged stage rather than degrading. With `activation_position` set this is *not* how long the solver runs; see that block. |
 | `run.output_fs_hz` | float | 1000.0 | Output sample rate. Shared with IAFDB by decision, not coincidence — catch22 lag features depend on it — so changing it is a both-sides-or-neither call. |
-| `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. |
+| `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. **Oversampling does not prevent aliasing** — it moves the capture Nyquist up and leaves everything between the two Nyquists to fold. The next key is what prevents it. |
+| `run.antialias_cutoff_fraction` | float in (0, 1] | 0.8 | **Anti-alias corner, as a fraction of the OUTPUT Nyquist** — 0.8 → 400 Hz at a 1 kHz output. The capture is low-passed here before the rate conversion, zero-phase, so no detected activation moves. Same convention egm-signal's `decimate` uses. Refused at 0 or above 1: a corner on the Nyquist itself gives 6 dB of rejection where folding starts, which is no filter while reading as though there were one. **There is no way to switch the filter off** — decimating without it puts content from above the output Nyquist back inside the band, where nothing downstream can tell it from signal. |
+| `run.antialias_order` | int >=1 | 8 | Butterworth order, before the zero-phase pass squares the magnitude response. Higher than egm-signal's order-4 default because Butterworth is maximally flat, so a higher order steepens the skirt *and* flattens the passband — measured on a Courtemanche capture, order 8 both rejects better (0.000036 % left above Nyquist against 0.0021 %) and keeps more passband (98.55 % against 98.20 %). |
 | `run.dr_model_units` | float | 0.25 | The solver's own space step, in the backend's units. Backend/scheme, not physiology: it is paired with the model card's `dt` through the explicit-scheme stability bound `dt <= dr^2 / (2 · dim · D)`. **Must equal `geometry.dr_mm` for a Courtemanche card** — that model's diffusion coefficient is in mm²/ms, so its space unit is the millimetre and a different value simulates a different mesh from the one the geometry describes. Aliev-Panfilov is dimensionless and has no such constraint. Refused rather than absorbed. |
 | `run.travel_allowance_ms` | float > 0 | `2 × trace_duration_ms` (384 ms at T=192) | **Assumed upper bound** on stimulus-to-pair travel time; sizes the capture via `N = D + V + T - k(low)`. Raise it when the crop reports a window off the **BACK**. **This is an assumption, not a bound** — the true value is distance/CV, and neither term is known at config time. It has already been too small twice: originally `T`, which failed on a fibrosis run; now `2T`, which failed at density 0.5 (measured travel 414 ms). Heavy fibrosis conducts far slower than a clean patch, so **a dense substrate needs a larger allowance**, and because density is drawn per simulation the failure is a *tail event* — a config that ran fine yesterday can fail today on a different draw. Over-estimating costs solver time; under-estimating costs the run. A derived value — from the pair distance and the realized substrate's conduction velocity — is the intended replacement. |
 | `activation_position.low` | float 0..1 | (required if block present) | Smallest fractional activation position. **Sizes the capture** — the smaller it is, the more signal a window needs after the activation, so the longer the solver runs. |
@@ -537,6 +541,25 @@ Per-field reference:
 | `mixer.bandpass_clean` | bool | true | Filter clean to bipolar band before mixing. |
 | `mixer.band_hz` | `[lo, hi]` | `[30.0, 300.0]` | Bandpass band. |
 | `mixer.master_seed` | int | 0 | Mixer RNG seed. |
+
+## Banks written before the anti-alias filter are not comparable with banks written after
+
+The capture-to-output rate conversion now band-limits first (see
+[simulation_theory.md](simulation_theory.md)). That changes **every sample of
+every trace** — for Aliev-Panfilov barely (99.89 % of output power is kept and
+no band moves by more than 0.007 percentage points), for Courtemanche
+materially (99.14 %, with the 400–500 Hz band dropping from 0.69 % of trace
+power to 0.031 % as the folded content stops arriving).
+
+So a bank generated before this change and one generated after **differ by
+more than their seeds**, and mixing them in one study would put a systematic
+spectral difference on whatever axis the study varies. Regenerate, or retire
+the older banks; do not compare across the boundary.
+
+Which banks were affected is readable from the bank itself:
+`run_metadata.antialias_cutoff_hz` and `run_metadata.antialias_order` are
+written on every run from this version onward, and are **absent** on every bank
+written before it.
 
 ## Stable bank IDs
 

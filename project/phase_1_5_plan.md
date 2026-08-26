@@ -2,8 +2,8 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 27/47 steps done — **Wave 1 complete; Wave 2 underway**
-(S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 as a local step = 47; **S17 absorbed by S38c**, which
+**Status:** in progress · **Progress:** 28/48 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps = 48; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
 **Next:** **S18c** — the two measurements Courtemanche is waiting on: the `dr` convergence sweep
 (S18b measured CV ~ `D^0.58` rather than `D^0.50` at 0.25 mm, which is under-resolution with a
@@ -1441,7 +1441,7 @@ published axis via a severity scalar `s ∈ [0,1]`, swept once until measured AP
   That is weaker, and it is why the five values are asserted rather than eyeballed.
 - **Depends on:** S18a.
 
-### S41 — Process identifiers out of `src/` and `docs/` ☐ (2–4 h)
+### S41 — Process identifiers out of `src/`, `docs/` and `tests/` ✅ (2–4 h)
 - **Daniel, 2026-08-25**, on finding a step id in a `cell_models.py` comment: comments may cite
   papers and physics but must not reference project phases, coordination-log entries, or
   implementation steps. Confirmed to cover **both `src/` and `docs/`**; `project/` keeps everything.
@@ -1480,6 +1480,191 @@ published axis via a severity scalar `s ∈ [0,1]`, swept once until measured AP
   consistently across the constellation. Out of scope here (one repo at a time); worth a backlog
   entry or a note to the project-lead.
 - **Depends on:** S18b committed.
+
+### S42 — Anti-alias the decimation, and the two-number upstroke protocol ✅ (3–5 h)
+
+**Done 2026-08-25.** Both corrections landed. Full gate green (347 fast + 15 slow, up from 324 + 14).
+
+**(a) The filter, and the measurement that justifies its shape.** `band_limit` low-passes the
+capture at 0.8 × the output Nyquist (400 Hz), zero-phase, delegating to **egm-signal's `lowpass`**
+rather than reimplementing — one `sosfiltfilt` across the constellation is one place for a phase bug
+to live. `decimate` there could not be used for the reason the entry predicted of scipy's: it takes
+an integer factor. Order 8 rather than egm-signal's default 4, measured rather than assumed:
+Butterworth is maximally flat, so a higher order steepens the skirt *and* flattens the passband —
+order 8 both rejects better (0.000036 % left above Nyquist against 0.0021 %) and keeps more passband
+(98.55 % against 98.20 %).
+
+**The committed spectrum, on a fibrotic 16 mm patch, as a percentage of trace power:**
+
+| band | AP capture | AP output | CRN capture | CRN output, unfiltered | CRN output, filtered |
+|---|---|---|---|---|---|
+| 0–100 Hz | 98.031 | 97.960 | 65.985 | 65.690 | 66.752 |
+| 100–250 Hz | 1.968 | 2.038 | 30.314 | 30.819 | 30.904 |
+| 250–400 Hz | 0.0016 | 0.0020 | 2.500 | 2.764 | 2.314 |
+| 400–500 Hz | 0.0000 | 0.0000 | 0.460 | **0.692** | **0.031** |
+| above 500 Hz | 0.0000 | — | **0.741** | — | — |
+
+The Courtemanche 400–500 Hz output band reads **0.692 % unfiltered against 0.460 % in the capture
+itself** — the excess is the folded energy arriving, which is the aliasing made visible. Filtered it
+reads 0.031 %. Aliev-Panfilov is unchanged to three decimals in every band, so the old docstring's
+claim was true *for the model it was written about*, and this is entirely a consequence of the ionic
+one landing.
+
+**Zero-phase, verified at the level that matters.** The regression test asserts the detected
+activation index on the **finished output trace**, because that is where `activation_position` is
+taken. The control beside it applies the same Butterworth forwards only and shows a **2-sample
+shift** at the output rate — 0.010 in realized position, on every trace, with nothing in the output
+that looks wrong. Without that control the zero-phase assertion would only be saying the filter is
+gentle.
+
+**The fixture this broke, and why the repair is the interesting part.** `ambiguous_complex` split
+the three detection curves with a **one-sample biphasic spike** — a delta, flat past Nyquist. The
+filter removes exactly the content that made it the steepest feature, two curves then agreed, and
+three tests failed. The obvious repair does not work either: rectified-derivative peaks at the
+steepest *carrier crossing* and Teager-Kaiser at the *envelope* maximum, so for a single burst they
+sit a quarter carrier period apart — at most one sample at 1 kHz, and it rounds to zero for a
+quarter of all capture lengths (measured: 150 failures over 601 lengths). The fixture now gives
+**each curve its own feature**, chosen by the property that curve measures. Verified over every
+capture length from 400 to 1200 in both the paths it is used in: **zero collapses, minimum index gap
+60 samples.** The old fixture was asserting on content no bank could contain.
+
+**(b) The protocol, pinned — and the outlier turns out not to be an implementation difference.**
+The capture threshold is now **measured** by bisection (`measure_capture_threshold`), not guessed:
+**10.906 mV/ms** at the 2 ms duration, stable to 0.3 % between a rested cell and one 49 beats into
+the train and independent of the conditioning amplitude. The stimulus is 2× that.
+
+| property | Wilhelms | at 20 mV/ms (before) | at 2× threshold (now) |
+|---|---|---|---|
+| Amplitude | 110.11 mV | −3.5 % | **−1.8 %** |
+| RMP | −81.04 mV | +0.5 % | +0.6 % |
+| APD50 | 165.16 ms | +2.7 % | **+0.9 %** |
+| APD90 | 294.83 ms | −0.8 % | −1.3 % |
+| dV/dt max | 186.58 V/s | +14.2 % | +15.3 % |
+
+Pinning the stated protocol **halved three of the four small residuals**. It did not fix the fifth,
+and the reason is now measured rather than speculated: the upstroke happens *while the stimulus is
+still on* — the maximum falls at 1.86 ms of a 2 ms stimulus — so the measured value contains the
+stimulus. Raising the stimulus 1.82 mV/ms raised the measured maximum 2.13 V/s. **Wilhelms states
+"twice threshold" but not the duration, and threshold scales with duration**, so the ambiguity is
+irreducible from their side:
+
+| duration | threshold | 2× | dV/dt max | vs Wilhelms |
+|---|---|---|---|---|
+| 1 ms | 21.343 | 42.687 | 200.46 V/s | +7.4 % |
+| **2 ms** | **10.906** | **21.812** | **215.16 V/s** | **+15.3 %** |
+| 5 ms | 4.535 | 9.070 | 195.39 V/s | +4.7 % |
+| 10 ms | 2.416 | 4.832 | 179.57 V/s | −3.8 % |
+
+2 ms is kept because it is the conventional single-cell duration and because the textbook 2 nA
+stimulus sits at 1.83× our measured threshold, which cross-validates the threshold — **not** because
+it matches; it is the worst of the four. Subtracting the stimulus's own contribution gives 193.3 at
+2 ms and 186.3 at 5 ms against Wilhelms' 186.58, which points at protocol rather than membrane; that
+is recorded as an observation, not asserted on.
+
+**Tolerances, built from measured variation rather than from the miss.** Three things can
+legitimately move a number now that the amplitude is pinned, and all three were measured: read-point
+in the train (±10 beats moves APD50 0.9 %, everything else ≤0.25 %), timestep (halving it moves
+0.2–1.0 %), and the unstated stimulus duration (4.5 % on amplitude, 19 % on dV/dt max). Summing per
+property: **amplitude 10 → 7 %, APD50 15 → 6 %, APD90 10 → 5 %, RMP 3 % unchanged, dV/dt max
+20 → 18 %.** Four tighten substantially; dV/dt max barely moves, and that is the honest answer — a
+tolerance under 16 % would be asserting that Wilhelms used our duration.
+
+**Two upstrokes on the card, labelled, and they differ by 39 %.** `measured.upstroke_v_s` is the
+**propagated** figure — 131.1 V/s at the patch centre, 20 mm from the stimulus — and the validation
+block carries the **stimulated** single-cell 215.2. An isolated cell puts all its sodium current
+into its own membrane; a cell in tissue spends much of it charging the cells ahead. The propagated
+one is the card's physical claim, because no electrode in a real bank sits on a stimulus site.
+
+**Scheduling consequence, now in `docs/usage.md`:** this is a regeneration event. Banks either side
+of it are not comparable, and which side a bank is on is readable from
+`run_metadata.antialias_cutoff_hz`, absent on every bank written before.
+
+**Not folded in, as the entry required:** matching IAFDB's acquisition band.
+`run.antialias_cutoff_fraction` is the knob that step would turn.
+
+
+Two corrections to the **measurement and signal path**, grouped because both change numbers we
+already record and both are protocol errors rather than defects.
+
+**(a) The capture→output decimation has no anti-alias filter.** `downsample` takes an integer-ratio
+**stride** — bare decimation. Its own docstring predicted this coming due: *"acceptable for Phase 1
+because the AP membrane potential has no spectral energy above a few hundred Hz … for a faster
+wavefront, swap for a polyphase filter."* The ionic model landed, so the condition the docstring
+named has been met.
+
+**Do it rather than measure first**, on three arguments, the middle one being the real one:
+
+1. **Aliasing is irreversible and undetectable after the fact.** Unlike every other artifact this
+   phase has chased, you cannot look at an output trace and tell whether it is aliased — so
+   "measure and decide later" leaves every bank already generated unauditable.
+2. **Band-limiting before sampling is physically correct, not a distortion.** Real electrophysiology
+   front-ends apply analog anti-alias filtering ahead of the ADC, and the IAFDB records came through
+   one. **Unfiltered synthetic traces therefore carry spectral content no real recording can
+   contain** — which is a corpus difference, i.e. exactly the shortcut-feature class this project
+   keeps finding, except this time we would be manufacturing it knowingly.
+3. It is cheap — but **not the one-call swap it was described as**, see below.
+
+**Measured 2026-08-25, and it changes the implementation: the stride path never runs.**
+`_pick_capture_step` sets `achieved_capture_fs_hz = 1000 / (step · dt_ms)` with `step` an integer,
+so the achieved rate is a *consequence* of the integration step rather than a chosen multiple of the
+output rate. At both shipped cards the ratio is **not** an integer —
+
+| card | `dt` (ms) | step | achieved capture | ratio |
+|---|---|---|---|---|
+| `af_remodelled_220ms` | 0.010261 | 24 | 4060.9 Hz | **4.0609** |
+| `courtemanche_control` | 0.020000 | 12 | 4166.7 Hz | **4.1667** |
+
+— so `downsample` has been taking its **linear-interpolation** branch all along, not the stride
+branch its docstring justifies. Two consequences:
+
+- **`scipy.signal.decimate` cannot be dropped in**: it takes an integer decimation factor.
+- **Prefer band-limit-then-resample**: apply a zero-phase low-pass to the capture, then leave the
+  existing rate conversion alone. It works at any ratio, keeps filtering and resampling as separate
+  inspectable concerns, and is far easier to defend in a methods section than a polyphase resample
+  at a rational approximation of the rate. (`resample_poly` with a `Fraction.limit_denominator`
+  ratio is the alternative; it folds a small rate error into the fix and is harder to state.)
+- **The filter MUST be zero-phase** — `sosfiltfilt`, not `sosfilt`. A causal filter has group delay,
+  which shifts the **detected activation index**, which shifts `activation_position` — a stored
+  column, an asserted value, and the axis the whole controlled-position crop is built on. This is
+  the single most likely way to get this change subtly wrong.
+- Linear interpolation *is* a crude low-pass, which is presumably why this went unnoticed; it is
+  simply a bad one, with poor rejection above Nyquist and a signal-dependent response.
+
+- **This is a regeneration event, and that is the scheduling constraint.** Every bank to date was
+  produced by striding; adding the filter changes **every trace**, so banks either side stop being
+  comparable. **It must land before study banks are generated, not after.** Whether existing banks
+  are regenerated or simply retired is Daniel's call and should be stated in `docs/`.
+- **Model cards are unaffected** — calibration measures conduction velocity and duration from the
+  membrane potential via trackers, never from the electrogram. No card needs re-solving.
+- **Still measure the spectrum either side of the decimation** — to *document* the choice, not to
+  make it. Commit the measurement.
+- **Deliberately NOT folded in:** matching IAFDB's acquisition band. It is a larger realism
+  question, it is not required for correctness here, and bundling it would make this change
+  impossible to attribute.
+
+**(b) `dV/dt max` is measured under an unstated stimulus, and the reference protocol is known.**
+Wilhelms §2 states it: *twice the threshold amplitude* for single cell, *20 % above threshold* for
+tissue. Ours used an unstated amplitude and read 213.03 V/s against their 186.58 — a **protocol
+mismatch, not an implementation error**. Measured across amplitudes we get 165 / 195 / 218 / 227 V/s
+at 12 / 15 / 21 / 30 mV/ms, so a threshold near 6–7 mV/ms puts 2× squarely on their figure.
+
+- Determine the threshold, stimulate at 2×, re-measure, and **tighten the tolerance from 20 %** —
+  which only becomes defensible once the protocol is pinned.
+- **Record two numbers, labelled.** The **stimulated single-cell** value validates against Wilhelms.
+  The **propagated** upstroke — measured a distance from the stimulus — is the card's physical
+  claim, because no electrode in a real bank sits on the stimulus site. They answer different
+  questions and conflating them is what produced the outlier.
+- **Why this is not cosmetic:** with conduction velocity and duration matched across both cards,
+  upstroke morphology is the only variable left between them, and electrogram amplitude scales with
+  it. This is the number the model comparison rests on.
+
+- **Verify:** a signal with energy above the output Nyquist comes back **attenuated, not folded** —
+  and note the vacuous version of that test is feeding it a signal that was already band-limited,
+  which passes whatever the code does; the committed spectrum either side of the decimation; a
+  regenerated bank differs from a pre-filter one **in the high band specifically**, which is what
+  proves the filter is live rather than merely present; `dV/dt max` at 2× threshold lands inside the
+  tightened tolerance; both upstroke numbers recorded and labelled distinctly.
+- **Depends on:** S41.
 
 ### S18c — Mesh convergence, the cAF severity sweep, and the matched card (SEP5) ☐ (4–7 h)
 - **Change:** the two **measurements** CL-180 asks for, then the card they produce.
