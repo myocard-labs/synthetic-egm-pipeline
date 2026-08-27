@@ -1301,3 +1301,72 @@ def test_the_shipped_courtemanche_example_config_agrees_with_the_shipped_card() 
     assert config.run_config.model_card is not None
     assert config.run_config.model_card.anchor is not None
     assert not config.run_config.model_card.anchor.substituted
+
+
+# ---------------------------------------------------------------------------
+# Anisotropy, measured on the ionic model rather than argued for
+# ---------------------------------------------------------------------------
+
+#: Patch extent for the anisotropy measurement, in mm.
+#:
+#: **Not the 40 mm generation geometry, and the ratio is why.** A velocity
+#: *magnitude* is extent-dependent — the fit window sits closer to the stimulus
+#: on a small patch, where the wave is still accelerating, and the along-fibre
+#: figure duly reads 83.5 cm/s at 6 mm, 82.2 at 12 and 81.2 at 40. A *ratio* is
+#: not, because both runs are displaced by the same factor: measured 2.0467 at
+#: 6 mm against 2.0500 at 12 mm, 0.16 % apart. So extent is free to choose here
+#: in a way it is not for :func:`measure_conduction_velocity`, and it is chosen
+#: on two grounds: 12 mm is what the Aliev-Panfilov anisotropy test uses, so
+#: the two models' realized ratios are read over the same tissue and the same
+#: fit window in millimetres with only the pitch and the membrane differing;
+#: and at 0.1 mm it keeps the fit to 48 nodes starting 3.6 mm from the
+#: stimulus, for two runs in well under a minute.
+ANISOTROPY_PATCH_MM = 12.0
+
+
+@pytest.mark.slow
+def test_the_ionic_model_realizes_the_requested_anisotropy() -> None:
+    """The knob that was inoperative for the life of the project, on Courtemanche.
+
+    **Measured from the activation map, not read back off the stencil.** The
+    tensor is written by one model-agnostic helper, so "Courtemanche inherits
+    it" is true of the code — and that is the same species of claim as "the
+    helper sets ``D_al``", which was also true of the code for two years while
+    the helper assigned to the model instead of the stencil and every bank came
+    out at the built-in 3.093 whatever was requested. Only a velocity measured
+    off a wave distinguishes the two.
+
+    **2.0 is a discriminating request, and it has to be.** The stencil's own
+    default is ``D_al = 1, D_ac = 1/9``, i.e. a realized ratio near 3 — so a
+    test run at ``anisotropy_ratio = 3.0`` would pass unchanged on a helper
+    that did nothing at all. At 2.0 the historical no-op reads 3.09 and fails
+    by 55 %.
+
+    Expected slightly **above** the requested value, which is the transverse
+    run being the under-resolved one: ``D_across`` is ``D/4``, so the
+    transverse space constant is half the along-fibre one and 0.1 mm resolves
+    its upstroke half as well. Under-resolution depresses conduction velocity
+    (asserted from the other side by the mesh-dependence test above), and that
+    velocity is the denominator. Aliev-Panfilov shows the same sign: 2.15 for a
+    requested 2.0 at its own coarser pitch.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave.measure import (
+        measure_anisotropy_ratio,
+    )
+
+    card = shipped_card()
+    geometry = Patch2DGeometry(size_mm=ANISOTROPY_PATCH_MM, dr_mm=DR_MM)
+
+    realized = measure_anisotropy_ratio(
+        geometry=geometry, solved=card.solved, dr_model_units=DR_MODEL_UNITS
+    )
+
+    # 5 %, against a discretisation residual measured at 2.5 % — twice the
+    # observed excess, and far tighter than every way the tensor can be wrong:
+    # the pre-fix stencil default gives 3.09 (+55 %), an isotropic tensor 1.0
+    # (-50 %), and a ratio applied without the square gives sqrt(2) = 1.41
+    # (-29 %). Nothing legitimate lives between 5 % and those.
+    assert realized == pytest.approx(geometry.anisotropy_ratio, rel=0.05), (
+        f"requested anisotropy {geometry.anisotropy_ratio}, realized {realized:.4f} "
+        "on the Courtemanche membrane"
+    )

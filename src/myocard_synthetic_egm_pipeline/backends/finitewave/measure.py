@@ -417,9 +417,8 @@ def measure_conduction_velocity(
 def measure_anisotropy_ratio(
     *,
     geometry: Patch2DGeometry,
-    solved: AlievPanfilovCellModel,
+    solved: CellModelSpec,
     dr_model_units: float,
-    t_max_model_units: float | None = None,
 ) -> float:
     """Realized along-over-transverse velocity ratio.
 
@@ -427,33 +426,32 @@ def measure_anisotropy_ratio(
     only interesting when the anisotropy itself is under test — which, since
     that knob once spent the life of the project silently doing nothing, is
     worth being able to ask directly.
+
+    **Measured from the activation map, both times.** Reading ``D_al`` and
+    ``D_ac`` back off the stencil would restate the assignment rather than test
+    it, and restating the assignment is precisely what the code did while the
+    knob was inoperative: it plainly appeared to set the tensor, and it was
+    setting two attributes on an object nothing read.
+
+    **Any cell model, and that is the point of the signature.** The tensor
+    lives on the stencil, which is a separate object from the membrane, so a
+    single helper writes a pure shape that every model inherits — there is one
+    configuration path and no per-model sibling to drift from it. That is a
+    claim about the code, though, of the same species as "the helper sets
+    ``D_al``", and this function is what turns it into a measurement.
+
+    Two calls to :func:`measure_conduction_velocity` rather than a private loop
+    with its own time budget: that function already carries the per-model
+    crossing estimate *and* the transverse scaling, and a second copy here
+    would be one more place for the ionic model to be forgotten.
     """
-    velocities: dict[Edge, float] = {}
-    for edge in ("left", "top"):
-        if t_max_model_units is None:
-            cells = geometry.size_mm / geometry.dr_mm
-            crossing = (cells * dr_model_units) / (MODEL_UNIT_CV * float(np.sqrt(solved.diffusion)))
-            # Transverse propagation is `ratio` times slower, so the budget has
-            # to scale with it or the `top` run silently never crosses.
-            budget = 2.0 * crossing * max(1.0, geometry.anisotropy_ratio) + 3.0 * MODEL_UNIT_APD90
-        else:
-            budget = t_max_model_units
-
-        activation, _ = _run_plane_wave(
-            geometry=geometry,
-            solved=solved,
-            dr_model_units=dr_model_units,
-            edge=edge,
-            t_max_model_units=budget,
-        )
-        velocities[edge] = _velocity_from_activation(
-            activation,
-            edge=edge,
-            dr_mm=geometry.dr_mm,
-            time_unit_ms=_ms_per_model_time(solved),
-        )
-
-    return velocities["left"] / velocities["top"]
+    along = measure_conduction_velocity(
+        geometry=geometry, solved=solved, dr_model_units=dr_model_units, edge="left"
+    )
+    across = measure_conduction_velocity(
+        geometry=geometry, solved=solved, dr_model_units=dr_model_units, edge="top"
+    )
+    return along / across
 
 
 # ---------------------------------------------------------------------------

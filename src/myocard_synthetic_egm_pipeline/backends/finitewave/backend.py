@@ -460,6 +460,18 @@ def _configure_anisotropy_2d(model: Any, geometry: Patch2DGeometry) -> None:
     2.15, requested 3.0 gives 3.093 — the few-percent excess is discretization
     on a 0.25 mm mesh, not a modelling error.
 
+    **And measured on the ionic model too, which is the only thing that makes
+    "model-agnostic" a finding rather than a reading of this code.** The tensor
+    living on the stencil says Courtemanche must inherit it; that is an
+    argument, and an argument of exactly the shape that held while the
+    assignment went to the model instead. Requested 2.0 realizes 2.050 on
+    Courtemanche at 0.1 mm, against Aliev-Panfilov's 2.15 at 0.25 mm. Both sit
+    above the request, and for the same reason: ``D_ac`` is the smaller
+    coefficient, so the transverse space constant is the shorter one and any
+    given pitch resolves that upstroke worse — under-resolution depresses
+    conduction velocity, and it is the denominator. The excess is smaller on
+    the finer mesh, which is that explanation seen from the other side.
+
     Which axis is held fixed, and why it is the along-fibre one
     ----------------------------------------------------------
     A ratio only fixes the *quotient*; something else has to pin the scale.

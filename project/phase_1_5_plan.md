@@ -2,13 +2,15 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 28/48 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 32/48 steps done — **Wave 1 complete; Wave 2 underway**
 (S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps = 48; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
-**Next:** **S18c** — the two measurements Courtemanche is waiting on: the `dr` convergence sweep
-(S18b measured CV ~ `D^0.58` rather than `D^0.50` at 0.25 mm, which is under-resolution with a
-number on it) and the cAF severity sweep to a matched 220 ms. S18a/S18b shipped 2026-08-15, so the
-ionic model runs end to end against a published control vector. The pseudo-EGM / calibration cluster
+**Next:** **S20** — the Courtemanche wall-clock characterisation, rescoped: the timing must be
+taken at **`dr` = 0.1 mm**, the pitch its cards are actually solved at, not the 0.25 the entry was
+written against. That number is the one input still missing from the backend re-evaluation and the
+AP/Courtemanche tiering decision, and it has twice had to be recorded as an estimate.
+S41 · S42 · S18c · S19 shipped 2026-08-25.
+The pseudo-EGM / calibration cluster
 (S37 · S39 · S40 · S38a · S38b · S38c) is **complete and round-trip verified**, and S16a/S16b
 shipped 2026-08-16; CL-167's detection-curve unification still rides with a later step — S16a made
 the curve *selectable*, which is the precondition for measuring whether unifying it matters, not the
@@ -1887,25 +1889,81 @@ message, a config example and docs; nothing that can move a number, per the cade
   reopen `T`** — it is fixed by the classifier's multiple-of-64 constraint and by IAFDB extraction.
 - **Depends on:** S18b.
 
-### S19 — Anisotropy + time-base for an ionic model (SEP5) ☐ (2–4 h)
-- **Change:** `_configure_anisotropy_2d_courtemanche` sibling; Courtemanche runs in real ms so the
-  AP time-unit translation is bypassed — `trace_duration_ms` maps directly. Note the two models also
-  ship different diffusion defaults (`D_model` = 1.0 for Aliev–Panfilov, 0.154 for Courtemanche), so
-  the anisotropy helper cannot reuse AP's scaling constants.
-- **Verify:** realized conduction-velocity ratio along/across fibers matches
-  `geometry.anisotropy_ratio` within tolerance, measured from the activation map.
-- **Depends on:** S18.
+### S19 — Verify anisotropy on the ionic model (SEP5) ✅ (1–3 h)
+
+**Rescoped 2026-08-25 — the code half is absorbed and writing it now would be a regression.** The
+entry called for a `_configure_anisotropy_2d_courtemanche` sibling and a bypass of the time-unit
+translation. Both arrived by other routes:
+
+- **Anisotropy is already model-agnostic.** S38a moved `D_al`/`D_ac` onto the **stencil**, which is a
+  separate object from the cell model, so the helper writes a pure tensor *shape* that any model
+  inherits. There is one call site and no sibling. **Do not write one** — two code paths for one
+  concept is exactly what the stencil fix removed, and the second path is where they drift.
+- **The time base is handled.** `ms_to_model_time` returns its argument unchanged for Courtemanche,
+  which is the seam the fifth spec was cut for. Nothing to bypass.
+- The note about differing diffusion defaults is moot: both models now take diffusion from a solved
+  card, not from a package default.
+
+**What is left is verification, and it is the part that matters.** `measure_anisotropy_ratio` is
+**the last measurement function still typed to `AlievPanfilovCellModel`** — `measure`,
+`measure_conduction_velocity` and the internal helpers all took `CellModelSpec` during S18b; only
+this one was missed. So the realized anisotropy of the ionic model has never been measured, and **as
+typed it cannot be.**
+
+That matters more here than it would anywhere else in this codebase. **`anisotropy_ratio` is the knob
+that silently did nothing for the entire life of the project**, because the code plainly appeared to
+set it and nobody measured the result. "Model-agnostic by construction" is the same species of claim
+as "the helper sets D_al" — true about the code, and previously insufficient.
+
+- **Change:** widen `measure_anisotropy_ratio` from `AlievPanfilovCellModel` to `CellModelSpec`;
+  measure the realized along/across ratio for Courtemanche and assert it against the requested one.
+- **Verify:** realized ratio matches `geometry.anisotropy_ratio` within tolerance **for the ionic
+  model**, measured from the activation map rather than inferred from the stencil values — reading
+  back the numbers we wrote would restate the assignment, not test it. Aliev–Panfilov's existing
+  measurement stays green and unchanged.
+- **Cost, and it is a slow test:** two solver runs at `dr = 0.1 mm` (along and across), which is the
+  fine-mesh regime. Mark it slow, and consider a smaller patch — the ratio is a property of the
+  tensor and the mesh pitch, not of the patch extent, so it does not need 40 mm to be measurable.
+- **Depends on:** S18c.
 
 ### S20 — Courtemanche runtime characterization + docs (SEP5) ☐ (3–5 h)
-- **Change:** measure wall-clock per sim for Courtemanche vs Aliev–Panfilov at the v1 geometry
-  (40 mm, dr 0.25 mm → 160×160) and write the timing table into `docs/simulation_theory.md`,
-  alongside the Courtemanche section proper (ionic formulation, what the curated scalings mean, why
-  the time base differs). An ionic model is far more expensive than AP; if a 1000-sim bank becomes
-  infeasible on the laptop, that is a §8 data-plan input the project-lead needs. An example config
-  + CHANGELOG close the issue out.
-- **Verify:** example config runs end-to-end; timing table present; a note raised to the
-  project-lead if the projected bank generation time is impractical; pr_checklist passes. Pairs
-  with B12 (S21).
+
+**Rescoped 2026-08-25. Measuring what this entry originally asked for would produce a number that
+describes a configuration nobody can use.** It says "at the v1 geometry (40 mm, dr 0.25 mm →
+160×160)" — but S18c moved Courtemanche's calibration mesh to **0.1 mm**, and its cards refuse to
+solve honestly at 0.25. A like-for-like 0.25-vs-0.25 comparison would understate the real cost by
+roughly the 39× mesh factor and would be quietly meaningless.
+
+**The comparison that matters is each model at the pitch it is actually run at:**
+Aliev–Panfilov at `dr = 0.25` (160×160) against Courtemanche at `dr = 0.1` (400×400). That is not
+an apples-to-apples measure of the membrane cost, and it should not pretend to be — it is the
+*operational* cost, which is the question being asked. **Report both decompositions**: the mesh
+factor and the per-node membrane factor separately, so a later reader can tell how much of the total
+is the ionic model and how much is the resolution its upstroke demands.
+
+**This is the number the project has been estimating and should stop estimating.** It has been
+recorded as an explicit estimate twice — the "roughly 400–1200× an AP simulation" figure carries an
+UNVERIFIED marker in the Courtemanche investigation, because the per-node factor was never measured
+and AP wall-clock was never taken. **Three open decisions consume it:** the simulator-backend
+re-evaluation, the AP/Courtemanche tiering question (Aliev–Panfilov for routine generation,
+Courtemanche only for studies that need it), and the §8 data plan. It is worth more now than when
+the entry was written.
+
+- **Change:** measure wall-clock per simulation for both models at their operating pitches; write
+  the timing table into `docs/simulation_theory.md`. Project it: what a 100-sim and a 1000-sim CRN
+  bank cost in hours, on the desktop as well as the laptop, since that is the machine an overnight
+  run would use.
+- **Already done, do not redo:** the example config shipped with the S18c follow-up
+  (`examples/synthegm_courtemanche.yaml`). The time-base explanation and the reason only conduction
+  velocity inverts are in `simulation_theory.md`'s calibration section. The ionic formulation and
+  the conductance scalings are covered in the platform investigation. What is genuinely missing is
+  the **timing**, and a short pointer from the theory doc to that investigation.
+- **Verify:** the timing table is present and states the machine, the pitch and the patch size for
+  every row — a wall-clock number without its hardware is not a measurement; the projected
+  bank-generation figures are derived from measured per-sim time rather than assumed; the estimate
+  in the investigation is **replaced** by the measured value and its UNVERIFIED marker removed.
+- **Raise to the project-lead if the projected time is impractical** — that is a §8 data-plan input
+  and it also feeds the tiering decision, which is not this repo's to make.
 - **Depends on:** S19.
 
 ### S21 — Resource / CPU cap (B12) ☐ (2–4 h)
