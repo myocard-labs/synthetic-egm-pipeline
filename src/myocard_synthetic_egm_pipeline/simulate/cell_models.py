@@ -40,6 +40,7 @@ and nothing upstream has to know why.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -93,20 +94,36 @@ is. Note it is three orders of magnitude below Aliev-Panfilov's calibrated
 number cannot be carried across a model swap and why it lives on the spec.
 """
 
-CRN_REFERENCE_CV_CM_S: float = 57.400
+CRN_REFERENCE_CV_CM_S: float = 61.379
 """Along-fibre conduction velocity in cm/s at :data:`CRN_REFERENCE_DIFFUSION`,
 control conductances and :data:`CRN_CALIBRATION_DR_MM`. **Measured**, like
 :data:`MODEL_UNIT_CV` — Finitewave publishes no such number.
 
-Measured 2026-08-15 on clean tissue, along the fibres, on the 40 mm production
-patch, by the same least-squares fit over the central 30-70 % of the mesh that
-fills a card's ``measured`` block. The ``sqrt(D)`` law it is extrapolated with
-was checked rather than assumed — see the sweep recorded in
-``models/courtemanche_control.yaml``.
+Measured on clean tissue, along the fibres, on the 40 mm production patch, by
+the same least-squares fit over the central 30-70 % of the mesh that fills a
+card's ``measured`` block.
+
+**Was 57.400, measured at ``dr = 0.25``.** The mesh-convergence sweep found
+that pitch to be badly under-resolved for this model — see
+:data:`CRN_CALIBRATION_DR_MM` — and the constant moved with the pitch, which is
+exactly the mesh-dependence the sweep set out to expose.
 """
 
-CRN_CALIBRATION_DR_MM: float = 0.25
+CRN_CALIBRATION_DR_MM: float = 0.10
 """Mesh pitch :data:`CRN_REFERENCE_CV_CM_S` was measured at.
+
+**0.10, down from 0.25**, on the convergence sweep committed to
+``investigations/courtemanche_calibration.md``. At 0.25 the propagated upstroke
+read 131.1 V/s against a converged 118.7 — **10.5 % high in the one observable
+this model was added to get right** — and the conduction velocity at fixed
+diffusion read 8 % low. At 0.10 the upstroke is within 0.5 % of the finest
+pitch measured.
+
+The residual is stated rather than implied: the ``CV ~ D**n`` exponent, which
+is 0.500 in the continuum, still reads **0.528** here and 0.513 at ``dr =
+0.05``. It has not plateaued, so the solved diffusion remains partly a
+mesh-compensation quantity. 0.10 is the coarsest pitch that converges the
+upstroke, and refining further costs ``1/dr**3``.
 
 **Not a free parameter of the solve.** Discretisation widens the upstroke
 relative to the mesh, so the measured CV constant is a property of the model
@@ -115,12 +132,12 @@ wrong axis — which this project has already done once, when a conduction
 velocity measured *across* the fibres was recorded under a longitudinal label.
 
 Courtemanche is the model where the pitch matters most: its upstroke is
-~0.59 ms wide, so at 80 cm/s the wavefront spans ~0.47 mm, which is about 1.9
-cells at 0.25 mm where monodomain practice wants 5-10. Until a mesh-convergence
-sweep re-measures this constant at a finer pitch, a card solved here is a card
-valid at 0.25 mm only — which :func:`calibrate_courtemanche` enforces rather
-than trusts, because a CV-solve will otherwise absorb the discretisation error
-into ``diffusion`` and hit its target with a number that is no longer physical.
+~0.59 ms wide, so at 80 cm/s the wavefront spans ~0.47 mm — about 1.9 cells at
+0.25 mm against the 5-10 monodomain practice wants, and 4.7 cells here. A card
+solved at one pitch is a card valid at that pitch only, which
+:func:`calibrate_courtemanche` enforces rather than trusts, because a CV-solve
+will otherwise absorb the discretisation error into ``diffusion`` and hit its
+target with a number that is no longer physical.
 """
 
 CRN_MAX_DT_MS: float = 0.02
@@ -242,6 +259,246 @@ is a genuine independent replicate — but it is a **different** claim from
 Only meaningful together with :data:`CRN_PACING_BEATS` and
 :data:`CRN_PACING_BCL_MS`.
 """
+
+CRN_AF_SEVERITY: float = 0.56
+"""How far along the published cAF remodelling axis the matched card sits.
+
+**Swept, not chosen.** Bisected until the propagated tissue APD90 reached the
+220 ms both shipped cards target; the measured value at this severity is
+219.5 ms. ``s = 0`` is control, ``s = 1`` the fully remodelled conductances.
+
+The scalings it produces are :data:`CRN_AF_SCALINGS`.
+"""
+
+
+def crn_af_scalings(severity: float) -> dict[str, float]:
+    """cAF conductance scalings at a given severity, as ``{name: multiplier}``.
+
+    The remodelling axis is van Wagoner 1997 / Bosch 1999 / Dobrev 2001, as
+    collected in Wilhelms 2012 §2: ``I_to`` -65 %, ``I_CaL`` -65 %,
+    ``I_K1`` +110 %, scaled linearly by ``severity``.
+
+    **Three currents, and the published set has four.** ``I_Kur`` -49 % is
+    absent because Finitewave computes its conductance inside the ionic kernel
+    as a function of voltage — ``gkur = 0.005 + 0.05 / (1 + exp(-(u - 15) / 13))``
+    — so there is no parameter anywhere in the object graph to scale. The
+    omission is mechanically forced, not chosen, and it is declared on the card
+    and in the limitations register rather than papered over.
+
+    **Nothing here compensates for it.** ``gkr`` and ``gks`` are settable and
+    could absorb ``I_Kur``'s net effect on duration, and deliberately do not:
+    the severity sweep already lands APD90 on target, so compensation buys
+    nothing observable while converting a forced, declarable deviation into a
+    fabricated one.
+    """
+    if not 0.0 <= severity <= 1.0:
+        raise ValueError(f"severity must lie in [0, 1]; got {severity}.")
+    return {
+        "g_to_scale": 1.0 - 0.65 * severity,
+        "g_CaL_scale": 1.0 - 0.65 * severity,
+        "g_K1_scale": 1.0 + 1.10 * severity,
+    }
+
+
+CRN_AF_SCALINGS: Mapping[str, float] = MappingProxyType(crn_af_scalings(CRN_AF_SEVERITY))
+"""The matched AF card's conductance scalings, at :data:`CRN_AF_SEVERITY`."""
+
+
+@dataclass(frozen=True)
+class CourtemancheReference:
+    """A conductance set, and the conduction velocity measured *for that set*.
+
+    **The solve needs one of these per parameterisation, and cannot share.**
+    ``CV ~ sqrt(D)`` inverts a velocity target to a diffusion coefficient
+    through a measured anchor, and the anchor is a property of the membrane as
+    much as of the mesh: the AF scalings move the velocity at fixed diffusion
+    by 2.3 %, so solving a remodelled card through the control anchor would put
+    that 2.3 % into ``diffusion`` and call it physics.
+
+    Registering the pair together is what makes the requirement checkable —
+    :func:`calibrate_courtemanche` refuses a parameterisation it has no
+    measurement for, rather than reaching for the nearest one.
+    """
+
+    name: str
+    reference_cv_cm_s: float
+    """Along-fibre CV at :data:`CRN_REFERENCE_DIFFUSION`, on the 40 mm patch."""
+    dr_mm: float
+    params: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+    def matches(self, params: Mapping[str, float], dr_mm: float) -> bool:
+        """Is this the anchor for that parameterisation on that mesh?"""
+        if not math.isclose(dr_mm, self.dr_mm, rel_tol=1e-9):
+            return False
+        if set(params) != set(self.params):
+            return False
+        return all(math.isclose(params[k], self.params[k], rel_tol=1e-6) for k in params)
+
+
+CRN_REFERENCES: tuple[CourtemancheReference, ...] = (
+    CourtemancheReference(
+        name="control",
+        reference_cv_cm_s=CRN_REFERENCE_CV_CM_S,
+        dr_mm=CRN_CALIBRATION_DR_MM,
+    ),
+    CourtemancheReference(
+        name="af_remodelled",
+        reference_cv_cm_s=59.7320,
+        dr_mm=CRN_CALIBRATION_DR_MM,
+        params=CRN_AF_SCALINGS,
+    ),
+)
+"""Every conductance set this repo has measured a velocity anchor for.
+
+A tuple rather than a mapping because the key is a whole parameter set, and
+because reading it top to bottom is how a reviewer checks that each entry has a
+measurement behind it.
+"""
+
+
+def find_courtemanche_reference(
+    params: Mapping[str, float], dr_mm: float
+) -> CourtemancheReference | None:
+    """The exactly-matching registered anchor, or ``None``."""
+    for reference in CRN_REFERENCES:
+        if reference.matches(params, dr_mm):
+            return reference
+    return None
+
+
+class AnchorSubstitutionWarning(UserWarning):
+    """A Courtemanche solve used an anchor measured on a different setup.
+
+    Its own category so a caller can promote it to an error, and so a test can
+    assert on it without matching message text.
+    """
+
+
+@dataclass(frozen=True)
+class AnchorResolution:
+    """Which anchor a solve used, and whether it was the right one.
+
+    Returned rather than raised **on purpose**, and the reason is architectural
+    rather than a judgement about tolerance. The anchor is chosen by
+    ``backend.model``; the mesh comes from ``geometry.dr_mm``. Refusing a
+    mismatch makes one config section unreadable without the other — two blocks
+    that were independently reasonable-about stop being so, and every future
+    cross-section rule accumulates in the loader that happens to notice it
+    first. Cross-section validation is a tool of its own, later.
+
+    So a mismatch **warns and proceeds on the nearest anchor**, and the
+    substitution is written into the bank. The console warning is gone by the
+    time anyone reads the artifact; the provenance is not.
+    """
+
+    reference: CourtemancheReference
+    run_dr_mm: float
+    substituted: bool
+    """``True`` when ``reference`` is not an exact match for this run."""
+    conductances_differ: bool
+    """``True`` when even the membrane is not the one the anchor was measured on.
+
+    Strictly worse than a pitch mismatch: a different pitch scales a quantity
+    the sweep has characterised, while a different conductance set moves
+    conduction velocity by an amount nobody has measured.
+    """
+
+    @property
+    def anchor_dr_mm(self) -> float:
+        return self.reference.dr_mm
+
+
+def resolve_courtemanche_anchor(params: Mapping[str, float], dr_mm: float) -> AnchorResolution:
+    """The anchor to solve through, exact if there is one and nearest if not.
+
+    Nearest is decided in two tiers, because the two axes are not comparable.
+    **Matching conductances first**, then the closest pitch among those — a
+    different pitch rescales an error the convergence sweep has measured, while
+    a different membrane moves conduction velocity by an amount nobody has.
+    Only if no anchor shares the conductances does it fall back to the nearest
+    pitch across the whole registry, and the warning then says so.
+
+    Raises
+    ------
+    ValueError
+        If the registry is empty. That is the one genuine impossibility here:
+        there is nothing to substitute, so there is no answer to give.
+    """
+    if not CRN_REFERENCES:
+        raise ValueError(
+            "no Courtemanche conduction-velocity anchors are registered at all, so "
+            "there is nothing to solve through and nothing to substitute. Measure "
+            "one and add it to CRN_REFERENCES."
+        )
+
+    exact = find_courtemanche_reference(params, dr_mm)
+    if exact is not None:
+        return AnchorResolution(
+            reference=exact, run_dr_mm=dr_mm, substituted=False, conductances_differ=False
+        )
+
+    same_membrane = [
+        reference for reference in CRN_REFERENCES if reference.matches(params, reference.dr_mm)
+    ]
+    candidates = same_membrane or list(CRN_REFERENCES)
+    nearest = min(candidates, key=lambda reference: abs(reference.dr_mm - dr_mm))
+    return AnchorResolution(
+        reference=nearest,
+        run_dr_mm=dr_mm,
+        substituted=True,
+        conductances_differ=not same_membrane,
+    )
+
+
+def warn_about_anchor_substitution(resolution: AnchorResolution) -> None:
+    """Say loudly which anchor was borrowed, and which way the answer is wrong.
+
+    The direction is not a guess. Conduction velocity at fixed diffusion **rises
+    as the mesh refines** — measured 81.85 cm/s at ``dr = 0.25`` against 87.94
+    at 0.05, at one diffusion — so an anchor measured on a coarser mesh than the
+    run understates how fast this tissue really conducts. The solve then asks
+    for more diffusion than it needs and the realised velocity lands **above**
+    target. Running coarser than the anchor puts it below.
+    """
+    if not resolution.substituted:
+        return
+
+    anchor = resolution.reference
+    if resolution.run_dr_mm < anchor.dr_mm:
+        direction = (
+            "the run is FINER than the anchor, so the realised conduction velocity "
+            "will land ABOVE target"
+        )
+    elif resolution.run_dr_mm > anchor.dr_mm:
+        direction = (
+            "the run is COARSER than the anchor, so the realised conduction velocity "
+            "will land BELOW target"
+        )
+    else:
+        direction = "the pitch matches, so the error is entirely the conductance mismatch"
+
+    membrane = (
+        " Its CONDUCTANCES ALSO DIFFER from this run's, which is the worse half: a "
+        "different membrane moves conduction velocity by an amount nobody has "
+        "measured."
+        if resolution.conductances_differ
+        else ""
+    )
+    warnings.warn(
+        f"Courtemanche calibration is using the {anchor.name!r} conduction-velocity "
+        f"anchor, which was measured at dr={anchor.dr_mm} mm, for a run at "
+        f"dr={resolution.run_dr_mm} mm. No anchor is registered for this "
+        f"combination, so the mismatch is absorbed into the solved diffusion and "
+        f"the solve hits its target anyway: {direction}.{membrane} The substitution "
+        "is recorded in the bank's provenance; measure an anchor for this "
+        "combination and add it to CRN_REFERENCES to remove it.",
+        AnchorSubstitutionWarning,
+        stacklevel=3,
+    )
+
 
 DT_SAFETY_FACTOR: float = 0.9
 """How far inside the stability bound to place ``dt``.
@@ -656,32 +913,16 @@ def calibrate_courtemanche(
             f"dr_model_units must equal dr_mm. Got dr_model_units={dr_model_units} "
             f"and dr_mm={dr_mm}. (Aliev-Panfilov may differ; it is dimensionless.)"
         )
-    if not math.isclose(dr_mm, CRN_CALIBRATION_DR_MM, rel_tol=1e-9):
-        # Same guard, same reason, as calibrate_aliev_panfilov's eps check: the
-        # constant was measured on one axis and is evidence about that axis only.
-        raise ValueError(
-            f"CRN_REFERENCE_CV_CM_S was measured at dr={CRN_CALIBRATION_DR_MM} mm; "
-            f"got dr_mm={dr_mm}. Conduction velocity on a discrete mesh depends on "
-            "the pitch, and the failure is silent: a CV-solve absorbs the "
-            "discretisation error into diffusion and hits the target anyway, "
-            "leaving a physical-looking number that is not. Re-measure the "
-            "constant at the new pitch first."
-        )
-
+    # The anchor is a property of the membrane AND the mesh together, so the
+    # lookup is on both. A miss borrows the nearest and says so, rather than
+    # refusing: see `AnchorResolution` for why blocking here would be the wrong
+    # shape. What must not happen is the borrowing being silent — the warning
+    # goes to the console and `load_model_card` puts it in the bank.
     scalings = dict(params or {})
-    if scalings:
-        # The reference CV was measured at control conductances. Sodium
-        # conductance in particular moves CV directly, so a remodelled set makes
-        # the constant an answer to a different question.
-        raise ValueError(
-            f"CRN_REFERENCE_CV_CM_S was measured at control conductances; got "
-            f"scalings {sorted(scalings)}. A remodelled set changes conduction "
-            "velocity, so solving through this constant would put the error into "
-            "diffusion. Measure the reference CV for the remodelled set and "
-            "register it before calibrating against it."
-        )
+    resolution = resolve_courtemanche_anchor(scalings, dr_mm)
+    warn_about_anchor_substitution(resolution)
 
-    velocity_ratio = conduction_velocity_cm_s / CRN_REFERENCE_CV_CM_S
+    velocity_ratio = conduction_velocity_cm_s / resolution.reference.reference_cv_cm_s
     diffusion = CRN_REFERENCE_DIFFUSION * velocity_ratio * velocity_ratio
 
     cfl = (dr_model_units * dr_model_units) / (2.0 * dimensions * diffusion)

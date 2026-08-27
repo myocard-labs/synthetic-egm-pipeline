@@ -29,6 +29,8 @@ question that turned out to be an electrode transpose.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import finitewave as fw
@@ -37,11 +39,13 @@ import numpy.typing as npt
 
 from myocard_synthetic_egm_pipeline.simulate.calibration import MeasuredValues
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    CRN_MAX_DT_MS,
     CRN_PACING_BCL_MS,
     CRN_PACING_BEATS,
     CRN_REFERENCE_CV_CM_S,
     CRN_REFERENCE_DIFFUSION,
     CRN_STIMULUS_DURATION_MS,
+    DT_SAFETY_FACTOR,
     MODEL_UNIT_APD90,
     MODEL_UNIT_CV,
     WILHELMS_2012_CRN_CONTROL,
@@ -50,6 +54,7 @@ from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     CourtemancheCellModel,
 )
 from myocard_synthetic_egm_pipeline.simulate.specs import (
+    _DEFAULT_STRIP_THICKNESS,
     Edge,
     Patch2DGeometry,
     PlanarEdgeStimulus,
@@ -106,6 +111,8 @@ def _run_plane_wave(
     dr_model_units: float,
     edge: Edge,
     t_max_model_units: float,
+    shape: tuple[int, int] | None = None,
+    strip_thickness: int = _DEFAULT_STRIP_THICKNESS,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """One clean-tissue plane wave. Returns (activation times, centre-node AP).
 
@@ -130,7 +137,10 @@ def _run_plane_wave(
         dr_model_units=dr_model_units,
     ).model
 
-    tissue = _backend._build_tissue_2d(geometry)
+    tissue = _backend._build_tissue_2d(
+        shape=geometry.shape if shape is None else shape,
+        fiber_angle_rad=geometry.fiber_angle_rad,
+    )
     _backend._apply_substrate_2d(
         tissue=tissue,
         strategy=UniformRandomFibrosis(density=0.0),
@@ -138,15 +148,20 @@ def _run_plane_wave(
     )
     model.cardiac_tissue = tissue
     _backend._install_activation_2d(
-        model=model, source=PlanarEdgeStimulus(edge=edge), tissue=tissue
+        model=model,
+        source=PlanarEdgeStimulus(edge=edge, strip_thickness=strip_thickness),
+        tissue=tissue,
     )
     model.t_max = t_max_model_units
 
     activation_tracker = fw.ActivationTime2DTracker()
     activation_tracker.threshold = _activation_threshold(solved)
-    n_i = tissue.mesh.shape[0]
+    # Centre of the mesh in BOTH axes. It read ``[n_i // 2, n_i // 2]`` while
+    # every mesh was square, which is the same point — and lands on the
+    # stimulus edge the moment one is not, which the 1-D cable below is.
+    n_i, n_j = tissue.mesh.shape
     potential_tracker = fw.ActionPotential2DTracker()
-    potential_tracker.cell_ind = [[n_i // 2, n_i // 2]]
+    potential_tracker.cell_ind = [[n_i // 2, n_j // 2]]
 
     sequence = fw.TrackerSequence()
     sequence.add_tracker(activation_tracker)
@@ -167,10 +182,28 @@ def _velocity_from_activation(
     dr_mm: float,
     time_unit_ms: float,
 ) -> float:
-    """Least-squares slope of activation time against index, in cm/s."""
-    axis = 1 if edge in ("left", "right") else 0
-    profile = activation.mean(axis=1 - axis)
+    """Least-squares slope of activation time against index, in cm/s.
 
+    Averages across the wavefront, which is right for a sheet and **wrong for
+    a cable**: a mesh three cells wide has two non-conducting boundary rows
+    reading zero, so the mean is a third of the arrival time, the slope is a
+    third of the truth and the velocity comes out three times too fast. A cable
+    supplies its own profile to :func:`_velocity_from_profile` instead.
+    """
+    axis = 1 if edge in ("left", "right") else 0
+    return _velocity_from_profile(
+        activation.mean(axis=1 - axis), edge=edge, dr_mm=dr_mm, time_unit_ms=time_unit_ms
+    )
+
+
+def _velocity_from_profile(
+    profile: npt.NDArray[np.float64],
+    *,
+    edge: Edge,
+    dr_mm: float,
+    time_unit_ms: float,
+) -> float:
+    """Least-squares slope of activation time against index, in cm/s."""
     lo = int(_FIT_SPAN[0] * len(profile))
     hi = int(_FIT_SPAN[1] * len(profile))
     index = np.arange(lo, hi)
@@ -424,6 +457,175 @@ def measure_anisotropy_ratio(
 
 
 # ---------------------------------------------------------------------------
+# The 1-D cable — the rig a mesh-convergence sweep runs on
+# ---------------------------------------------------------------------------
+
+STRIP_LENGTH_MM: float = 20.0
+"""Length of the convergence rig's cable, in mm.
+
+Long enough that the central 30-70 % the velocity fit uses is steady
+propagation well clear of both ends, and short enough that refining the mesh
+stays affordable: cost runs as ``1/dr**3`` once the diffusion stability bound
+binds, so halving the pitch is eight times the work.
+"""
+
+STRIP_STIMULUS_MM: float = 0.75
+"""Physical thickness of the cable's stimulus strip, in mm.
+
+**Held in millimetres, not in cells, and that is the whole point.**
+``PlanarEdgeStimulus.strip_thickness`` counts *cells*, so a sweep that left it
+alone would shrink the stimulus every time it refined the mesh — 0.75 mm at
+``dr = 0.25`` down to 0.225 mm at 0.075 — and would be varying two things at
+once.
+
+It bites hardest at **high** diffusion, which is the counter-intuitive part: a
+larger ``D`` drains the stimulated region into its neighbours faster, so the
+smallest physical stimulus fails to launch a wave first at the top of a
+diffusion sweep, not the bottom. At ``dr = 0.075`` and ``D = 0.616`` it stopped
+launching altogether and the sweep died with "0 of 106 nodes activated", which
+is at least loud. Had it merely launched *weakly*, the sweep would have
+returned numbers and blamed the mesh for the stimulus.
+
+0.75 mm is what three cells came to at the coarsest pitch, so the coarse end of
+the curve means what it did before.
+"""
+
+STRIP_WIDTH_CELLS: int = 3
+"""Mesh rows in the cable. Three, giving **one** interior row.
+
+Finitewave's tissue puts a non-conducting boundary on every edge, so a 3-row
+mesh is a genuine one-dimensional cable: the interior row has no transverse
+neighbour to exchange with, and the transverse diffusion entry never
+participates. That is the point — a convergence sweep should vary the pitch
+along the direction of propagation and nothing else.
+"""
+
+
+@dataclass(frozen=True)
+class StripMeasurement:
+    """What one cable run reports."""
+
+    dr_mm: float
+    dt_ms: float
+    n_cells: int
+    conduction_velocity_cm_s: float
+    upstroke_v_s: float
+    """**Propagated** dV/dt max, at the cable's centre. No stimulus reaches it."""
+    apd90_ms: float | None = None
+    """``None`` unless the run was given a budget long enough to repolarise."""
+
+
+def strip_step_ms(*, diffusion: float, dr_mm: float, dimensions: int = 2) -> float:
+    """The integration step a cable at this pitch needs, in ms.
+
+    The same rule :func:`~...simulate.cell_models.calibrate_courtemanche`
+    applies — safety factor inside the explicit-diffusion bound, capped by the
+    ionic ceiling — but reachable at an arbitrary pitch. The calibration itself
+    refuses any pitch but the one its reference velocity was measured at, which
+    is correct for authoring a card and useless for the sweep that decides what
+    that pitch should be.
+    """
+    cfl = (dr_mm * dr_mm) / (2.0 * dimensions * diffusion)
+    return float(min(DT_SAFETY_FACTOR * cfl, CRN_MAX_DT_MS))
+
+
+def measure_strip(
+    *,
+    diffusion: float,
+    dr_mm: float,
+    params: Mapping[str, float] | None = None,
+    length_mm: float = STRIP_LENGTH_MM,
+    include_apd: bool = False,
+) -> StripMeasurement:
+    """Run one Courtemanche plane wave down a 1-D cable and report what it did.
+
+    **The rig a mesh-convergence sweep needs, and the reason it is a cable.**
+    Refining the pitch on the 40 mm patch costs ``f**4`` — ``f**2`` more nodes
+    and ``f**2`` more steps, because holding conduction velocity forces
+    ``D`` to scale as ``f**2`` and that tightens the stability bound equally.
+    A cable is one row instead of ``n``, so the same question — does the
+    realised velocity stop moving as the mesh refines? — is answered at a few
+    hundredths of the cost, and the patch price is paid once for the pitch that
+    is chosen rather than once per candidate.
+
+    Takes ``diffusion`` and ``dr_mm`` rather than a solved cell model because a
+    sweep is exactly the thing that cannot go through
+    :func:`~...simulate.cell_models.calibrate_courtemanche`: that refuses any
+    pitch but the one its reference velocity was measured at, and this is the
+    measurement that decides whether that pitch is right.
+
+    Parameters
+    ----------
+    diffusion
+        ``D_model`` in mm^2/ms. Held fixed across a sweep, so a change in the
+        reported velocity is the *mesh* moving and nothing else.
+    dr_mm
+        Mesh pitch under test.
+    params
+        Conductance scalings, empty for control.
+    length_mm
+        Cable length. Defaults to :data:`STRIP_LENGTH_MM`.
+    include_apd
+        Run long enough to repolarise as well. Roughly twenty times the work,
+        so it is off for a velocity sweep and on for a severity sweep.
+    """
+    solved = CourtemancheCellModel(
+        diffusion=diffusion,
+        dt_model_units=strip_step_ms(diffusion=diffusion, dr_mm=dr_mm),
+        params=dict(params or {}),
+    )
+    geometry = Patch2DGeometry(size_mm=length_mm, dr_mm=dr_mm)
+    n_cells = geometry.n_cells_per_edge
+    shape = (STRIP_WIDTH_CELLS, n_cells)
+    # Fixed physical stimulus, so refining the mesh varies the mesh alone.
+    strip_cells = max(1, round(STRIP_STIMULUS_MM / dr_mm))
+
+    # Crossing time at the velocity this diffusion is expected to give, doubled
+    # for margin. The expectation only has to be in the right order — it sizes
+    # the run, it does not enter the answer.
+    expected_cm_s = CRN_REFERENCE_CV_CM_S * float(np.sqrt(diffusion / CRN_REFERENCE_DIFFUSION))
+    crossing_ms = length_mm / (expected_cm_s / 100.0)
+    t_max_ms = 2.0 * crossing_ms
+    if include_apd:
+        t_max_ms += 2.0 * WILHELMS_2012_CRN_CONTROL["apd90_ms"]
+
+    activation, potential = _run_plane_wave(
+        geometry=geometry,
+        solved=solved,
+        dr_model_units=dr_mm,
+        edge="left",
+        t_max_model_units=t_max_ms,
+        shape=shape,
+        strip_thickness=strip_cells,
+    )
+
+    # The single interior row, not the mean across the mesh: the two boundary
+    # rows never activate and averaging them in would divide the slope by three.
+    profile = activation[STRIP_WIDTH_CELLS // 2, :]
+    velocity = _velocity_from_profile(profile, edge="left", dr_mm=dr_mm, time_unit_ms=1.0)
+
+    dt_ms = float(solved.dt_model_units)
+    upstroke = float(np.diff(potential).max() / dt_ms)
+    apd90 = None
+    if include_apd:
+        apd90 = _apd90_from_potential(
+            potential,
+            dt_model_units=dt_ms,
+            time_unit_ms=1.0,
+            activated_above=_ACTIVATION_THRESHOLD_MV,
+        )
+
+    return StripMeasurement(
+        dr_mm=dr_mm,
+        dt_ms=dt_ms,
+        n_cells=n_cells,
+        conduction_velocity_cm_s=velocity,
+        upstroke_v_s=upstroke,
+        apd90_ms=apd90,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Single cell — the protocol a published table is read at
 # ---------------------------------------------------------------------------
 
@@ -657,8 +859,12 @@ def _action_potential_properties(
 
 
 __all__: list[str] = [
+    "STRIP_LENGTH_MM",
+    "StripMeasurement",
     "measure",
     "measure_anisotropy_ratio",
     "measure_conduction_velocity",
     "measure_single_cell",
+    "measure_strip",
+    "strip_step_ms",
 ]

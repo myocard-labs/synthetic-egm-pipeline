@@ -142,7 +142,7 @@ class FinitewaveBackend(SimulationBackend):
         )
         model = native.model
 
-        tissue = _build_tissue_2d(geometry)
+        tissue = _build_tissue_2d(shape=geometry.shape, fiber_angle_rad=geometry.fiber_angle_rad)
 
         # --- 3. Apply substrate (mutates tissue.mesh in place) --------------
         substrate_meta = _apply_substrate_2d(tissue=tissue, strategy=substrate, rng=rng)
@@ -383,8 +383,20 @@ def _apply_conductance_scalings(model: Any, params: Mapping[str, float]) -> None
         setattr(model, attr, float(baseline) * float(scale))
 
 
-def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
-    """Build a healthy 2D tissue patch with a uniform fiber field.
+def _build_tissue_2d(*, shape: tuple[int, int], fiber_angle_rad: float) -> fw.CardiacTissue2D:
+    """Build a healthy 2D tissue with a uniform fiber field.
+
+    Takes the mesh shape and the fibre angle rather than a
+    :class:`~...simulate.specs.Patch2DGeometry`, because those are the only two
+    things it reads. It briefly took a geometry *and* a shape override that
+    contradicted it, which is a signature that can be called two ways and mean
+    one of them.
+
+    **Both a patch and the measurement rig's 1-D cable come through here**, and
+    that is the point of the shape being a parameter: a cable is a few cells
+    wide and hundreds long, is not a geometry a bank can be generated on, and
+    still must not disagree with a patch about the fibre convention — which is
+    the one thing in this function that has been wrong before.
 
     **Fibre components are stored in Finitewave's axis order, not ours.**
     ``fibers[..., 0]`` feeds ``d_xx``, which ``compute_weights`` applies to the
@@ -412,11 +424,11 @@ def _build_tissue_2d(geometry: Patch2DGeometry) -> fw.CardiacTissue2D:
     """
     import math
 
-    tissue = fw.CardiacTissue2D(shape=geometry.shape)
+    tissue = fw.CardiacTissue2D(shape=shape)
     n_i, n_j = tissue.mesh.shape
     fibers = np.zeros((n_i, n_j, 2), dtype=np.float64)
-    fibers[:, :, 0] = math.sin(geometry.fiber_angle_rad)  # axis-0 = our y
-    fibers[:, :, 1] = math.cos(geometry.fiber_angle_rad)  # axis-1 = our x
+    fibers[:, :, 0] = math.sin(fiber_angle_rad)  # axis-0 = our y
+    fibers[:, :, 1] = math.cos(fiber_angle_rad)  # axis-1 = our x
     tissue.fibers = fibers
     return tissue
 

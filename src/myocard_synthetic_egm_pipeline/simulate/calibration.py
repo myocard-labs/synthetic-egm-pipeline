@@ -26,10 +26,12 @@ from dataclasses import dataclass
 
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
     AlievPanfilovCellModel,
+    AnchorResolution,
     CellModelSpec,
     CourtemancheCellModel,
     calibrate_aliev_panfilov,
     calibrate_courtemanche,
+    resolve_courtemanche_anchor,
 )
 
 SOLVED_MATCH_RTOL: float = 1e-3
@@ -188,6 +190,23 @@ class ModelCard:
     solved: CellModelSpec
     measured: MeasuredValues | None = None
 
+    anchor: AnchorResolution | None = None
+    """Which conduction-velocity anchor this card was verified through.
+
+    Filled in by :func:`~...model_cards.load_model_card`, because it is a fact
+    about the card **as resolved against a particular mesh** rather than about
+    the file — the same file loaded at two pitches gives two answers.
+
+    ``None`` for a model that has no anchor (Aliev-Panfilov solves from
+    constants, not from a measured velocity) and for a card built in memory
+    without going through a load.
+
+    It exists to be written into the bank. A substituted anchor that shows up
+    only as a console warning is a run that is silently wrong to everyone who
+    reads the artifact later, which is the failure the check was there to
+    prevent, relocated rather than removed.
+    """
+
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("A model card needs a name; it is how banks refer to it.")
@@ -202,7 +221,7 @@ def verify_targets_against_solve(
     dr_model_units: float,
     measured: MeasuredValues | None = None,
     dimensions: int = 2,
-) -> None:
+) -> AnchorResolution | None:
     """Re-solve a card's targets and confirm the recorded cell model still matches.
 
     Runs on **every load**, which is the point: a CI-only guard protects one
@@ -227,6 +246,7 @@ def verify_targets_against_solve(
     ``targets`` onto ``SubstrateStrategy`` needs.
     """
     fields: tuple[str, ...]
+    anchor: AnchorResolution | None = None
     if isinstance(solved, AlievPanfilovCellModel):
         if targets.apd90_ms is None:
             raise ValueError(
@@ -253,6 +273,24 @@ def verify_targets_against_solve(
             dimensions=dimensions,
         )
         fields = ("diffusion", "dt_model_units")
+        # Resolved a second time rather than threaded out of the solve: it is a
+        # pure lookup over a module constant, and the alternative is a return
+        # type on `calibrate_courtemanche` that every caller pays for so that
+        # one caller can record something.
+        anchor = resolve_courtemanche_anchor(solved.params, dr_mm)
+        if anchor.substituted:
+            # `dt` is derived from the mesh through the explicit-diffusion
+            # bound, so at a pitch the card was not solved at the card's step
+            # and a fresh solve's step are SUPPOSED to differ — comparing them
+            # would report a pitch mismatch as calibration drift, which is a
+            # different fault with a different fix. `diffusion` is still
+            # compared, and it is the field this check exists to protect: it is
+            # unchanged by the pitch, because the anchor is what sets it.
+            #
+            # The card's own step stays *conservative* at a coarser pitch
+            # rather than unstable — the bound loosens as the mesh coarsens —
+            # so proceeding on it is safe, just slower than necessary.
+            fields = ("diffusion",)
         _verify_measured_apd_target(targets, measured, label=label)
     else:
         raise ValueError(
@@ -283,6 +321,8 @@ def verify_targets_against_solve(
             "parameterisation name with different physics is the failure this "
             "check exists to prevent."
         )
+
+    return anchor
 
 
 def _verify_measured_apd_target(
@@ -324,15 +364,18 @@ def verify_solved(
     dr_mm: float,
     dr_model_units: float,
     dimensions: int = 2,
-) -> None:
+) -> AnchorResolution | None:
     """Card-level wrapper over :func:`verify_targets_against_solve`.
 
     Deliberately thin. The real check takes ``targets`` and ``solved`` as
     separate arguments precisely so that when targets move to
     ``SubstrateStrategy`` this wrapper is the only thing that has to change —
     the verification logic never learns where its inputs came from.
+
+    Returns which conduction-velocity anchor the re-solve went through, so the
+    caller can put it in the bank. ``None`` for a model that has no anchor.
     """
-    verify_targets_against_solve(
+    return verify_targets_against_solve(
         card.targets,
         card.solved,
         label=f"model card {card.name!r}",
@@ -346,6 +389,7 @@ def verify_solved(
 __all__ = [
     "MEASURED_APD_RTOL",
     "SOLVED_MATCH_RTOL",
+    "AnchorResolution",
     "MeasuredValues",
     "ModelCard",
     "ModelTargets",

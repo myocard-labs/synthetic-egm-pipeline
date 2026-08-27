@@ -1,0 +1,191 @@
+# Partially AF-remodelled Courtemanche-Ramirez-Nattel human atrial myocyte.
+#
+# The ionic half of the matched pair. Named to mirror af_remodelled_220ms so
+# the shared target is visible in the filename: both cards aim at a conduction
+# velocity of 80 cm/s and an APD90 of 220 ms, which is what makes a bank
+# generated under each a comparison of MEMBRANE MODELS rather than of two
+# unrelated tissues. Solved by simulate.cell_models.calibrate_courtemanche at
+# dr_mm = 0.10, dr_model_units = 0.10.
+#
+# WHAT THIS CARD IS
+# -----------------
+# Partial AF-remodelling, calibrated to a measured APD90 of 220 ms, applying
+# THREE OF THE FOUR cAF conductance changes collected in Wilhelms 2012 §2 from
+# van Wagoner 1997, Bosch 1999 and Dobrev 2001. I_Kur (-49 %) is OMITTED
+# because the solver inlines its voltage-dependent conductance into the ionic
+# kernel.
+#
+# It is NOT "the published cAF parameterisation", and must not be described as
+# one. See THE OMISSION below, and the limitations register in
+# intracardiac-platform/project/investigations/courtemanche_calibration.md.
+
+model:
+  name: af_remodelled_crn_220ms
+  type: courtemanche
+
+  # --- what we asked for -------------------------------------------------
+  targets:
+    # The same figure af_remodelled_220ms and courtemanche_control target.
+    # Hansson, Eur Heart J 1998;19(2):293 — right atrial free wall in sinus
+    # rhythm, 88 +/- 9 cm/s intra-operatively.
+    conduction_velocity_cm_s: 80.0
+
+    # STATED HERE, UNLIKE THE CONTROL CARD, because this card's conductances
+    # were CHOSEN to reach it. Courtemanche cannot solve for APD — there is no
+    # time-unit constant and no closed-form inverse — so the target is a claim
+    # about the severity sweep below, and load-time verification checks it
+    # against the measured value rather than against a solve.
+    #
+    # 220 ms is the in-vivo monophasic-action-potential line: Franz, JACC
+    # 1997;30:1785 gives APD90 219-245 ms in AF patients at cycle length
+    # 800 ms. Isolated cAF myocytes give 95-144 ms, roughly 2x shorter, and
+    # that disagreement is real rather than an error to be smoothed: they are
+    # different measurements at different remodelling stages. We simulate
+    # in-vivo tissue during a mapping procedure, so the MAP line is the matched
+    # modality. Christ 2008's 287 +/- 16 ms puts 220 inside the published cAF
+    # range regardless.
+    #
+    # MUST EXCEED the 192 ms trace duration. An APD shorter than the window
+    # leaves a repolarisation deflection inside every cropped trace at a fixed
+    # offset after the activation — a marker present in all synthetic traces
+    # and no real ones.
+    apd90_ms: 220.0
+
+  # --- what calibrate_courtemanche() returned ----------------------------
+  # diffusion and dt are derived and re-checked on every load. The conductance
+  # scalings are CHOSEN — swept, then pinned — so they are carried through
+  # verification rather than re-derived.
+  solved:
+    diffusion: 0.276240         # model.D_model, mm^2/ms
+    dt_ms: 0.008145             # ms, because the model time unit IS the ms
+
+    # SEVERITY s = 0.56, bisected until the propagated tissue APD90 reached
+    # 220 ms. s = 0 is control, s = 1 the fully remodelled conductances:
+    #
+    #   g_to  x (1 - 0.65 s)  ->  0.636
+    #   g_CaL x (1 - 0.65 s)  ->  0.636
+    #   g_K1  x (1 + 1.10 s)  ->  1.616
+    #
+    # The sweep, on the 1-D cable at dr = 0.10. It ran at the CONTROL card's
+    # diffusion of 0.261614, before this card's own was solved — which it could,
+    # because APD90 here is diffusion-independent: 219.00 / 218.98 / 218.97 ms
+    # at 0.9x / 1.0x / 1.1x the operating point. The CV column is therefore the
+    # sweep's, not this card's; at the solved 0.276240 the cable reads 81.5.
+    #
+    #   s      APD90 (ms)   CV (cm/s)   upstroke (V/s)
+    #   0.000    321.83       80.84       119.33
+    #   0.300    273.91       79.90       118.64
+    #   0.450    242.53       79.49       118.29
+    #   0.525    226.66       79.29       118.16
+    #   0.560    219.49       79.20       118.07   <- shipped
+    #   0.600    211.53       79.10       117.98
+    #
+    # Note what BARELY moves across the whole sweep: conduction velocity by
+    # 2.2 % and the propagated upstroke by 1.1 %. The remodelling is close to
+    # CV- and upstroke-neutral, so the severity choice does not confound the
+    # model comparison the pair exists for.
+    params:
+      g_to_scale: 0.636
+      g_CaL_scale: 0.636
+      g_K1_scale: 1.616
+
+  # --- what a simulation actually produced -------------------------------
+  # conduction_velocity_cm_s: a first beat into rested tissue on the 40 mm
+  # patch, the geometry a generation run uses.
+  #
+  # apd90_ms and upstroke_v_s: the same plane wave on a 1-D cable, which is
+  # what the convergence sweep and the severity sweep both run on. The cable is
+  # not an approximation of the patch for these two — a plane wave in a sheet
+  # has no transverse gradient, so each cell sees the same axial load either
+  # way. Measured against the patch at matched settings: APD90 within 0.1 %
+  # (322.88 vs 323.18) and the propagated upstroke within 0.004 %
+  # (131.139 vs 131.134). Conduction velocity does differ, by ~0.5 % at this
+  # pitch, because the two fit windows sit at different distances from the
+  # stimulus — which is why CV is measured on the patch and these two are not.
+  measured:
+    conduction_velocity_cm_s: 81.5
+    apd90_ms: 219.5
+    upstroke_v_s: 118.0        # PROPAGATED, at the cable centre
+
+# =========================================================================
+# THE OMISSION — declared, not disguised
+# =========================================================================
+#
+# The published cAF set is FOUR conductance changes. This card applies THREE.
+#
+#   I_to   -65 %   applied   (g_to_scale)
+#   I_CaL  -65 %   applied   (g_CaL_scale)
+#   I_K1  +110 %   applied   (g_K1_scale)
+#   I_Kur  -49 %   OMITTED
+#
+# WHY IT IS OMITTED. Finitewave computes I_Kur's conductance inside the ionic
+# kernel as a function of membrane voltage —
+#
+#     gkur = 0.005 + 0.05 / (1 + exp(-(u - 15) / 13))
+#
+# — rather than reading it from a parameter. There is no attribute anywhere in
+# the object graph to scale, so applying the change would take a kernel edit or
+# a fork of the solver. The omission is MECHANICALLY FORCED, not chosen.
+#
+# WHAT IS NOT DONE ABOUT IT. gkr and gks ARE settable, and I_Kur's net effect
+# on duration could be absorbed into either. It deliberately is not. The
+# severity sweep already lands APD90 on target, so compensation would buy
+# nothing observable while converting a forced, declarable deviation into a
+# fabricated one — strictly harder to defend. The honest hole is preferred.
+#
+# WHY IT IS DEFENSIBLE ANYWAY, against what this card has to be true FOR.
+# The claim is not that we reproduce cAF myocyte electrophysiology. It is that
+# we generate bipolar electrograms with realistic ACTIVATION MORPHOLOGY at a
+# matched CONDUCTION VELOCITY, with an APD90 that keeps repolarisation OUTSIDE
+# the stored window. Against those three observables:
+#
+#   - the upstroke — the entire scientific content of the model comparison —
+#     is I_Na-dominated, and gna is settable and unmodified. I_Kur contributes
+#     nothing to dV/dt max.
+#   - I_Kur shapes the plateau and APD90, and the APD is engineered so that
+#     repolarisation lies OUTSIDE the cropped trace. The omission is confined
+#     to the one part of the action potential our data does not contain.
+#   - APD is a measured, targeted observable, so the sweep absorbs the
+#     omission: s is tuned until APD90 = 220 ms either way. The net observable
+#     matches; only the ionic decomposition behind it differs.
+#
+# WHAT IS NOT CLAIMED. That a three-current cAF set is published — it is not.
+# An earlier draft argued this stays "on the published parameter axis, moving
+# less far along it"; that argument was withdrawn, because dropping a current
+# is a different direction rather than a shorter distance, and the same
+# authors' 1999 AF-remodelling paper also identifies I_Kur. There is no
+# published three-current alternative to point at.
+#
+# =========================================================================
+# PROTOCOL — the pins without which the numbers above mean nothing
+# =========================================================================
+#
+# TISSUE (what the APD90 target and measurement are on):
+#   1-D cable, 20 mm, dr = 0.10 mm, stimulus 0.75 mm at one end
+#   ONE beat into rested tissue — which is what a generation run produces
+#   APD90 read at the cable centre, 10 mm from the stimulus
+#
+# APD90 IS DIFFUSION-INDEPENDENT HERE, which is why the sweep could run before
+# the diffusion was solved: 219.00 / 218.98 / 218.97 ms at D = 0.9x / 1.0x /
+# 1.1x the operating point. 0.03 ms across a 20 % change in D.
+#
+# SINGLE CELL (the Wilhelms axis, for comparability only — NOT the target):
+#   BCL 1000 ms, 50 beats, stimulus 21.81 mV/ms for 2 ms (twice the measured
+#   capture threshold), dt 0.02 ms. At s = 0.56 this reads:
+#
+#     Amplitude 109.74 mV · RMP -83.14 mV · APD50 101.24 ms ·
+#     APD90 185.70 ms · dV/dt max 219.51 V/s
+#
+# THE EXPECTATION ON s, CHECKED. A four-current interpolation between
+# Wilhelms' 294.83 ms (s = 0) and 143.87 ms (s = 1) puts 220 ms at s ~ 0.49,
+# and omitting a REPOLARISING current whose reduction PROLONGS APD should
+# shorten more per unit s — so s was expected BELOW that. On the single-cell
+# paced measurand those figures are read on, our three-current set reaches
+# 220 ms at s ~ 0.38, which is below 0.49 as expected.
+#
+# The shipped s = 0.56 is larger only because it is pinned on a DIFFERENT
+# measurand: the tissue first-beat APD90, whose control value is 321.8 ms
+# rather than the paced 291.0. Reading the two axes as one is the mistake to
+# avoid here; the target is on the tissue axis because that is the measurand
+# af_remodelled_220ms's own 220 ms is on, and matching the two cards requires
+# matching the measurand and not merely the number.

@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import dataclasses
 import textwrap
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from myocard_synthetic_egm_pipeline.backends import RunConfig
+from myocard_synthetic_egm_pipeline.backends.finitewave.measure import strip_step_ms
 from myocard_synthetic_egm_pipeline.simulate import (
     CenteredGrid2D,
     Patch2DGeometry,
@@ -32,6 +34,8 @@ from myocard_synthetic_egm_pipeline.simulate.calibration import (
     verify_solved,
 )
 from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+    CRN_AF_SCALINGS,
+    CRN_AF_SEVERITY,
     CRN_CALIBRATION_DR_MM,
     CRN_DIASTOLIC_THRESHOLD_MV_PER_MS,
     CRN_MAX_DT_MS,
@@ -60,6 +64,16 @@ DR_MODEL_UNITS = CRN_CALIBRATION_DR_MM
 #: The shipped Courtemanche parameterisation. Control conductances, solved for
 #: the same conduction velocity the Aliev-Panfilov card targets.
 CARD_NAME = "courtemanche_control"
+
+#: The Aliev-Panfilov card's pitch, which is **not** the Courtemanche one.
+#:
+#: The mesh-convergence sweep moved Courtemanche from 0.25 mm to 0.10; the
+#: Aliev-Panfilov card is still solved at 0.25 and is loaded here at its own
+#: pitch. That difference is a real open question for the model comparison —
+#: everything but the membrane is supposed to match — and it is named here
+#: rather than hidden behind a shared constant that would make the two look
+#: interchangeable.
+AP_DR_MM = 0.25
 
 
 def shipped_card() -> ModelCard:
@@ -158,14 +172,22 @@ def test_the_reference_point_solves_back_to_the_reference_diffusion() -> None:
 
 
 def test_the_solved_step_respects_both_bounds() -> None:
-    """The ionic ceiling, not the CFL condition, is what binds here.
+    """Two bounds, and **which one binds moved when the mesh refined**.
 
-    Aliev-Panfilov's limit is purely the explicit-diffusion bound. Courtemanche's
-    fast sodium current needs a much smaller step than that bound permits, and
-    because Finitewave integrates the gating variables Rush-Larsen the coarse
-    step does not diverge — it flattens the upstroke, which is the one
-    observable an ionic model was added to get right. A limit reporting only
-    the CFL bound would report the slack constraint.
+    Courtemanche has an ionic ceiling as well as the explicit-diffusion CFL
+    condition: its fast sodium current needs a smaller step than the diffusion
+    bound permits at a coarse pitch, and because Finitewave integrates the
+    gating variables Rush-Larsen a step that is too large does not diverge — it
+    flattens the upstroke, which is the one observable an ionic model was added
+    to get right. So the limit has to report the *smaller* of the two.
+
+    At the old 0.25 mm pitch the ionic ceiling bound and the CFL bound was
+    slack. At the shipped 0.10 mm it is the other way round: CFL scales as
+    ``dr**2``, so refining by 2.5x tightened it 6.25x and it now bites first.
+    **The previous version of this test asserted the ceiling bound and failed
+    when the pitch changed, with the message it carried for exactly that case**
+    — which is the test doing its job, not an obstacle. What is asserted here
+    is the invariant that survives either regime: the step is inside both.
     """
     solved = calibrate_courtemanche(
         conduction_velocity_cm_s=80.0, dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS
@@ -173,53 +195,72 @@ def test_the_solved_step_respects_both_bounds() -> None:
     cfl = DR_MODEL_UNITS**2 / (4.0 * solved.diffusion)
 
     assert solved.dt_model_units <= solved.stability_limit(dr_model_units=DR_MODEL_UNITS)
-    assert solved.dt_model_units == CRN_MAX_DT_MS
-    assert cfl > CRN_MAX_DT_MS, (
-        "the CFL bound has become the binding constraint, so CRN_MAX_DT_MS is no "
-        "longer doing anything — re-check which bound the step is respecting."
+    assert solved.dt_model_units <= CRN_MAX_DT_MS
+    assert solved.dt_model_units < cfl
+    # And the binding one at the shipped pitch is the diffusion bound, with the
+    # safety factor applied. If this flips, the sentence above is stale.
+    assert solved.dt_model_units == pytest.approx(0.9 * cfl, rel=1e-9), (
+        "the ionic ceiling has become the binding constraint again — the pitch "
+        "or the diffusion moved, and the reasoning above needs re-reading."
     )
 
 
-@pytest.mark.parametrize(
-    ("dr_mm", "dr_model_units", "match"),
-    [
-        (0.25, 0.5, "space unit is the millimetre"),
-        (0.1, 0.1, "measured at dr=0.25"),
-    ],
-)
-def test_a_mesh_the_constant_was_not_measured_on_is_refused(
-    dr_mm: float, dr_model_units: float, match: str
-) -> None:
-    """Both halves of the under-resolution trap, refused rather than absorbed.
+def test_a_space_step_that_is_not_millimetres_is_still_refused() -> None:
+    """A unit error, and the one mesh fault that is still fatal.
 
-    A CV-solve will happily absorb discretisation error into ``diffusion`` and
-    hit its target anyway, leaving a physical-looking number that is not — the
-    same shape as "CV ran 8 % high at D ~ 10". Courtemanche is where that bites:
-    its upstroke is ~0.59 ms, about 1.9 cells wide at 0.25 mm, where monodomain
-    practice wants 5-10. The measured constant is therefore evidence about one
-    pitch, and using it at another is reading a number off the wrong axis.
+    Courtemanche's diffusion is in mm^2/ms, so its space unit **is** the
+    millimetre: a ``dr_model_units`` that disagrees with ``dr_mm`` is not a
+    rescaling but a different mesh from the one the geometry describes, and
+    nothing downstream could reconstruct which was meant. That is unlike an
+    unregistered *pitch*, which is a known quantity measured on the wrong mesh
+    and can be borrowed with a warning.
     """
-    with pytest.raises(ValueError, match=match):
-        calibrate_courtemanche(
-            conduction_velocity_cm_s=80.0, dr_mm=dr_mm, dr_model_units=dr_model_units
-        )
+    with pytest.raises(ValueError, match="space unit is the millimetre"):
+        calibrate_courtemanche(conduction_velocity_cm_s=80.0, dr_mm=0.10, dr_model_units=0.5)
 
 
-def test_remodelled_conductances_are_refused_until_their_velocity_is_measured() -> None:
-    """The reference CV was measured at control conductances.
+def test_an_unregistered_pitch_warns_rather_than_refusing() -> None:
+    """The under-resolution trap is still real; it is now reported, not blocked.
 
-    Sodium conductance moves conduction velocity directly, so solving a
-    remodelled set through the control constant puts the whole error into
-    diffusion. The remodelled reference has to be measured and registered
-    before any card can be solved through it.
+    A CV-solve absorbs discretisation error into ``diffusion`` and hits its
+    target anyway, leaving a physical-looking number that is not. Measured on a
+    cable at a **fixed** diffusion, the same tissue conducts at 81.85 cm/s on a
+    0.25 mm mesh and 87.94 on a 0.05 mm one — 7.4 % apart with no physics
+    changed. So an anchor is evidence about one pitch, and using it at another
+    has to be *visible*: it warns here and is written into the bank.
     """
-    with pytest.raises(ValueError, match="control conductances"):
-        calibrate_courtemanche(
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        AnchorSubstitutionWarning,
+    )
+
+    with pytest.warns(AnchorSubstitutionWarning, match="ABOVE target"):
+        calibrate_courtemanche(conduction_velocity_cm_s=80.0, dr_mm=0.05, dr_model_units=0.05)
+    with pytest.warns(AnchorSubstitutionWarning, match="BELOW target"):
+        calibrate_courtemanche(conduction_velocity_cm_s=80.0, dr_mm=0.25, dr_model_units=0.25)
+
+
+def test_a_registered_conductance_set_solves_without_a_warning() -> None:
+    """The control on every substitution test above.
+
+    An anchor belongs to a conductance set as much as to a mesh — the shipped
+    AF scalings move conduction velocity at fixed diffusion by 2.3 % — so
+    solving an unregistered set borrows and warns. This asserts the other side:
+    the registered set solves **silently**, so those tests are not passing for
+    the trivial reason that every solve warns.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        AnchorSubstitutionWarning,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", AnchorSubstitutionWarning)
+        registered = calibrate_courtemanche(
             conduction_velocity_cm_s=80.0,
             dr_mm=DR_MM,
             dr_model_units=DR_MODEL_UNITS,
-            params={"g_to_scale": 0.35},
+            params=CRN_AF_SCALINGS,
         )
+    assert registered.params == CRN_AF_SCALINGS
 
 
 def test_a_scaling_that_deletes_a_current_is_refused() -> None:
@@ -317,7 +358,7 @@ def test_an_aliev_panfilov_card_records_no_upstroke() -> None:
     have — which would invite exactly the cross-model comparison the units
     forbid.
     """
-    card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
+    card = load_model_card("af_remodelled_220ms", dr_mm=AP_DR_MM, dr_model_units=AP_DR_MM)
 
     assert card.measured is not None
     assert card.measured.upstroke_v_s is None
@@ -348,9 +389,7 @@ def test_both_shipped_cards_aim_at_the_same_conduction_velocity() -> None:
     if everything solvable is matched.
     """
     courtemanche = shipped_card()
-    aliev_panfilov = load_model_card(
-        "af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS
-    )
+    aliev_panfilov = load_model_card("af_remodelled_220ms", dr_mm=AP_DR_MM, dr_model_units=AP_DR_MM)
     assert (
         courtemanche.targets.conduction_velocity_cm_s
         == aliev_panfilov.targets.conduction_velocity_cm_s
@@ -365,7 +404,7 @@ def test_an_aliev_panfilov_card_still_loads_and_verifies_unchanged() -> None:
     may move the Aliev-Panfilov card's numbers — a bank generated before and
     after it must be identical.
     """
-    card = load_model_card("af_remodelled_220ms", dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
+    card = load_model_card("af_remodelled_220ms", dr_mm=AP_DR_MM, dr_model_units=AP_DR_MM)
 
     assert isinstance(card.solved, AlievPanfilovCellModel)
     assert card.solved.time_unit_ms == 5.709836
@@ -538,7 +577,7 @@ def test_conductance_scalings_are_applied_by_assignment() -> None:
     native = be._build_model_2d(
         cell_model=CourtemancheCellModel(
             diffusion=CRN_REFERENCE_DIFFUSION,
-            dt_model_units=0.02,
+            dt_model_units=strip_step_ms(diffusion=CRN_REFERENCE_DIFFUSION, dr_mm=DR_MM),
             params={"g_to_scale": 0.35, "g_K1_scale": 2.1},
         ),
         geometry=Patch2DGeometry(size_mm=8.0, dr_mm=DR_MM),
@@ -552,12 +591,12 @@ def test_conductance_scalings_are_applied_by_assignment() -> None:
 def test_a_scaling_the_solver_cannot_apply_is_refused_by_name() -> None:
     """The alternative is a dead attribute and a sweep that does nothing.
 
-    ``I_Kur`` is the live case, not a hypothetical: finitewave 0.9.3 computes its
-    conductance from voltage inside the kernel rather than reading a parameter,
-    so the cAF -49 % I_Kur scaling an AF-remodelled card needs cannot be set
-    by assignment at all. Discovering that here costs a message; discovering it
-    from a severity
-    sweep that silently moved three of four currents costs a day.
+    ``I_Kur`` is the live case and it is no longer hypothetical: finitewave
+    0.9.3 computes its conductance from voltage inside the kernel rather than
+    reading a parameter, so the cAF -49 % I_Kur change **is not applied by the
+    shipped AF card** — which declares the omission rather than working around
+    it. Discovering that here cost a message; discovering it from a severity
+    sweep that silently moved three currents of four would have cost a day.
     """
     from myocard_synthetic_egm_pipeline.backends.finitewave import backend as be
 
@@ -565,7 +604,7 @@ def test_a_scaling_the_solver_cannot_apply_is_refused_by_name() -> None:
         be._build_model_2d(
             cell_model=CourtemancheCellModel(
                 diffusion=CRN_REFERENCE_DIFFUSION,
-                dt_model_units=0.02,
+                dt_model_units=strip_step_ms(diffusion=CRN_REFERENCE_DIFFUSION, dr_mm=DR_MM),
                 params={"g_Kur_scale": 0.51},
             ),
             geometry=Patch2DGeometry(size_mm=8.0, dr_mm=DR_MM),
@@ -827,7 +866,17 @@ def test_a_courtemanche_simulation_runs_end_to_end() -> None:
     card = shipped_card()
     geometry = Patch2DGeometry(size_mm=8.0, dr_mm=DR_MM)
     rng = np.random.default_rng(0)
-    config = RunConfig(trace_duration_ms=192.0, output_fs_hz=1000.0, model_card=card)
+    # `dr_model_units` has to be set alongside `geometry.dr_mm`: it defaults to
+    # 0.25, which is the Aliev-Panfilov card's pitch, and Courtemanche's space
+    # unit IS the millimetre. Leaving the default raises rather than silently
+    # simulating a mesh 2.5x coarser than the geometry claims — which is what
+    # this line getting it wrong did, the first time the pitch moved.
+    config = RunConfig(
+        trace_duration_ms=192.0,
+        output_fs_hz=1000.0,
+        dr_model_units=DR_MM,
+        model_card=card,
+    )
 
     result = run_single(
         geometry=geometry,
@@ -848,3 +897,407 @@ def test_a_courtemanche_simulation_runs_end_to_end() -> None:
     assert result.specs.cell_model.type == "courtemanche"
     assert result.run_metadata["backend_metadata"]["model_class"] == "Courtemanche"
     assert result.run_metadata["backend_metadata"]["crn_dt_ms"] == card.solved.dt_model_units
+
+
+# ---------------------------------------------------------------------------
+# The matched AF card, and the omission it declares
+# ---------------------------------------------------------------------------
+
+AF_CARD_NAME = "af_remodelled_crn_220ms"
+
+
+def af_card() -> ModelCard:
+    return load_model_card(AF_CARD_NAME, dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS)
+
+
+def test_the_severity_scalings_are_three_currents_and_the_arithmetic_is_stated() -> None:
+    """``s`` scales three conductances linearly, and ends where it should.
+
+    ``s = 0`` must be exactly control — every multiplier 1.0 — or the severity
+    axis does not pass through the card it is supposed to be a remodelling of.
+    ``s = 1`` must be the published magnitudes.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import crn_af_scalings
+
+    assert crn_af_scalings(0.0) == {
+        "g_to_scale": 1.0,
+        "g_CaL_scale": 1.0,
+        "g_K1_scale": 1.0,
+    }
+    full = crn_af_scalings(1.0)
+    assert full["g_to_scale"] == pytest.approx(0.35)
+    assert full["g_CaL_scale"] == pytest.approx(0.35)
+    assert full["g_K1_scale"] == pytest.approx(2.10)
+
+    with pytest.raises(ValueError, match="severity must lie"):
+        crn_af_scalings(1.5)
+
+
+def test_the_af_card_applies_three_of_the_four_published_changes() -> None:
+    """**The declared omission, asserted rather than described.**
+
+    The published cAF set is four conductance changes. This card carries three:
+    ``I_Kur`` is absent because Finitewave computes its conductance inside the
+    ionic kernel from voltage, so no parameter exists to scale.
+
+    Asserting the *absence* is what stops the omission from being quietly
+    repaired by someone adding a ``g_Kur_scale`` that the backend would refuse
+    anyway — and, more usefully, what stops it from being quietly *compensated*
+    by an added ``g_Kr_scale`` or ``g_Ks_scale``. Those are settable, they would
+    absorb I_Kur's effect on duration, and doing so would convert a forced,
+    declarable deviation into a fabricated one. The card must carry exactly the
+    three currents it says it does.
+    """
+    solved = af_card().solved
+    assert isinstance(solved, CourtemancheCellModel)
+
+    assert set(solved.params) == {"g_to_scale", "g_CaL_scale", "g_K1_scale"}
+    assert "g_Kur_scale" not in solved.params
+    assert not {"g_Kr_scale", "g_Ks_scale"} & set(solved.params), (
+        "the card carries a delayed-rectifier scaling, which would mean I_Kur's "
+        "omission had been compensated rather than declared"
+    )
+    # And they are the shipped severity's, not some other set.
+    assert dict(solved.params) == pytest.approx(dict(CRN_AF_SCALINGS))
+
+
+def test_the_af_card_states_an_apd_target_and_the_measurement_backs_it() -> None:
+    """Unlike the control card, this one aims at an APD90 — and is checked.
+
+    Courtemanche cannot solve for APD, so the target is a claim about the
+    severity sweep. Load-time verification compares it against the card's own
+    ``measured`` block, which is the only thing that makes stating it honest.
+    """
+    card = af_card()
+
+    assert card.targets.apd90_ms == 220.0
+    assert card.measured is not None
+    assert card.measured.apd90_ms == pytest.approx(220.0, rel=0.02)
+
+    from myocard_synthetic_egm_pipeline.constants import DEFAULT_TRACE_DURATION_MS
+
+    assert card.measured.apd90_ms >= DEFAULT_TRACE_DURATION_MS, (
+        "the remodelled APD no longer clears the trace duration, so a "
+        "repolarisation deflection is back inside every cropped window"
+    )
+
+
+def test_the_two_courtemanche_cards_are_matched() -> None:
+    """The pair is only a *model* comparison if everything else agrees.
+
+    Same conduction-velocity target, same mesh pitch, same cell model — so the
+    membrane's remodelling state is the only thing that differs between a bank
+    generated under one and a bank generated under the other.
+    """
+    control, remodelled = shipped_card(), af_card()
+
+    assert control.targets.conduction_velocity_cm_s == remodelled.targets.conduction_velocity_cm_s
+    assert control.solved.type == remodelled.solved.type
+    # Both were solved at the shipped pitch: loading either at any other one
+    # raises, which is what the shared DR_MM in this module is exercising.
+    for card in (control, remodelled):
+        assert card.measured is not None
+        assert card.measured.upstroke_v_s is not None
+
+    # The upstroke is the free variable the comparison reads. Remodelling moves
+    # it barely at all, which is what makes the AP-versus-CRN difference
+    # attributable to the membrane model rather than to the severity choice.
+    assert control.measured is not None and remodelled.measured is not None
+    assert remodelled.measured.upstroke_v_s == pytest.approx(
+        control.measured.upstroke_v_s, rel=0.05
+    )
+
+
+def test_the_registered_anchors_cover_exactly_the_shipped_cards() -> None:
+    """Every registered anchor has a card, and every card has an anchor.
+
+    An anchor with no card is a measurement nobody uses; a card with no anchor
+    cannot be solved at all. The registry is small enough that the pairing can
+    simply be asserted.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        CRN_REFERENCES,
+        find_courtemanche_reference,
+    )
+
+    assert {r.name for r in CRN_REFERENCES} == {"control", "af_remodelled"}
+    for reference in CRN_REFERENCES:
+        assert reference.dr_mm == CRN_CALIBRATION_DR_MM
+        assert reference.reference_cv_cm_s > 0
+
+    assert find_courtemanche_reference({}, CRN_CALIBRATION_DR_MM) is not None
+    assert find_courtemanche_reference(CRN_AF_SCALINGS, CRN_CALIBRATION_DR_MM) is not None
+    # Same conductances, wrong mesh.
+    assert find_courtemanche_reference({}, 0.25) is None
+
+
+def test_the_shipped_severity_is_the_one_the_card_records() -> None:
+    """The constant and the card cannot drift apart.
+
+    ``CRN_AF_SEVERITY`` is what the sweep landed on; the card's ``params`` are
+    what a run actually uses. If someone edits one, this says so.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import crn_af_scalings
+
+    solved = af_card().solved
+    assert isinstance(solved, CourtemancheCellModel)
+    assert dict(solved.params) == pytest.approx(crn_af_scalings(CRN_AF_SEVERITY))
+
+
+# ---------------------------------------------------------------------------
+# The cable rig the sweeps ran on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_the_cable_reproduces_the_patch_on_the_quantities_it_is_used_for() -> None:
+    """The premise of doing the convergence sweep on a cable at all.
+
+    A plane wave in a sheet has no transverse gradient, so a cell in a 1-D
+    cable sees the same axial load as one in the patch — which is why the
+    propagated upstroke and the APD can be measured on the cable at a
+    hundredth of the cost. Conduction velocity is the exception and is
+    deliberately not asserted here: the two fit windows sit at different
+    distances from the stimulus, so they differ by ~0.5 %, and that is why the
+    cards measure CV on the patch instead.
+
+    Run at the coarse pitch on purpose. It is where the comparison was first
+    made, and a 40 mm patch at the shipped 0.10 mm would take twenty minutes
+    to say the same thing.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave.measure import (
+        measure,
+        measure_strip,
+    )
+
+    diffusion, dr_mm = 0.299142, 0.25
+    solved = CourtemancheCellModel(
+        diffusion=diffusion, dt_model_units=strip_step_ms(diffusion=diffusion, dr_mm=dr_mm)
+    )
+    patch = measure(
+        geometry=Patch2DGeometry(size_mm=40.0, dr_mm=dr_mm),
+        solved=solved,
+        dr_model_units=dr_mm,
+    )
+    cable = measure_strip(diffusion=diffusion, dr_mm=dr_mm, include_apd=True)
+
+    assert patch.upstroke_v_s is not None and cable.apd90_ms is not None
+    assert cable.upstroke_v_s == pytest.approx(patch.upstroke_v_s, rel=0.01), (
+        "the cable and the patch disagree on the propagated upstroke, so the "
+        "convergence sweep is not measuring what the cards record"
+    )
+    assert cable.apd90_ms == pytest.approx(patch.apd90_ms, rel=0.01)
+
+
+@pytest.mark.slow
+def test_conduction_velocity_is_mesh_dependent_at_a_fixed_diffusion() -> None:
+    """The reproducibility hazard, demonstrated rather than asserted.
+
+    The solve absorbs discretisation error into ``diffusion``, so ``diffusion``
+    is not a physical tissue property: hold it fixed, change only the mesh, and
+    the tissue conducts at a different speed. Anyone re-running one of our
+    banks at a different pitch gets a different conduction velocity out of the
+    same card, which is precisely why ``calibrate_courtemanche`` refuses a
+    pitch it has no measured anchor for.
+
+    Asserting the gap is **large** rather than small: a test that allowed it to
+    shrink to nothing would pass on a bug that made the mesh inoperative.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave.measure import measure_strip
+
+    diffusion = 0.299142
+    coarse = measure_strip(diffusion=diffusion, dr_mm=0.25)
+    fine = measure_strip(diffusion=diffusion, dr_mm=0.05)
+
+    ratio = fine.conduction_velocity_cm_s / coarse.conduction_velocity_cm_s
+    assert ratio > 1.05, (
+        f"refining the mesh 5x moved conduction velocity by only "
+        f"{100 * (ratio - 1):.1f} % at fixed diffusion; either the mesh stopped "
+        "reaching the solver or the model became resolution-independent"
+    )
+
+
+@pytest.mark.slow
+def test_the_af_card_reaches_its_apd_target_in_tissue() -> None:
+    """Solve, simulate, measure — the AF card's half of the round trip.
+
+    The severity was swept until this landed on 220 ms, so the assertion is
+    that the sweep's answer survives being re-derived from the card rather than
+    from the sweep's own working.
+    """
+    from myocard_synthetic_egm_pipeline.backends.finitewave.measure import measure_strip
+
+    solved = af_card().solved
+    assert isinstance(solved, CourtemancheCellModel)
+    measured = measure_strip(
+        diffusion=solved.diffusion,
+        dr_mm=DR_MM,
+        params=solved.params,
+        include_apd=True,
+    )
+
+    assert measured.apd90_ms == pytest.approx(220.0, rel=0.02), (
+        f"the shipped severity gives APD90 {measured.apd90_ms:.1f} ms, not 220"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A borrowed anchor warns, proceeds, and lands in the artifact
+# ---------------------------------------------------------------------------
+
+
+def test_an_unregistered_combination_borrows_the_nearest_anchor() -> None:
+    """It warns and proceeds rather than refusing, and the reason is structural.
+
+    Refusing made ``backend.model`` unreadable without ``geometry.dr_mm``: two
+    config sections that were independently reasonable-about stopped being so,
+    and every future cross-section rule would accumulate in whichever loader
+    noticed first. Cross-section validation gets its own tool later.
+
+    What must not happen is the borrowing being *quiet* — see the provenance
+    test below, which is the half that actually protects a reader.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        AnchorSubstitutionWarning,
+    )
+
+    with pytest.warns(AnchorSubstitutionWarning, match="0.25"):
+        solved = calibrate_courtemanche(
+            conduction_velocity_cm_s=80.0, dr_mm=0.25, dr_model_units=0.25
+        )
+
+    # Proceeded, and on the control anchor: same conductances, nearest pitch.
+    exact = calibrate_courtemanche(
+        conduction_velocity_cm_s=80.0, dr_mm=DR_MM, dr_model_units=DR_MODEL_UNITS
+    )
+    assert solved.diffusion == pytest.approx(exact.diffusion), (
+        "the borrowed anchor produced a different diffusion from the registered "
+        "one, so it was not the anchor that got substituted"
+    )
+
+
+def test_the_nearest_anchor_prefers_the_matching_membrane() -> None:
+    """Two tiers, because the two axes are not comparable.
+
+    A different *pitch* rescales an error the convergence sweep has measured; a
+    different *membrane* moves conduction velocity by an amount nobody has. So
+    an unregistered pitch with known conductances borrows from its own
+    membrane, and only a wholly unknown conductance set falls back across the
+    registry — where the warning says so.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        resolve_courtemanche_anchor,
+    )
+
+    remodelled = resolve_courtemanche_anchor(CRN_AF_SCALINGS, 0.25)
+    assert remodelled.substituted
+    assert not remodelled.conductances_differ
+    assert remodelled.reference.name == "af_remodelled"
+
+    stranger = resolve_courtemanche_anchor({"g_to_scale": 0.35}, DR_MM)
+    assert stranger.substituted
+    assert stranger.conductances_differ, (
+        "an unknown conductance set borrowed an anchor without flagging that the "
+        "membrane differs, which is the worse half of the substitution"
+    )
+
+
+def test_a_borrowed_anchor_is_written_into_the_bank() -> None:
+    """**The half that matters.** A console warning is gone by the time anyone
+    reads the artifact.
+
+    If the substitution is not in the bank, the run is silently wrong to every
+    later reader — which is the failure the refusal existed to prevent, moved
+    rather than removed. So the card carries which anchor it was verified
+    through, and ``card_provenance`` writes it where the backend metadata goes.
+    """
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        AnchorSubstitutionWarning,
+    )
+
+    with pytest.warns(AnchorSubstitutionWarning):
+        borrowed = load_model_card(CARD_NAME, dr_mm=0.25, dr_model_units=0.25)
+
+    provenance = card_provenance(borrowed)
+    assert provenance["model_anchor_substituted"] is True
+    assert provenance["model_anchor_name"] == "control"
+    assert provenance["model_anchor_dr_mm"] == pytest.approx(DR_MM)
+    assert provenance["model_anchor_run_dr_mm"] == pytest.approx(0.25)
+    assert provenance["model_anchor_conductances_differ"] is False
+
+
+def test_the_anchor_is_recorded_even_when_it_was_the_right_one() -> None:
+    """Recorded always, so absence of the key means an old writer and nothing else.
+
+    Writing only the exception would leave a reader unable to tell "this was
+    verified against the anchor measured on this very mesh" from "this bank
+    predates the field".
+    """
+    provenance = card_provenance(shipped_card())
+
+    assert provenance["model_anchor_name"] == "control"
+    assert provenance["model_anchor_dr_mm"] == pytest.approx(DR_MM)
+    assert "model_anchor_substituted" not in provenance
+
+
+def test_an_aliev_panfilov_card_records_no_anchor() -> None:
+    """It has none. Its solve runs off measured constants, not a velocity anchor."""
+    card = load_model_card("af_remodelled_220ms", dr_mm=AP_DR_MM, dr_model_units=AP_DR_MM)
+
+    assert card.anchor is None
+    assert not any("anchor" in key for key in card_provenance(card))
+
+
+def test_an_empty_anchor_registry_is_still_a_hard_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one genuine impossibility: nothing to substitute.
+
+    Everything else degrades to a warning, so this is the only place left that
+    raises — and it has to, because there is no answer to give rather than a
+    worse answer to give.
+    """
+    from myocard_synthetic_egm_pipeline.simulate import cell_models
+
+    monkeypatch.setattr(cell_models, "CRN_REFERENCES", ())
+    with pytest.raises(ValueError, match="nothing to solve through"):
+        cell_models.resolve_courtemanche_anchor({}, DR_MM)
+
+
+def test_the_shipped_courtemanche_example_config_agrees_with_the_shipped_card() -> None:
+    """The example is the only thing that makes either card reachable.
+
+    A card nothing points at is a card nobody runs, and the coupling it needs —
+    ``geometry.dr_mm`` **and** ``run.dr_model_units`` both moved off their
+    Aliev-Panfilov defaults — is exactly the kind a reader gets wrong once.
+
+    Asserting **no substitution warning** is the load-bearing part: it says the
+    example's pitch and the card's anchor agree. If either moves without the
+    other, this fails here rather than in a bank whose upstroke is 10 % out and
+    whose conduction velocity looks perfect.
+    """
+    import yaml
+
+    from myocard_synthetic_egm_pipeline.cli._config import build_generate_dataset_config
+    from myocard_synthetic_egm_pipeline.simulate.cell_models import (
+        AnchorSubstitutionWarning,
+    )
+
+    path = Path("examples/synthegm_courtemanche.yaml")
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["_config_dir"] = path.parent
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", AnchorSubstitutionWarning)
+        config = build_generate_dataset_config(doc)
+
+    assert isinstance(config.cell_model, CourtemancheCellModel)
+    assert isinstance(config.geometry, Patch2DGeometry)
+    assert config.geometry.dr_mm == pytest.approx(DR_MM)
+    assert config.run_config.dr_model_units == pytest.approx(DR_MM), (
+        "the example leaves run.dr_model_units at its Aliev-Panfilov default, "
+        "which the backend refuses for a dimensional model"
+    )
+    assert config.run_config.model_card is not None
+    assert config.run_config.model_card.anchor is not None
+    assert not config.run_config.model_card.anchor.substituted

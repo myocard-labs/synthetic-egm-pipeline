@@ -440,7 +440,9 @@ def _cv_model_units(edge: Edge, ratio: float) -> float:
     model = fw.AlievPanfilov2D()
     model.dt = backend_module._AP_DT_MODEL_UNITS
     model.dr = backend_module._AP_DR_MODEL_UNITS
-    tissue = backend_module._build_tissue_2d(geometry)
+    tissue = backend_module._build_tissue_2d(
+        shape=geometry.shape, fiber_angle_rad=geometry.fiber_angle_rad
+    )
     backend_module._configure_anisotropy_2d(model, geometry)
     backend_module._apply_substrate_2d(
         tissue=tissue,

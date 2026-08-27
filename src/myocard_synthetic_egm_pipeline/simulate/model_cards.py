@@ -44,6 +44,7 @@ artifact it was.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -252,11 +253,14 @@ def load_model_card(
     card = parse_model_card(doc, source=source)
 
     try:
-        verify_solved(card, dr_mm=dr_mm, dr_model_units=dr_model_units)
+        anchor = verify_solved(card, dr_mm=dr_mm, dr_model_units=dr_model_units)
     except ValueError as exc:
         raise ModelCardError(f"{source}: {exc}") from exc
 
-    return card
+    # Which anchor the re-solve went through travels ON THE CARD, because the
+    # card is what reaches the bank. A borrowed anchor that appears only as a
+    # console warning is a run nobody can audit afterwards.
+    return replace(card, anchor=anchor)
 
 
 def card_provenance(card: ModelCard) -> dict[str, Any]:
@@ -273,6 +277,18 @@ def card_provenance(card: ModelCard) -> dict[str, Any]:
     # alternative is a sentinel number that reads as a target.
     if card.targets.apd90_ms is not None:
         provenance["model_target_apd90_ms"] = float(card.targets.apd90_ms)
+    # Which conduction-velocity anchor the card was solved through, recorded
+    # ALWAYS rather than only on a mismatch. A reader can then compare
+    # `model_anchor_dr_mm` against the geometry's own `dr_mm` and see for
+    # themselves; recording only the exception would leave "no key" meaning
+    # both "it was exact" and "written before this existed".
+    if card.anchor is not None:
+        provenance["model_anchor_name"] = card.anchor.reference.name
+        provenance["model_anchor_dr_mm"] = float(card.anchor.reference.dr_mm)
+        if card.anchor.substituted:
+            provenance["model_anchor_substituted"] = True
+            provenance["model_anchor_run_dr_mm"] = float(card.anchor.run_dr_mm)
+            provenance["model_anchor_conductances_differ"] = bool(card.anchor.conductances_differ)
     if card.measured is not None:
         provenance["model_measured_conduction_velocity_cm_s"] = float(
             card.measured.conduction_velocity_cm_s

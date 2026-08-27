@@ -2,8 +2,8 @@
 #
 # The ionic half of the model comparison: the same conduction-velocity target as
 # af_remodelled_220ms, a real human-atrial membrane instead of a phenomenological
-# one. Solved by simulate.cell_models.calibrate_courtemanche at dr_mm = 0.25,
-# dr_model_units = 0.25. The solved block is re-derived and checked every time
+# one. Solved by simulate.cell_models.calibrate_courtemanche at dr_mm = 0.10,
+# dr_model_units = 0.10. The solved block is re-derived and checked every time
 # this card is loaded; if calibrate_courtemanche changes, loading raises rather
 # than silently generating different physics under the same name.
 #
@@ -50,8 +50,8 @@ model:
   # --- what calibrate_courtemanche() returned ----------------------------
   # Derived, not chosen. Verified against a fresh solve on every load.
   solved:
-    diffusion: 0.299142         # model.D_model, mm^2/ms
-    dt_ms: 0.02                 # ms, because the model time unit IS the ms
+    diffusion: 0.261614         # model.D_model, mm^2/ms
+    dt_ms: 0.008600             # ms, because the model time unit IS the ms
 
     # Conductance scalings on top of the published defaults, {name: multiplier}.
     # Empty means control: every conductance at its Courtemanche 1998 value.
@@ -61,8 +61,15 @@ model:
     params: {}
 
   # --- what a simulation actually produced -------------------------------
-  # A first beat into rested tissue on the 40 mm patch, which is what a
-  # generation run produces, measured by backends.finitewave.measure.measure.
+  # A first beat into rested tissue. conduction_velocity_cm_s is measured on
+  # the 40 mm patch, the geometry a generation run uses; apd90_ms and
+  # upstroke_v_s on the 1-D cable the convergence sweep runs on. The cable is
+  # not an approximation for those two — a plane wave in a sheet has no
+  # transverse gradient, so each cell sees the same axial load either way, and
+  # measured against the patch at matched settings APD90 agrees within 0.1 %
+  # and the propagated upstroke within 0.004 %. Conduction velocity does
+  # differ, by ~0.5 %, because the two fit windows sit at different distances
+  # from the stimulus — which is why it alone is measured on the patch.
   #
   # NOT the paced single-cell numbers in the validation block below. For
   # Courtemanche the two differ by ~30 ms (323 here against 292 paced) and
@@ -71,20 +78,19 @@ model:
   # whether repolarisation clears the trace window is THIS one, because this is
   # the protocol a generation run uses.
   #
-  # CV lands 3.6 % above target. Recorded rather than tuned away: the solve is
-  # analytic and CV ~ sqrt(D) is only approximate on a mesh this coarse (see
-  # the sweep at the bottom). 3.6 % is immaterial against a literature spread
-  # of 88 +/- 9 cm/s; reporting the target as though it were the achieved value
-  # would not be.
+  # CV lands 1.56 % above target. Recorded rather than tuned away: the solve
+  # is analytic and CV ~ sqrt(D) is only approximate on a discrete mesh. It was
+  # +3.6 % at dr = 0.25 and halved when the pitch refined, which is the same
+  # discretisation residual seen from the other side.
   #
   # THE UPSTROKE IS RECORDED TWICE, AND THE TWO ARE DIFFERENT MEASUREMENTS.
-  # `upstroke_v_s` below is the PROPAGATED one: dV/dt max at the patch centre,
-  # 20 mm from the stimulus edge, driven by the arriving wavefront and by
-  # nothing else. The validation block further down records the STIMULATED
-  # single-cell figure, 215.2 V/s, which is what a published cell table reports
-  # and what Wilhelms is compared against.
+  # `upstroke_v_s` below is the PROPAGATED one: dV/dt max at the cable centre,
+  # 10 mm from the stimulus, driven by the arriving wavefront and by nothing
+  # else. The validation block further down records the STIMULATED single-cell
+  # figure, 215.2 V/s, which is what a published cell table reports and what
+  # Wilhelms is compared against.
   #
-  # They differ by 39 % — 131.1 against 215.2 — and neither is wrong. An
+  # They differ by 45 % — 119.3 against 215.2 — and neither is wrong. An
   # isolated cell has no neighbours to charge, so all of its sodium current
   # goes into its own membrane; a cell in tissue spends much of that current
   # depolarising the cells ahead of it, and its own upstroke is correspondingly
@@ -96,9 +102,9 @@ model:
   # propagated wavefront, and electrogram amplitude scales with dV/dt — so this
   # is the number a model-versus-model comparison actually rests on.
   measured:
-    conduction_velocity_cm_s: 82.9
-    apd90_ms: 323.2
-    upstroke_v_s: 131.1        # PROPAGATED, at the patch centre
+    conduction_velocity_cm_s: 81.2
+    apd90_ms: 321.8
+    upstroke_v_s: 119.3        # PROPAGATED, at the cable centre
 
 # =========================================================================
 # VALIDATION — the published vector, and the protocol without which it is
@@ -174,48 +180,56 @@ model:
 # propagated 131 sits well below — a propagated upstroke in loaded tissue is
 # not the quantity a patch-clamp study reports.
 #
-# TIMESTEP, measured rather than inherited. The CFL bound permits dt = 0.052 ms
-# at the solved diffusion, but the fast sodium current needs far less, and
-# because Finitewave integrates the gating variables Rush-Larsen a coarse step
-# does not diverge — it quietly flattens the upstroke, which is the one
-# observable an ionic model was added to get right. Same protocol, two steps:
+# TIMESTEP — TWO bounds, and WHICH ONE BINDS CHANGED WITH THE PITCH.
 #
-#   dt (ms)   Amplitude   RMP       APD50     APD90     dV/dt max
-#   0.02      106.26 mV   -80.63    169.62    292.40    213.03
-#   0.01      105.55 mV   -80.83    171.34    294.23    214.37
-#   delta     -0.7 %      +0.2 %    +1.0 %    +0.6 %    +0.6 %
+# There is an ionic ceiling of 0.02 ms (cell_models.CRN_MAX_DT_MS) as well as
+# the explicit-diffusion CFL condition. The ceiling is measured, not inherited:
+# on the single-cell protocol above, halving the step from 0.02 to 0.01 moves
+# every one of the five properties by <= 1 % (amplitude -0.7 %, RMP +0.2 %,
+# APD50 +1.0 %, APD90 +0.6 %, dV/dt max +0.6 %), so 0.02 is on the plateau.
+# It matters because Finitewave integrates the gating variables Rush-Larsen, so
+# too large a step does not diverge — it quietly flattens the upstroke.
 #
-# Converged to ~1 % at 0.02 ms, so that is the ceiling
-# (cell_models.CRN_MAX_DT_MS) and halving it again was not run.
+# At the old 0.25 mm pitch the CFL bound was 0.052 ms and the ionic ceiling
+# bound. At 0.10 mm the CFL bound is 0.0096 ms and it binds instead: CFL scales
+# as dr^2, so refining by 2.5x tightened it 6.25x. The shipped dt_ms above is
+# 0.9 x the CFL bound, and stability_limit() returns the smaller of the two so
+# the backend's one-line check stays meaningful in either regime.
 #
 # =========================================================================
-# MESH PITCH — the honest limitation of this card
+# MESH PITCH — measured, and the reason this card moved
 # =========================================================================
 #
-# Authored at dr = 0.25 mm, where Courtemanche's ~0.59 ms upstroke spans about
-# 1.9 mesh cells; monodomain practice wants 5-10, i.e. dr ~ 0.05-0.1 mm.
-# The danger is silent: a CV-solve absorbs discretisation error into diffusion
-# and hits its target anyway.
+# Authored at dr = 0.10 mm. It was 0.25, where Courtemanche's ~0.59 ms upstroke
+# spans about 1.9 mesh cells against the 5-10 monodomain practice wants. A
+# convergence sweep on a 1-D cable settled it; the full curve is in
+# intracardiac-platform/project/investigations/courtemanche_calibration.md.
 #
-# It is measurably not silent here. CV was measured along the fibres on the
-# 40 mm patch at three diffusions spanning 16x:
+#   dr (mm)  cells  CV at fixed D   propagated upstroke   CV ~ D^n exponent
+#   0.250      80    81.85 cm/s      131.14 V/s            0.5835
+#   0.200     100    83.07           124.30                0.5611
+#   0.150     133    84.62           120.25                0.5430
+#   0.125     160    85.76           119.70                0.5351
+#   0.100     200    86.68           119.23                0.5278   <- shipped
+#   0.075     267    87.41           118.88                0.5210
+#   0.050     400    87.94           118.67                0.5126
 #
-#   D (mm^2/ms)   measured CV   sqrt(D) law from D = 0.154   delta
-#   0.0385         24.13 cm/s    28.70 cm/s                  -15.9 %
-#   0.1540         57.40 cm/s    57.40 cm/s                   (anchor)
-#   0.6160        121.66 cm/s   114.80 cm/s                   +6.0 %
+# TWO QUANTITIES, AND ONLY ONE MOVED AS PREDICTED. The exponent falls toward
+# the continuum's exact 0.500, as expected. The propagated upstroke was
+# expected to RISE toward the stimulated figure and instead FELL, 131.1 to
+# 118.7 — a coarse mesh compresses the wavefront into fewer cells, so each
+# node's transition is steeper in time than the continuum's, and refining
+# relaxes it. The 131.1 V/s this card used to record was a mesh artifact
+# 10.5 % high in the one observable an ionic model was added to get right.
 #
-# CV ~ D^0.58 over that range, not D^0.50. The law the solve inverts is exact
-# physics and the mesh is what bends it: a smaller D means a narrower wavefront
-# means fewer cells across it means more discretisation loss. That is
-# under-resolution with a number on it, rather than argued from the upstroke
-# width alone — and the exponent returning toward 0.50 is what a converged
-# mesh would look like.
+# 0.10 is the coarsest pitch at which the upstroke is within 0.5 % of the
+# finest measured. The exponent has NOT plateaued — 0.528 here, still 0.513 at
+# 0.05 — so the solved diffusion remains partly a mesh-compensation quantity
+# rather than a physical one. Refining further costs 1/dr^3.
 #
-# Two things stand against it rather than one comment. calibrate_courtemanche
-# REFUSES any pitch other than the one its reference CV was measured at, and
-# load-time verification re-solves against geometry.dr_mm — so this card loaded
+# THE MESH-DEPENDENCE, DEMONSTRATED RATHER THAN ASSERTED: at a FIXED diffusion
+# of 0.299142, the same tissue conducts at 81.85 cm/s on a 0.25 mm mesh and
+# 87.94 on a 0.05 mm one — 7.4 % apart with no physics changed. That is why
+# calibrate_courtemanche refuses any pitch it has no measured anchor for, and
+# why load-time verification re-solves against geometry.dr_mm: a card loaded
 # against a different mesh raises rather than quietly meaning something else.
-# A mesh-convergence sweep — CV and dV/dt max against dr, continued until both
-# plateau — picks the coarsest pitch on the plateau, and this card is
-# re-authored there.
