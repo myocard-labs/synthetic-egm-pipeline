@@ -6,14 +6,38 @@ reproducibility and honest provenance outrank convenience everywhere below.
 
 ## Verify before claiming
 
-**Run the gate. Never report work as done without it.**
+**The fast gate runs on every change. Never report work as done without it.**
 
 ```
-pytest -q && pytest -q -m slow && ruff check . && ruff format --check . && mypy
+pytest -q && ruff check . && ruff format --check . && mypy
 ```
 
-- `-m slow` runs the real solver. **A green fast suite is not a green suite** —
-  regressions hide there routinely.
+Seconds. There is no excuse for skipping it.
+
+**The slow suite is a different decision, because it costs 30+ minutes.**
+
+```
+pytest -q -m slow
+```
+
+It runs the real solver, so it is the only thing that can catch a physics
+regression — but running it on every change is a measurable drag on the work and
+most changes cannot possibly affect it. **Run it when the change can move a
+number, and say which case applies when reporting:**
+
+| run the slow suite | skip it |
+|---|---|
+| solver, backend, or cell-model code | docs, comments, error-message text |
+| calibration, model cards, anchors | signature refactors with no behaviour change |
+| the signal path — filtering, resampling, cropping | config parsing and validation |
+| anything whose diff changes a recorded value | example configs, test names |
+
+**When in doubt, run it** — but say so rather than running it reflexively. The
+step brief will normally state which is expected; if it does not, decide and
+state the reason.
+
+**A green fast suite is not a green suite.** That is why the table exists rather
+than a blanket permission to skip.
 - `ruff format`, not just `ruff check`. A pre-commit hook otherwise reformats and
   fails the commit.
 - Generation runs: `synthegm-generate-dataset configs/<name>.yaml --overwrite`.

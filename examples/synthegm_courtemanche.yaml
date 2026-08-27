@@ -1,0 +1,118 @@
+# synthegm-generate-dataset — the Courtemanche ionic cell model.
+#
+# The same pipeline as synthegm_v1_baseline.yaml with one thing changed: the
+# membrane. Everything downstream — substrate, electrodes, labelling, cropping,
+# output — is identical, which is the point. A bank from this config and a bank
+# from the baseline differ in cell model and nothing else.
+#
+# Swap `backend.model` for af_remodelled_crn_220ms to get the partially
+# AF-remodelled Courtemanche card instead. It solves at the same pitch and the
+# same conduction velocity, so the two Courtemanche cards are themselves a
+# matched pair.
+#
+# Output: ../banks/synthegm_courtemanche.classifier.h5
+
+dataset:
+  n_simulations: 20                        # 20, not 100 — see the cost note below
+  master_seed: 42
+  show_progress: true
+
+backend:
+  type: finitewave
+  model: courtemanche_control              # or af_remodelled_crn_220ms
+
+geometry:
+  type: patch_2d
+  size_mm: 40.0
+  # ---------------------------------------------------------------------
+  # 0.10, NOT the 0.25 the Aliev-Panfilov cards use. This is coupled to
+  # `backend.model` above and to `run.dr_model_units` below; all three have to
+  # move together. There are two independent reasons, and only one of them is
+  # enforced by the code.
+  #
+  # MECHANICAL: the card's conduction-velocity anchor was measured at 0.10. A
+  # solve at another pitch borrows the nearest anchor, absorbs the mismatch
+  # into `diffusion`, and still hits its velocity target — so the run looks
+  # healthy. It warns and records the substitution in the bank, but it does
+  # not stop.
+  #
+  # PHYSICAL, and the reason the warning matters: at 0.25 mm Courtemanche's
+  # ~0.59 ms upstroke spans about 1.9 mesh cells against the ~5 it needs, and
+  # the propagated dV/dt max reads 10.5 % HIGH — 131.1 V/s against a converged
+  # 118.7. That is the one observable the ionic model was added to get right.
+  # The convergence curve is in
+  # intracardiac-platform/project/investigations/courtemanche_calibration.md.
+  # ---------------------------------------------------------------------
+  dr_mm: 0.1
+  fiber_angle_rad: 0.0
+  anisotropy_ratio: 2.0
+
+substrate:
+  type: uniform_random_fibrosis
+  density_range: [0.0, 0.5]
+  fraction_healthy: 0.3
+
+activation:
+  type: planar_edge
+  fixed_edge: null
+
+electrodes:
+  type: centered_grid_2d
+  n_rows: 5
+  n_cols: 5
+  spacing_mm: 2.0
+  height_mm_range: [0.2, 1.0]
+
+label_policy:
+  type: local_density
+  radius_mm: 2.0
+  threshold: 0.1
+  healthy_name: healthy
+  fibrotic_name: fibrotic
+
+run:
+  trace_duration_ms: 192.0
+  output_fs_hz: 1000.0
+  capture_oversample: 4
+  # Must equal geometry.dr_mm. Courtemanche's diffusion is in mm^2/ms, so its
+  # space unit IS the millimetre and the two are the same number or the solver
+  # is integrating a different mesh from the one the geometry describes. It
+  # defaults to 0.25 — the Aliev-Panfilov value — so leaving it out here is an
+  # error, and the backend raises rather than guessing which was meant.
+  dr_model_units: 0.1
+
+activation_position:
+  low: 0.4
+  high: 0.6
+
+output:
+  classifier_bank: ../banks/synthegm_courtemanche.classifier.h5
+  description: >
+    Courtemanche control ionic model, 20 sims, dr = 0.1 mm.
+    Membrane-only variation against synthegm_v1_baseline.yaml.
+
+# =======================================================================
+# WHAT THIS COSTS, against the Aliev-Panfilov baseline
+# =======================================================================
+#
+# Two multipliers, and they are not the same size:
+#
+#   mesh    400 x 400 = 160,000 nodes against 160 x 160 = 25,600   ->  6.25x
+#   step    dt 0.0086 ms against 0.02                              ->  2.33x
+#   ------------------------------------------------------------------------
+#   solver work per simulation                                     -> ~14.5x
+#
+# Per node it is more expensive again: 21 state variables and gating
+# exponentials against Aliev-Panfilov's 2.
+#
+# A NOTE ON THE 39x FIGURE that appears in the earlier planning: it assumes
+# dt scales as dr^2 all the way, which would make the step 6.25x rather than
+# 2.33x. It does not, because at dr = 0.25 the timestep was NOT set by the
+# diffusion bound — that bound is 0.0597 ms there — but by the 0.02 ms ionic
+# ceiling the sodium current needs. Refining the mesh therefore only pays the
+# quadratic penalty from the point where the diffusion bound takes over, which
+# is between the two pitches. 14.5x is the measured ratio of the two solves.
+#
+# n_simulations is 20 rather than the baseline's 100 for that reason. Raise it
+# when the run is going somewhere, and expect it to take hours rather than
+# minutes.

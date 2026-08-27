@@ -1666,36 +1666,220 @@ at 12 / 15 / 21 / 30 mV/ms, so a threshold near 6–7 mV/ms puts 2× squarely on
   tightened tolerance; both upstroke numbers recorded and labelled distinctly.
 - **Depends on:** S41.
 
-### S18c — Mesh convergence, the cAF severity sweep, and the matched card (SEP5) ☐ (4–7 h)
+### S18c — Mesh convergence, the cAF severity sweep, and the matched card (SEP5) ✅ (4–7 h)
+
+**Done 2026-08-26.** Both sweeps, both cards, and
+`investigations/courtemanche_calibration.md`. Full gate green (353 fast + 18 slow, up from 347 + 15).
+
+**The rig, and it is the reason this step was affordable.** A **1-D cable** — 20 mm, three mesh rows
+so exactly one is interior — validated against the 40 mm patch *before* being trusted: propagated
+upstroke agrees to **0.004 %**, first-beat APD90 to **0.09 %**, because a plane wave in a sheet has
+no transverse gradient. Conduction velocity differs by 1.3 % (the fit windows sit at different
+distances from the stimulus), so **CV is measured on the patch and the other two on the cable** in
+both cards. The seven-pitch sweep took **84 seconds**; on the patch it would have been hours.
+
+**One confound found and removed, and it nearly went the other way.** `strip_thickness` counts
+*cells*, so refining the mesh was shrinking the physical stimulus — 0.75 mm at `dr = 0.25` down to
+0.225 mm at 0.075. It bites hardest at **high** diffusion (a larger `D` drains the stimulated region
+into its neighbours faster), and at `dr = 0.075`, `D = 0.616` the wave stopped launching and the
+sweep died with *"0 of 106 nodes activated"*. Loud, and lucky: a *weak* launch would have returned
+numbers and blamed the mesh for the stimulus. Stimulus now pinned at 0.75 mm of tissue; whole sweep
+re-run.
+
+**(a) The convergence curve** — cable, `D` fixed at the operating point, exponent fitted across the
+same three diffusions the patch used:
+
+| `dr` (mm) | cells | CV at fixed `D` | propagated dV/dt max | `CV ∝ Dⁿ` |
+|---|---|---|---|---|
+| 0.250 | 80 | 81.854 | 131.139 | 0.5835 |
+| 0.200 | 100 | 83.074 | 124.301 | 0.5611 |
+| 0.150 | 133 | 84.616 | 120.245 | 0.5430 |
+| 0.125 | 160 | 85.758 | 119.699 | 0.5351 |
+| **0.100** | **200** | **86.680** | **119.230** | **0.5278** |
+| 0.075 | 267 | 87.412 | 118.878 | 0.5210 |
+| 0.050 | 400 | 87.935 | 118.672 | 0.5126 |
+
+At `dr = 0.25` the cable reproduces the patch's exponents to four figures — an independent check
+that the rig measures the same thing.
+
+**Expectation 1 held. Expectation 2 did not, and the direction matters.** The exponent falls
+monotonically toward 0.500, near-exactly first-order in the pitch (`n − 0.5 ≈ 0.28·dr`). The
+propagated upstroke **falls** 131.1 → 118.7 rather than rising. The mechanism is the opposite of the
+one assumed: a coarse mesh does not smear the upstroke, it *compresses the wavefront into fewer
+cells*, so each node's transition is steeper in time and refining relaxes it. **The 131.1 V/s S42
+committed to the control card was a mesh artifact, 10.5 % high in the one observable an ionic model
+was added to get right.** It also *widens* the propagated-versus-stimulated gap rather than
+narrowing it, so S42's reading of that gap is strengthened.
+
+**The reproducibility demonstration:** at a **fixed** `D = 0.299142`, with no physics changed, the
+same tissue conducts at **81.854 cm/s on a 0.25 mm mesh and 87.935 on a 0.05 mm one — 7.4 % apart.**
+A slow test asserts that gap stays *large*, so a bug making the mesh inoperative fails rather than
+passes.
+
+**Pitch chosen: `dr = 0.10`**, on a stated criterion — *the coarsest pitch at which the propagated
+upstroke is within 0.5 % of the finest measured* (119.230 against 118.672, 0.47 %). **The exponent
+has NOT plateaued** — 0.528 here, still 0.513 at 0.05 — so the solved diffusion remains partly a
+mesh-compensation quantity. What refining bought is that the compensation is small: measured CV
+overshoots its 80 cm/s target by **+1.56 %** against **+3.6 %** at 0.25. Refining further costs
+`1/dr³`.
+
+**(b) The severity sweep** — three currents, bisected on the cable to a propagated tissue APD90 of
+220 ms: **`s = 0.56`, measured 219.49 ms**, scalings `g_to ×0.636 · g_CaL ×0.636 · g_K1 ×1.616`.
+Two properties recorded: **APD90 is diffusion-independent** (219.00 / 218.98 / 218.97 ms at
+`D` = 0.9× / 1.0× / 1.1×, so the sweep did not need to know the diffusion in advance), and **CV
+moves 2.2 % and the upstroke 1.1 % across the whole `s` range** — the remodelling is close to CV-
+and upstroke-neutral, so the severity choice does not confound the comparison.
+
+**The measurand differs from the entry's wording, deliberately.** The sweep is on the **tissue first
+beat**, not the single cell. `af_remodelled_220ms`'s own 220 ms is a tissue, first-beat, centre-node
+APD90 — matching two cards requires matching the *measurand*, not merely the number, and sweeping
+the single cell to 220 would have given a tissue APD near 244. The cable makes the correct measurand
+free, so there was no trade.
+
+**The expectation on `s`, checked on the axis it was stated for.** CL-180's 0.4–0.6 is a
+**single-cell paced** interpolation. On that axis our three-current set reads 290.98 ms at `s = 0`
+and 185.70 at `s = 0.56`, reaching 220 at **`s ≈ 0.38`** — below 0.49, as predicted. The shipped
+0.56 is larger only because the tissue axis starts at 321.8 rather than 291.0. Reading the two as
+one axis is the mistake to avoid.
+
+**(c) `af_remodelled_crn_220ms` ships**, declaring the omission in the terms the entry required —
+*three of the four cAF conductance changes collected in Wilhelms 2012; `I_Kur` (−49 %) omitted
+because the solver inlines its voltage-dependent conductance*. Never "the published cAF
+parameterisation". A limitations-register entry is in the investigation doc. **No compensation
+through `gkr`/`gks`**, and a test asserts their *absence* from the card's params — the honest hole,
+mechanically enforced.
+
+**One piece of machinery this needed:** a **reference registry**. The velocity anchor is a property
+of the conductance set *and* the mesh — the AF scalings move CV at fixed diffusion by 2.3 % — so
+`calibrate_courtemanche` now looks up `(params, dr)` and refuses a combination it has no measurement
+for, rather than reaching for the nearest one.
+
+**Open, and outside this step:** `af_remodelled_220ms` is still authored at `dr = 0.25`. A
+model-versus-model comparison needs everything but the membrane matched, and the mesh is not
+currently matched. Flagged rather than decided.
+
+**Follow-up, 2026-08-26 — three fixes, fast gate only** (parameter-passing refactor, an error
+message, a config example and docs; nothing that can move a number, per the cadence table).
+
+1. **`_build_tissue_2d` took a geometry plus a shape override that contradicted it** — a signature
+   callable two ways meaning one of them. It now takes `shape` and `fiber_angle_rad`, which are the
+   only two things it read. Both a patch and the cable still route through it, which is what keeps
+   one fibre-convention implementation.
+2. **The missing conduction-velocity anchor warns and proceeds** on the nearest registered anchor
+   instead of raising. Blocking made `backend.model` unreadable without `geometry.dr_mm`; cross-
+   section rules get their own tool (FB-37) rather than accumulating in whichever loader notices
+   first. Nearest is two-tier — matching conductances first, then closest pitch — and the warning
+   names the anchor, both pitches, and the direction of the resulting error (finer than the anchor
+   ⇒ realised CV lands **above** target). **The substitution is written into the bank**:
+   `model_anchor_name` and `model_anchor_dr_mm` always, plus `model_anchor_substituted`,
+   `model_anchor_run_dr_mm` and `model_anchor_conductances_differ` when it happened. Verified end to
+   end into a bank's `params`. A hard error survives only for the genuine impossibility — an empty
+   registry, where there is nothing to substitute.
+
+   **One thing the downgrade needed that the brief did not name.** With the anchor check downgraded
+   the load still failed, on the *drift* check: `dt` is derived from the mesh through the CFL bound,
+   so at another pitch a card's step and a fresh solve's step are **supposed** to differ. That is a
+   pitch mismatch reported as calibration drift. `dt_model_units` is now excluded from the drift
+   comparison when the anchor was substituted; `diffusion` — the field the check exists to protect,
+   and the one the anchor actually sets — is still compared. The card's own step stays *conservative*
+   at a coarser pitch rather than unstable, because the bound loosens as the mesh coarsens.
+3. **`examples/synthegm_courtemanche.yaml` ships**, identical to the baseline in every block but the
+   membrane, with `dr_mm: 0.1` and `run.dr_model_units: 0.1`. A fast test asserts the example loads
+   with **no substitution warning**, which is what pins the example's pitch to the card's anchor.
+   `usage.md` states both halves of the coupling — mechanical (the anchor was measured at that
+   pitch, and a solve elsewhere absorbs the mismatch into `diffusion` and hits its target anyway)
+   and physical (at 0.25 the upstroke spans 1.9 cells against ~5 and reads 10.5 % high). The second
+   is why the first matters: a borrowed anchor makes the run *succeed*, at a velocity that matches
+   its target, with an upstroke that is 10 % wrong.
+
+   **The 39x cost figure in the brief is wrong and the docs say 14.5x.** 39x assumes `dt ∝ dr²`
+   throughout. It does not: at `dr = 0.25` the step was set by the sodium current's 0.02 ms ceiling,
+   not by the diffusion bound's 0.0597, so refining pays the quadratic penalty over only part of the
+   range. Measured from the two solves: 6.25x the nodes, a 2.33x smaller step, **≈14.5x** the work.
+
 - **Change:** the two **measurements** CL-180 asks for, then the card they produce.
   **(a) Mesh convergence** — sweep `dr` on a **1D strip, not the 40 mm patch**; CV and dV/dt max
   versus `dr`, continued until both plateau. Pick the coarsest `dr` on the plateau and record the
   curve. A strip is cheap and answers the same question, so the 39–625× patch cost is paid once for
   the shipped card rather than once per candidate `dr`.
   **(b) The cAF severity sweep** — single cell, no mesh at all, so it is nearly free: sweep
-  `s ∈ [0,1]` over `g_to ×(1−0.65s)` · `g_CaL ×(1−0.65s)` · `g_Kur ×(1−0.49s)` · `g_K1 ×(1+1.10s)`
-  until measured APD90 = 220 ms. Linear interpolation between 294.83 (s=0) and 143.87 (s=1) puts
-  `s ≈ 0.5`; the relation is nonlinear, so expect 0.4–0.6 and take the swept value.
+  `s ∈ [0,1]` over **three** conductances until measured APD90 = 220 ms —
+
+  `g_to ×(1−0.65s)` · `g_CaL ×(1−0.65s)` · `g_K1 ×(1+1.10s)`
+
+  **`I_Kur` is the fourth published change and it is NOT in that list — it cannot be.** Its
+  conductance is voltage-dependent and inlined into the solver's kernel, so no parameter for it
+  exists anywhere in the object graph. Expect `s` **below** CL-180's interpolated 0.4–0.6: `I_Kur`
+  is repolarising, so its −49 % *prolongs* APD and opposes the shortening, and omitting it should
+  shorten more per unit `s`. **Treat that as expected, not guaranteed** — `I_Kur` block is
+  non-monotonic in APD, because prolonging the plateau recruits more `I_Kr`/`I_Ks` (CL-182). The
+  sweep is empirical and settles it.
   **(c)** Author `af_remodelled_crn_220ms` — named to mirror `af_remodelled_220ms` so the shared
   target is visible in the filename — recording `s`, the resulting scalings, the pinned BCL and beat
   count, and the `dr` it was solved at. Write `investigations/courtemanche_calibration.md` beside
   `ap_model_calibration.md` (research left that file to us deliberately).
-- **Why partial remodelling is defensible rather than a fudge:** it stays **on the published
-  parameter axis** — less far along van Wagoner / Bosch / Dobrev, not a new direction; AF remodelling
-  is **progressive**, so an intermediate stage is a real physiological state that ablation cohorts
-  span; and the card records `s` so a reader sees exactly how far we went. It also preserves the
-  architecture: **APD stays measured, never solved** — the sweep is a one-time authoring step,
-  exactly as `calibrate()` is run once for AP.
+- **Why partial remodelling is defensible — RETRACTED AND REPLACED (CL-182).** The original argument
+  here was that partial remodelling stays *on the published parameter axis*, moving less far along
+  van Wagoner / Bosch / Dobrev rather than in a new direction. **Research withdrew that on our
+  challenge: dropping a current is a different direction, not a shorter distance**, and the same
+  authors' 1999 AF-remodelling paper also identifies `I_Kur`, so there is no published three-current
+  alternative to fall back on. Do not ship the old wording.
+
+  **The replacement is stronger, and it is about what the traces actually contain.** Ask what the
+  card has to be true *for*. The claim is not that we reproduce cAF myocyte electrophysiology; it is
+  that we generate bipolar electrograms with realistic **activation morphology** at a matched
+  **conduction velocity**, with an APD90 that keeps repolarisation **outside the stored window**.
+  Against those three observables:
+
+  - the **upstroke** — the entire scientific content of the model comparison — is `I_Na`-dominated,
+    and `gna` is settable. **`I_Kur` contributes nothing to `dV/dt` max.**
+  - `I_Kur` shapes the **plateau and APD90**, and we have deliberately engineered APD so that
+    repolarisation lies *outside* the cropped trace. **The omission is confined to the one part of
+    the action potential our data does not contain.**
+  - APD is a **measured, targeted** observable, so the sweep absorbs the omission: `s` is tuned
+    until APD90 = 220 ms either way. The net observable matches; only the ionic decomposition
+    behind it differs.
+
+  It also preserves the architecture: **APD stays measured, never solved** — the sweep is a one-time
+  authoring step, exactly as the analytic solve is run once for Aliev–Panfilov.
+
+- **Declare the omission; do not disguise it.** The card must **not** claim "the published cAF
+  parameterisation". Wording along the lines of: *partial AF-remodelling calibrated to a measured
+  APD90 of 220 ms, applying three of the four cAF conductance changes collected in Wilhelms 2012;
+  `I_Kur` (−49 %) is omitted because the solver inlines its voltage-dependent conductance into the
+  kernel.* Then a **limitations-register entry**, given the same treatment as the seven Sánchez
+  deviations. A declared, mechanically-forced omission in a feature the traces exclude is a
+  defensible limitation; a three-of-four sweep reported as four would not be.
+- **Do NOT compensate through `gkr`/`gks`.** They are settable, so `I_Kur`'s net APD effect could be
+  absorbed into another repolarising current. Research explicitly recommends against it and the
+  reasoning is right: it buys nothing observable, since the `s` sweep already lands APD on target,
+  and it converts a **forced, declarable** deviation into a **chosen, fabricated** one — strictly
+  harder to defend. Prefer the honest hole.
 - **The modality tension is real and must be stated, not smoothed.** In-vivo MAP gives 219–245 ms
   for AF patients (Franz, CL-176) while isolated cAF myocytes give 95–144 ms — a ~2× disagreement.
   They are different measurements at different remodelling stages. **We simulate in-vivo tissue
   during a mapping procedure, so the MAP line is the matched modality**, which is why the AP card is
   at 220 ms and why CRN follows it. Christ 2008's 287 ± 16 ms puts 220 inside the published cAF
   range regardless.
+- **Two convergence checks, not one — and they move in opposite directions.** The mesh sweep has a
+  stated expectation on each, which is what makes it a test rather than a plot:
+  1. **The CV exponent should fall toward 0.500.** Measured 0.625 then 0.542 at `dr = 0.25`.
+  2. **The propagated upstroke should RISE.** S42 measured 131.1 V/s propagated against ~187
+     stimulated. Some of that gap is real — axial current from neighbours is gentler than a direct
+     stimulus — but an under-resolved mesh smears precisely this quantity, so refining should
+     recover part of it. Two quantities converging from opposite directions is far stronger evidence
+     than either alone.
+- **The reproducibility test that makes the problem concrete (CL-182):** at the shipped operating
+  point, conduction velocity is **mesh-dependent** — the solve has absorbed discretisation error into
+  `diffusion`, so **changing `dr` or patch size will move CV at fixed `D`.** Run one `D` at two `dr`
+  values and watch it move. That is a direct hazard to a methods section and it is cheap to
+  demonstrate.
 - **Verify:** measured APD90 within tolerance of 220 ms at the pinned protocol; measured CV matched
   to the AP card's, so **upstroke morphology is the only free variable left** — that is the actual
-  scientific payoff of SEP5, since AP's upstroke is smooth and broad while CRN's is ~190–210 V/s and
-  EGM amplitude scales with dV/dt; the convergence curve is committed, not just its conclusion.
+  scientific payoff of the comparison, since AP's upstroke is smooth and broad while CRN's is far
+  steeper and electrogram amplitude scales with `dV/dt`; the convergence **curve** is committed, not
+  just its conclusion; the `I_Kur` omission appears in the card text and the limitations register,
+  and the sweep reports three currents rather than four.
 - **If the sweep cannot reach 220 ms** while staying monotone and stable, CL-180 offers control CRN
   (294.83 ms) as the fallback. **Take that only after escalating**, because it silently breaks
   CL-180's own Q4 answer: two cards at different APDs describe different atria, and SEP5 stops being

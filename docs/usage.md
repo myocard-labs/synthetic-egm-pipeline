@@ -94,6 +94,10 @@ The shipped examples cover the three common scenarios:
 - `examples/synthegm_calibration.yaml` — 4-sim deterministic run
   (fixed edge, fixed density, pinned electrode height) for verifying
   CV calibration or eyeballing bipolar morphology before scaling up.
+- `examples/synthegm_courtemanche.yaml` — the **ionic** cell model, at the
+  `dr = 0.1 mm` mesh its cards are solved at. Identical to the baseline in
+  every other block, so a bank from each differs in membrane and nothing else.
+  Read the cost note at the bottom of it first.
 - `examples/synthegm_probe.yaml` — **positional-sensitivity probe**: one solve
   emitted as one simulation per crop offset. A diagnostic bank, not training
   data — see [The positional-sensitivity
@@ -321,7 +325,8 @@ card's `type` says which membrane the backend integrates.
 | Card | Cell model | Targets | What it is |
 |---|---|---|---|
 | `af_remodelled_220ms` | `aliev_panfilov` | CV 80 cm/s, APD90 220 ms | The Phase-1.5 default. Phenomenological, two-variable, cheap. |
-| `courtemanche_control` | `courtemanche` | CV 80 cm/s | Courtemanche-Ramirez-Nattel 1998 human atrial myocyte, control (un-remodelled) conductances. The ionic half of the model comparison. |
+| `courtemanche_control` | `courtemanche` | CV 80 cm/s | Courtemanche-Ramirez-Nattel 1998 human atrial myocyte, control (un-remodelled) conductances. Solved at `dr = 0.10 mm`. |
+| `af_remodelled_crn_220ms` | `courtemanche` | CV 80 cm/s, APD90 220 ms | The same model, **partially AF-remodelled** to a measured APD90 of 220 ms. Applies **three of the four** cAF conductance changes collected in Wilhelms 2012 — `I_Kur` is omitted because the solver inlines its voltage-dependent conductance; the card declares this. Solved at `dr = 0.10 mm`. |
 
 Both cards target the **same conduction velocity**, which is what makes a
 comparison between them a comparison of *membrane models* rather than of two
@@ -337,16 +342,55 @@ state an APD90 target — the AF-matched card will, since its conductances are
 chosen to reach one — and where it does, loading checks it against the card's own
 `measured:` block rather than against a solve.
 
-Two costs worth knowing before you generate with it:
+The two Courtemanche cards are a **matched pair**: same conduction-velocity
+target, same mesh, same model, differing only in remodelling state. That is what
+makes a bank generated under each a comparison of membrane behaviour rather than
+of two unrelated tissues.
 
-- **It is far more expensive.** 21 state variables and gating exponentials per
-  node against Aliev-Panfilov's 2, at a timestep the sodium current pins to
-  0.02 ms.
-- **It is authored at `dr = 0.25 mm`, which is under-resolved for it.** The
-  upstroke spans about 1.9 mesh cells where monodomain practice wants 5-10. The
-  card says so, and the machinery refuses rather than absorbing it: loading
-  `courtemanche_control` against any other `geometry.dr_mm` raises, because the
-  reference conduction velocity it solves through was measured at that pitch.
+`examples/synthegm_courtemanche.yaml` is the runnable version of all of this.
+
+#### The mesh is coupled to the card, and only half of that is enforced
+
+Both Courtemanche cards are solved at **`dr = 0.10 mm`**, and using them means
+setting `geometry.dr_mm: 0.1` **and** `run.dr_model_units: 0.1` — the latter
+defaults to the Aliev-Panfilov 0.25 and is a hard error if it disagrees with
+the geometry, because Courtemanche's diffusion is in mm²/ms and its space unit
+therefore *is* the millimetre.
+
+The pitch itself is a softer coupling, and there are **two separate reasons**
+for it. They matter in different ways:
+
+- **Mechanical.** The card's conduction-velocity anchor was measured at
+  0.10 mm. Run it at another pitch and the solve borrows the nearest registered
+  anchor, absorbs the mismatch into `diffusion`, and **still hits its velocity
+  target** — so nothing about the output looks wrong. It warns on the console
+  and writes `model_anchor_substituted` into the bank's backend params, but it
+  does not stop. (It used to stop; blocking made `backend.model` unreadable
+  without `geometry.dr_mm`, which is a cross-section rule that belongs in a
+  tool of its own rather than in a card loader.)
+- **Physical, and this is why the warning is worth reading.** At 0.25 mm
+  Courtemanche's ~0.59 ms upstroke spans about **1.9 mesh cells** against the
+  ~5 it needs, and the propagated `dV/dt` max reads **10.5 % high** — 131.1 V/s
+  against a converged 118.7. Conduction velocity at a fixed diffusion moves
+  7.4 % between a 0.25 mm mesh and a 0.05 mm one. The convergence curve is in
+  `intracardiac-platform/project/investigations/courtemanche_calibration.md`.
+
+The second is the reason the first is not merely bureaucratic: a borrowed
+anchor makes the run **succeed**, at a velocity that matches its target, with
+an upstroke that is 10 % wrong. Nothing downstream can tell.
+
+Two other costs worth knowing:
+
+- **They are far more expensive than Aliev-Panfilov.** 21 state variables and
+  gating exponentials per node against 2, and the finer mesh costs **≈14.5×**
+  the solver work per simulation on top of that: 6.25× the nodes, and a 2.33×
+  smaller timestep. (Not the 39× a `dt ∝ dr²` estimate gives — at 0.25 mm the
+  step was set by the sodium current's 0.02 ms ceiling, not by the diffusion
+  bound's 0.0597, so refining only pays the quadratic penalty over part of the
+  range.)
+- **`af_remodelled_220ms`, the Aliev-Panfilov card, is still at `dr = 0.25`.**
+  Comparing it against either Courtemanche card therefore compares two meshes as
+  well as two membranes. That is an open question, not a settled design.
 
 #### Retired keys — these error rather than being ignored
 
