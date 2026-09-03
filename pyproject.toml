@@ -108,7 +108,11 @@ Issues        = "https://github.com/myocard-labs/synthetic-egm-pipeline/issues"
 Organization  = "https://github.com/myocard-labs"
 
 [project.scripts]
-synthegm-generate-dataset = "myocard_synthetic_egm_pipeline.cli.generate_dataset_cmd:main"
+# Points at the launcher, NOT at generate_dataset_cmd, and that indirection is
+# load-bearing: numba sizes its thread pool when it is imported, so a cap read
+# from the config can only take effect if the config is read before the command
+# module (and through it, finitewave and numba) is imported at all.
+synthegm-generate-dataset = "myocard_synthetic_egm_pipeline.cli._launch:main"
 synthegm-mix              = "myocard_synthetic_egm_pipeline.cli.mix_cmd:main"
 
 # ---------------------------------------------------------------------------

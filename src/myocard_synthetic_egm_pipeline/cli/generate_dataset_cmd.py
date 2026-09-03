@@ -46,6 +46,7 @@ from myocard_synthetic_egm_pipeline.cli._config import (
     load_yaml,
 )
 from myocard_synthetic_egm_pipeline.mixer import mix_classifier_bank
+from myocard_synthetic_egm_pipeline.resources import apply_thread_limits
 from myocard_synthetic_egm_pipeline.simulate import (
     DatasetConfig,
     DatasetResult,
@@ -177,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
     show_progress = cfg.show_progress and not args.no_progress
 
     try:
+        # Applied BEFORE the first simulation, and reported. A cap that is
+        # merely requested is worth nothing, so what is printed is what numba
+        # says it is doing, not what the config asked for.
+        applied = apply_thread_limits(cfg.resources)
+        print(applied.describe())
+
         # Phase 1 backend is finitewave by config validation. When new
         # backends land, dispatch on cfg.backend_type here.
         backend = FinitewaveBackend()

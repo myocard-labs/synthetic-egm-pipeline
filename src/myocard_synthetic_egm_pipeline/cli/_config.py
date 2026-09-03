@@ -53,6 +53,7 @@ from myocard_synthetic_egm_pipeline.constants import (
 )
 from myocard_synthetic_egm_pipeline.ids import validate_artifact_id
 from myocard_synthetic_egm_pipeline.mixer import DEFAULT_SNR_DB_RANGE, MixerConfig
+from myocard_synthetic_egm_pipeline.resources import ResourceLimits
 from myocard_synthetic_egm_pipeline.simulate import (
     EDGES,
     Edge,
@@ -213,6 +214,26 @@ def _build_geometry(doc: dict[str, Any]) -> GeometrySpec:
             _optional(block, "anisotropy_ratio", default=DEFAULT_ANISOTROPY_RATIO)
         ),
     )
+
+
+def _build_resources(doc: dict[str, Any]) -> ResourceLimits:
+    """Construct :class:`ResourceLimits` from the optional ``resources:`` block.
+
+    Absent block means unlimited, which is what every config written before this
+    existed meant, so adding the block changed no run.
+    """
+    block = _optional(doc, "resources", default={}) or {}
+    raw = _optional(block, "max_threads", default=None)
+    if raw is None:
+        return ResourceLimits()
+    try:
+        max_threads = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"resources.max_threads must be an integer; got {raw!r}.") from exc
+    try:
+        return ResourceLimits(max_threads=max_threads)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _build_label_policy(doc: dict[str, Any]) -> LabelPolicy:
@@ -716,6 +737,11 @@ class GenerateDatasetCLIConfig:
     # Backend choice
     backend_type: BackendType
 
+    # Process resource caps. Not a strategy spec and not a RunConfig knob: it
+    # changes how fast the run goes and nothing about what it produces, so it
+    # has no business travelling with the physics.
+    resources: ResourceLimits
+
     # Strategy specs / per-sim sampling
     geometry: GeometrySpec
     fibrosis_density_range: tuple[float, float]
@@ -1007,6 +1033,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         master_seed=master_seed,
         show_progress=show_progress,
         backend_type=backend_type,
+        resources=_build_resources(doc),
         geometry=geometry,
         fibrosis_density_range=density_range,
         fraction_healthy=fraction_healthy,
