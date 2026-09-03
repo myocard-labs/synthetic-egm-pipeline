@@ -1400,19 +1400,32 @@ published axis via a severity scalar `s ∈ [0,1]`, swept once until measured AP
    ≈ 0.59 ms ⇒ a wavefront ≈ 0.47 mm wide ⇒ **1.9 cells** at today's `dr`. Monodomain practice wants
    5–10. **A CV-solve will absorb the discretisation error into `diffusion` and hit the target
    anyway**, leaving a physical-looking number that is not — the same shape as S38b's measured
-   "CV ran 8 % high at D ≈ 10". Cost is **f⁴**, not f²: refining by f costs f² nodes *and* f²
-   timesteps, since holding CV forces `D ∝ f²` which tightens the stability bound equally.
+   "CV ran 8 % high at D ≈ 10".
 
-   | `dr_mm` | grid | cells across the upstroke | mesh cost |
-   |---|---|---|---|
-   | 0.25 (today) | 160² | 1.9 | 1× |
-   | 0.10 | 400² | 4.7 | **39×** |
-   | 0.05 | 800² | 9.4 | 625× |
+   > **⚠ SUPERSEDED BY MEASUREMENT (S20, 2026-09-03). The cost figures this block originally
+   > carried were wrong by 3–9×.** They are corrected below rather than deleted, because the
+   > *reasoning* that produced them is the part worth not repeating.
+   >
+   > The claim was **f⁴**: refining by `f` costs `f²` nodes *and* `f²` timesteps, giving
+   > **39×** at 0.10 mm and **625×** at 0.05 mm, hence *"roughly 400–1200× an AP simulation"*.
+   > **Two independent errors, compounding:**
+   >
+   > 1. **The `f²` on timesteps did not happen.** At `dr = 0.25` the step was already pinned by
+   >    the sodium current's 0.02 ms ceiling, not by the diffusion bound's 0.0597 — so refining
+   >    pays the quadratic penalty over only part of the range. Measured: 6.25× nodes, 2.33×
+   >    smaller step, **≈14.5×**, not 39×.
+   > 2. **It was the wrong comparison anyway.** `f⁴` describes refining *one* model's mesh.
+   >    AP-at-0.25 versus CRN-at-0.1 is a different question, because each model solves its own
+   >    step from its own diffusion and Courtemanche's is the larger. Measured: **7.46×**.
+   >
+   > With the measured per-node membrane factor of **21–23×** (the 10–30× estimate was sound),
+   > the solver-side product is **≈157×**. Method, machine and assertion bands in
+   > `project/benchmarks.md`.
 
-   With CRN's per-node cost over AP (21 state variables and gating exponentials vs 2) this is
-   **roughly 400–1200× an AP simulation** at `dr = 0.1`. **Daniel's call, 2026-08-16: proceed
-   anyway** — a desktop and an overnight run cover it, and a capability that is expensive to run
-   beats not having it. SEP5 needs *one good* CRN bank for a comparison, not a corpus.
+   **Daniel's call, 2026-08-16: proceed anyway** — a desktop and an overnight run cover it, and a
+   capability that is expensive to run beats not having it. SEP5 needs *one good* CRN bank for a
+   comparison, not a corpus. **That ruling was made against the 400–1200× figure and is only more
+   comfortable at 157×.**
    **Note the useful coupling already in place:** a card records the `dr` it was solved at and
    `verify_targets_against_solve` re-solves on every load, so a card authored at `dr = 0.1` and
    loaded against `geometry.dr_mm: 0.25` **raises**. Under-resolution cannot happen silently through
@@ -1802,8 +1815,8 @@ message, a config example and docs; nothing that can move a number, per the cade
 - **Change:** the two **measurements** CL-180 asks for, then the card they produce.
   **(a) Mesh convergence** — sweep `dr` on a **1D strip, not the 40 mm patch**; CV and dV/dt max
   versus `dr`, continued until both plateau. Pick the coarsest `dr` on the plateau and record the
-  curve. A strip is cheap and answers the same question, so the 39–625× patch cost is paid once for
-  the shipped card rather than once per candidate `dr`.
+  curve. A strip is cheap and answers the same question, so the refinement cost is paid once for the
+  shipped card rather than once per candidate `dr`.
   **(b) The cAF severity sweep** — single cell, no mesh at all, so it is nearly free: sweep
   `s ∈ [0,1]` over **three** conductances until measured APD90 = 220 ms —
 
@@ -1932,7 +1945,7 @@ as "the helper sets D_al" — true about the code, and previously insufficient.
 describes a configuration nobody can use.** It says "at the v1 geometry (40 mm, dr 0.25 mm →
 160×160)" — but S18c moved Courtemanche's calibration mesh to **0.1 mm**, and its cards refuse to
 solve honestly at 0.25. A like-for-like 0.25-vs-0.25 comparison would understate the real cost by
-roughly the 39× mesh factor and would be quietly meaningless.
+the **7.46×** mesh factor between the two operating points, and would be quietly meaningless.
 
 **The comparison that matters is each model at the pitch it is actually run at:**
 Aliev–Panfilov at `dr = 0.25` (160×160) against Courtemanche at `dr = 0.1` (400×400). That is not
@@ -1942,9 +1955,9 @@ factor and the per-node membrane factor separately, so a later reader can tell h
 is the ionic model and how much is the resolution its upstroke demands.
 
 **This is the number the project has been estimating and should stop estimating.** It has been
-recorded as an explicit estimate twice — the "roughly 400–1200× an AP simulation" figure carries an
+recorded as an explicit estimate twice — the "roughly 400–1200× an AP simulation" figure carried an
 UNVERIFIED marker in the Courtemanche investigation, because the per-node factor was never measured
-and AP wall-clock was never taken. **Three open decisions consume it:** the simulator-backend
+and AP wall-clock was never taken. **Both are now measured: the estimate was 3–9× too pessimistic.** **Three open decisions consume it:** the simulator-backend
 re-evaluation, the AP/Courtemanche tiering question (Aliev–Panfilov for routine generation,
 Courtemanche only for studies that need it), and the §8 data plan. It is worth more now than when
 the entry was written.

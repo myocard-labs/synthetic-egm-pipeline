@@ -66,8 +66,14 @@ jobs:
       # equivalence check -- so CI must not inherit that deselection, or the
       # gate silently never runs. finitewave is a hard runtime dep, so the
       # only added cost is the tests themselves.
+      #
+      # `not benchmark` is belt and braces. Benchmarks are not slow-marked, so
+      # nothing should match both -- but this selector is the one place a
+      # double-marked test could leak into CI, and a wall-clock assertion on a
+      # shared runner would fail for reasons that have nothing to do with the
+      # change under test.
       - name: Run pytest (slow — real Finitewave backend)
-        run: pytest -m slow
+        run: pytest -m "slow and not benchmark"
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.12'

@@ -1314,7 +1314,9 @@ def test_the_shipped_courtemanche_example_config_agrees_with_the_shipped_card() 
 #: on a small patch, where the wave is still accelerating, and the along-fibre
 #: figure duly reads 83.5 cm/s at 6 mm, 82.2 at 12 and 81.2 at 40. A *ratio* is
 #: not, because both runs are displaced by the same factor: measured 2.0467 at
-#: 6 mm against 2.0500 at 12 mm, 0.16 % apart. So extent is free to choose here
+#: 6 mm, 2.0500 at 12 mm and 2.0501 at 20 mm — the last two agree to four
+#: figures, so the sequence has converged rather than merely been sampled
+#: twice. So extent is free to choose here
 #: in a way it is not for :func:`measure_conduction_velocity`, and it is chosen
 #: on two grounds: 12 mm is what the Aliev-Panfilov anisotropy test uses, so
 #: the two models' realized ratios are read over the same tissue and the same

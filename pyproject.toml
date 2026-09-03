@@ -202,10 +202,20 @@ addopts = [
   # The suite runs against a MockBackend and finishes in ~1 s; the handful
   # of tests that spin up the real Finitewave solver are opt-in so that
   # stays true. Run them with `pytest -m slow`.
-  "-m", "not slow",
+  #
+  # `benchmark` needs its own exclusion and is NOT covered by "not slow".
+  # Benchmarks are not slow-marked -- deliberately, because double-marking is
+  # the leak path: CI runs the slow suite, and a test carrying both markers
+  # would ride in on the marker it was not excluded by. So each selector names
+  # both, here and in ci.yml.
+  "-m", "not slow and not benchmark",
 ]
 markers = [
   "slow: exercises the real Finitewave backend (seconds, not milliseconds)",
+  # Wall-clock measurement, not a correctness gate. Run by hand when
+  # benchmarking and before a PR that could move the numbers; NEVER in CI,
+  # where a shared runner's timing says nothing about this code.
+  "benchmark: measures runtime cost; run manually, never in CI",
 ]
 filterwarnings = [
   "error",
