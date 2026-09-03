@@ -2,9 +2,16 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 33/48 steps done — **Wave 1 complete; Wave 2 underway**
-(S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps = 48; **S17 absorbed by S38c**, which
+**Status:** in progress · **Progress:** 35/49 steps done — **Wave 1 complete; Wave 2 underway**
+(S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps and S22b = 49; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
+**Execution order note (Daniel, 2026-09-03):** **SEP7 — the point stimulus and `s1s2` (S34–S35) —
+and the deferred fibre-angle sampling move AHEAD of the remaining Wave-2 items.** Not for realism:
+they convert activation direction from a four-valued jump into a continuum, which lowers the
+within-θ noise floor the estimator's emulator has to see through, and they need to land before the
+design bank is generated. Step numbers are labels, not sequence positions — S37–S42 are already out
+of numeric order — so nothing is renumbered.
+
 **Next:** **S20** — the Courtemanche wall-clock characterisation, rescoped: the timing must be
 taken at **`dr` = 0.1 mm**, the pitch its cards are actually solved at, not the 0.25 the entry was
 written against. That number is the one input still missing from the backend re-evaluation and the
@@ -2030,13 +2037,135 @@ the entry was written.
 > swap — the GP-emulator design-bank layout, per-cell N-tagging, real LHS infrastructure — that is
 > the signal to flag it and split into SEP11a/SEP11b. Default stays single.
 
-### S22 — `TunedParam` path resolution (SEP11) ☐ (2–4 h)
-- **Change:** a resolver that reads and writes a config value by its θ-spec `path`
-  (`substrate.density`, `cell_model.courtemanche.params.gcal`, `backend.diffusion`, `mixer.snr_db`)
-  against the spec objects. This is what makes θ membership a per-sweep choice with zero contract
-  churn — and what keeps the harness θ-spec-agnostic.
-- **Verify:** get/set round-trip for every 1.5-reachable path; a clear error on an unknown path.
-- **Depends on:** S10 (+ S18 for the cell-model paths).
+### S22 — `TunedParam` path resolution (SEP11) ✅ *as briefed* (2–4 h)
+- **Change:** a resolver that reads and writes a config value by its θ-spec `path` against the spec
+  objects. This is what makes θ membership a per-sweep choice with zero contract churn — and what
+  keeps the harness θ-spec-agnostic.
+
+**This step defines the grammar, and the contract says so explicitly.** `TunedParam.path` is
+*"DELIBERATELY UNCONSTRAINED: no pattern, no enum, no grammar — resolving a path against a config is
+a resolver's job, and both the resolver and a formal path grammar are deferred … guessing the
+grammar now, before anything resolves one, would bake in a shape nothing has tested."* This is that
+resolver. Constraining the schema afterwards is additive, so the grammar we ship here is the one the
+contract will eventually record.
+
+**Three of this entry's four original example paths were wrong — corrected 2026-09-03:**
+
+| entry said | reality |
+|---|---|
+| `substrate.density` | ✅ correct |
+| `cell_model.courtemanche.params.gcal` | ❌ no `courtemanche` segment, and the key is `g_CaL_scale`. The contract's own example is **`cell_model.params.g_CaL_scale`**, which matches the scaling registry |
+| `backend.diffusion` | ❌ diffusion is not a backend knob any more — it moved onto the cell model and is **solved from a card** |
+| `mixer.snr_db` | ⚠ **categorically outside** the per-simulation config that paths resolve against — see below |
+
+- **The trap: some reachable fields are DERIVED, and writing them corrupts the bank.** A card records
+  its solved values and **re-verifies them on every load**. A sweep that writes `cell_model.diffusion`
+  or `cell_model.time_unit_ms` directly would produce a bank whose card claims one parameterisation
+  and whose physics is another — precisely the failure the card system exists to prevent, arriving
+  through a new door. **The resolver must distinguish chosen knobs from derived ones and refuse to
+  write a derived one**, naming the target to sweep instead: conduction velocity, not diffusion.
+  `substrate.density` is chosen and free; `cell_model.diffusion` is not.
+- **Open, and not this step's to decide: can θ point outside the per-simulation config?** The
+  contract says a path is a *"dotted pointer into the per-simulation config"*, and the mixer is not
+  part of it — SNR is a per-**trace** column, not a per-simulation function. SNR is a legitimate
+  thing to sweep, so either the resolver grows a second root and the contract's wording needs
+  revisiting, or SNR is swept by some other mechanism. **Surface it; do not quietly pick one.**
+- **Not every knob is numeric.** `activation.edge` is a categorical `Edge` string. The resolver must
+  get and set it without assuming float — a sampler over it is a different thing from a range, which
+  is S23's problem, but the resolver must not foreclose it.
+- **Verify:** get/set round-trip for every reachable path, enumerated from the spec objects rather
+  than from a hand-written list that can drift; a clear error naming the path on an unknown one; a
+  **refusal, with the alternative named**, on a derived field; a categorical path round-trips.
+- **Depends on:** S10, S18b.
+
+### S22b — The `targets` root, and the two roots CL-185 added ✅ (4–6 h)
+
+**S22 shipped the resolver's core against the per-simulation specs; research ruled on the roots
+afterwards.** Its `ROOTS` are the five `SimulationSpecs` fields, and derived-field refusal is decided
+**mechanically** — a field is derived if a calibrator emits it — rather than from a deny-list, so it
+cannot drift and it fails safe. That part needs no rework. Three additions:
+
+**1. A `targets` root that re-solves (CL-185, Option 1).** `cell_model.targets.conduction_velocity_cm_s`
+resolves by setting the target and re-running the calibration, so every sweep point gets a correctly
+solved card and the card invariant holds. Chosen over per-point card files **because the GP emulator
+needs θ as a continuous numeric vector** — a card *name* is categorical, the GP cannot interpolate
+along it, and that is exactly the axis the estimator exists to search. Also the grammar that survives
+simulator-in-the-loop, which the backend re-evaluation may pull forward.
+
+**A θ write can therefore fail on the stability bound — and that is the feature.** It makes the
+target space's infeasible regions explicit instead of surfacing them as diverged banks.
+**Rider, and it is not optional: record failed design cells as explicit infeasible points, never
+drop them.** A silently-skipped cell fits the emulator on a biased subset of the design and leaves
+it unable to see the boundary at all. Cost is a non-issue — the re-solve runs once per design cell,
+not once per proposal.
+
+**2. A mixer root, because SNR is a calibrated parameter and the estimator needs it.** The design
+already lists SNR among what the estimator calibrates, so a θ that cannot address it makes that part
+unimplementable — a capability gap, not a wording one. **Address the mixer's distribution, not the
+per-trace column.** The invariant CL-185 names is general and worth stating once: **θ addresses
+distribution parameters; banks record realized samples.** Target CV → solved diffusion → realized
+per-trace velocity; height *range* → sampled per-simulation height; SNR *range* → sampled per-trace
+value. The contract's "per-simulation config" is narrow by one word — it wants to be *the generation
+config*.
+
+**3. `activation.edge` stays out of the sampler.** Sweeping it **inverts its purpose**: the edge is
+randomised precisely so activation direction cannot become a shortcut feature, and a swept edge
+gives each bank one fixed direction, reinstating the shortcut.
+
+> **Amended 2026-09-03.** This bullet used to say get/set was "already built and is wanted, for
+> reproducibility and for a deliberate direction-sensitivity study". **Writes are now refused** —
+> `activation` is one of the three roots `_sample_specs` rebuilds every simulation, so a write was
+> discarded before the backend saw it. Neither use is lost: reproducibility is a **read**, which
+> still works, and a fixed-direction study is what `activation.fixed_edge` does in the dataset
+> config, at the level where it survives. The refusal names it. **A wanted write that gets silently
+> discarded is not a capability.**
+
+- **~~Needs a decision — the role tag~~ RESOLVED 2026-09-03: no contracts change, the field already
+  exists.** `TunedParam.role` has been in the schema since v0.6.0 with
+  `enum: ['label_param', 'nuisance']`, and its wording is exactly right — *"'label_param' … the thing
+  the classifier is meant to detect; 'nuisance' … a realism knob the estimator calibrates and the
+  classifier should ideally be invariant to."* Research recommended adding it and this chat relayed
+  that without checking the schema past the `path` property. **S23's sampler reads `role` off the
+  θ-spec; nothing is blocked.**
+  - **What Daniel's ruling changes is usage, not schema:** density is tagged `nuisance`, not
+    `label_param`. The field's own wording supports it — a `label_param` is *"the thing the
+    classifier is meant to detect"*, and the estimator's study has no classifier in it.
+  - **The third category needs no tag either.** Sim-varying and trace-varying values — the fibrosis
+    map, the edge, the seed, the noise segment, and the realized draw of every calibrated range —
+    are **not `TunedParam`s at all**. They are recorded in the per-simulation config and the
+    per-trace columns, both of which already exist. The distinction is presence versus absence. The
+    earlier "θ has three roles the spec cannot express" framing manufactured the problem by treating
+    unswept variation as *a kind of θ entry*.
+  - **Two other existing fields bear on the deferred sweep pass:** `bounds` is documented as *"the
+    sweep range, and the emulator's input domain"*, and `nominal` as *"the value this knob is pinned
+    to when it is NOT part of the active sweep"*, which makes a one-at-a-time screen self-describing.
+- **Sequencing constraint on the phase, from CL-185.** Direction is high-leverage — bipolar amplitude
+  varies by a factor of ρ between parallel and perpendicular. With four discrete edges and a fixed
+  fibre angle, within-θ variation is **lumpy**, inflating each design cell's variance and degrading
+  the GP fit. The point stimulus and fibre-angle sampling make direction *continuous* and smooth it.
+  **Both should land before the estimator's design bank is generated** — they are already ordered
+  ahead of the post-code data stage, so this is a constraint to preserve rather than one to fix.
+- **What "within-θ" is, concretely, in this codebase** (Daniel asked, 2026-09-03 — it is the least
+  obvious of the three roles and has the most practical consequence). Everything that still varies
+  with θ held fixed: **per simulation** the fibrosis *pattern* at a given density, the stimulus edge,
+  the electrode height drawn from its range, and the seed; **per trace** the activation position, the
+  SNR drawn from its range, and which noise segment is mixed in and where. Two sub-kinds —
+  *realized draws of distributions θ names* (height, SNR: θ owns the range, the draw is within-θ,
+  which is simply the other half of CL-185's invariant) and *randomisations with no θ parameter at
+  all* (fibrosis map, edge, noise segment, seed — nothing to search, recorded so a run reproduces).
+- **Why it matters: within-θ variation is the emulator's noise floor.** Each design cell's distance
+  is computed over traces differing by all of the above, so this variation *is* the scatter the GP
+  must see through. It cannot be reduced by searching — only by averaging more traces per cell or by
+  making the variation smoother. That is exactly why the four-valued edge is a problem and why a
+  point stimulus plus fibre-angle sampling help: they replace a jump with a continuum.
+- **⚠ A θ write to `substrate.density` is currently a SILENT NO-OP.** `dataset.py` draws
+  `density = sim_rng.uniform(lo, hi)` per simulation, so density is *structurally* a within-θ draw
+  while being *semantically* the label axis — and `_sample_specs` will overwrite anything the
+  resolver sets on the substrate spec. **S23's harness must bypass the per-simulation draw for any
+  path θ addresses**, or the sweep silently generates the same design cell repeatedly. This is the
+  most concrete argument for the role tag: the label/within-θ ambiguity is already in the code, not
+  merely in the vocabulary.
+- **Depends on:** S22. **Blocks:** S23's sampler, on the role tag.
 
 ### S23 — Sweep harness + pluggable sampler + OAT sampler + `sweep:` config (SEP11) ☐ (4–6 h)
 - **Change:** the harness — a `Sampler` Protocol producing a design matrix over the knob list, and

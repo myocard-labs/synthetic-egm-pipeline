@@ -355,6 +355,42 @@ of two unrelated tissues.
 
 `examples/synthegm_courtemanche.yaml` is the runnable version of all of this.
 
+#### Sweeping a conductance leaves every registered anchor behind
+
+**Read this before designing a conductance sweep, not while running one.**
+
+A Courtemanche card's `diffusion` is solved by inverting `CV ∝ √D` through a
+*measured* reference point — an anchor, recorded for one membrane at one mesh
+pitch. Two are registered: control, and the shipped AF remodelling. Both were
+measured.
+
+A conductance scaling is an **input** to that calibration, so changing one
+changes the solved diffusion; the card cannot keep its old value beside a
+membrane it was not solved for. But the re-solve then has no measured anchor for
+the new membrane, and falls back to the nearest registered one. So:
+
+> **Every point of a conductance sweep is solved through a borrowed anchor, and
+> its conduction-velocity calibration is approximate throughout — not only at
+> the extremes.**
+
+It is not an edge effect that a careful sweep range avoids. A sweep of
+`g_CaL_scale` over ten values is ten membranes, of which at most one has a
+measured anchor. Each solve still hits its CV *target* by construction, so
+nothing in the output looks wrong; what is unknown is how far the realized
+velocity sits from that target for each membrane.
+
+The runtime warning names it every time, and `model_anchor_substituted` is
+written into each bank's provenance, so a sweep is auditable after the fact. The
+options, in order of cost:
+
+- **Accept it, and say so in the write-up.** Defensible when the sweep is about
+  relative change across the axis rather than about absolute conduction velocity.
+- **Measure an anchor for the membranes you sweep** and add them to
+  `CRN_REFERENCES`. Exact, and it costs one solver run per membrane.
+- **Sweep something else.** If the question is really about conduction velocity,
+  sweep the CV target directly — that axis has measured anchors at both ends and
+  no anchor substitution at all.
+
 #### The mesh is coupled to the card, and only half of that is enforced
 
 Both Courtemanche cards are solved at **`dr = 0.10 mm`**, and using them means

@@ -358,6 +358,44 @@ class CenteredGrid2D:
 
         rng = rng if rng is not None else np.random.default_rng()
         height_mm = float(rng.uniform(lo, hi))
+        return cls.at(
+            geometry=geometry,
+            n_rows=n_rows,
+            n_cols=n_cols,
+            spacing_mm=spacing_mm,
+            height_mm=height_mm,
+        )
+
+    @classmethod
+    def at(
+        cls,
+        *,
+        geometry: Patch2DGeometry,
+        n_rows: int = DEFAULT_ELECTRODE_GRID_ROWS,
+        n_cols: int = DEFAULT_ELECTRODE_GRID_COLS,
+        spacing_mm: float = DEFAULT_ELECTRODE_SPACING_MM,
+        height_mm: float = DEFAULT_ELECTRODE_HEIGHT_MM_RANGE[0],
+    ) -> CenteredGrid2D:
+        """Build a grid at an **explicit** height, drawing nothing.
+
+        :meth:`sample` is this with the height drawn first. Split apart because
+        ``positions_mm`` is the only thing the backend actually reads —
+        ``height_mm`` is a record of what produced it — so anything that changes
+        the layout has to rebuild the positions rather than edit the scalar
+        beside them. ``dataclasses.replace(grid, height_mm=...)`` produces an
+        object whose recorded height and actual electrode geometry disagree, and
+        nothing downstream would notice.
+
+        That is why this is a constructor rather than a setter: there is no
+        supported way to change one of these fields without recomputing the
+        others, so the only offered route recomputes them all.
+        """
+        if n_rows < 1 or n_cols < 2:
+            raise ValueError("Need n_rows >= 1 and n_cols >= 2 to form bipolar pairs.")
+        if spacing_mm <= 0:
+            raise ValueError("spacing_mm must be positive.")
+        if height_mm <= 0:
+            raise ValueError("height_mm must be positive.")
 
         # Centre the grid on the patch in (x, y) mm.
         grid_w_mm = (n_cols - 1) * spacing_mm
