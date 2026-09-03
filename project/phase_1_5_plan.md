@@ -2,7 +2,7 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 32/48 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 33/48 steps done — **Wave 1 complete; Wave 2 underway**
 (S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps = 48; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
 **Next:** **S20** — the Courtemanche wall-clock characterisation, rescoped: the timing must be
@@ -1939,7 +1939,38 @@ as "the helper sets D_al" — true about the code, and previously insufficient.
   tensor and the mesh pitch, not of the patch extent, so it does not need 40 mm to be measurable.
 - **Depends on:** S18c.
 
-### S20 — Courtemanche runtime characterization + docs (SEP5) ☐ (3–5 h)
+### S20 — Courtemanche runtime characterization + docs (SEP5) ◐ **PARTIAL** (3–5 h)
+
+**Shipped 2026-09-03:** the `benchmark` marker and its CI exclusion, the harness
+(`tests/test_benchmarks.py`), `project/benchmarks.md` with methodology, the measured membrane factor
+(**21–23×**) and mesh factor (**7.46×**), Aliev–Panfilov operational cost on the laptop, and the
+two-repo sweep replacing the superseded 400–1200× estimate with a measured ≈157× solver-side.
+
+**Still outstanding — do not mark complete:**
+1. **The Courtemanche operational row is `*pending*`** in `benchmarks.md`. This is the number the
+   step exists for: the backend re-evaluation and the AP/Courtemanche tiering decision both consume
+   it, and both are currently reasoning from the corrected *solver-side* product rather than a
+   measured per-simulation cost.
+2. **No timing table or pointer in `docs/simulation_theory.md`.** The theory doc still says nothing
+   about what either model costs to run.
+3. **Nothing measured on the desktop**, which is the machine an overnight generation run would
+   actually use — so every projection is a lower bound rather than a plan.
+
+**Also superseded and not yet re-derived:** the earlier "about half an AP simulation is electrogram
+tracking and setup" split, and the ≈75× operational prediction built on it, both used the 12.6 ns
+figure that the fixed-setup correction replaced. Neither was ever written down as fact, so this is
+*do not recreate them from the old input*, not an unwind. Recompute from the harness.
+
+**Closure plan (Daniel, 2026-09-03):** kick off `pytest -m benchmark -s` at end of day so the
+Courtemanche row is waiting in the morning, then close S20 first thing — fill the row, recompute the
+two derived quantities, write the theory-doc table and pointer, mark ✅. **The desktop row is
+explicitly NOT a blocker**: it is recorded as NOT MEASURED with every projection labelled a lower
+bound, and holding a step open for an unscheduled measurement is how it stays open forever.
+
+**One interaction to watch:** S21 caps thread counts, and the 429 ms fixed cost this harness
+measures *is* thread-pool spin-up. If S21 lands before the benchmark is re-run, the recorded numbers
+describe a different threading configuration than the one shipping. Either run the benchmark first
+(the plan above) or re-run it after S21 — do not mix.
 
 **Rescoped 2026-08-25. Measuring what this entry originally asked for would produce a number that
 describes a configuration nobody can use.** It says "at the v1 geometry (40 mm, dr 0.25 mm →
@@ -1979,7 +2010,7 @@ the entry was written.
   and it also feeds the tiering decision, which is not this repo's to make.
 - **Depends on:** S19.
 
-### S21 — Resource / CPU cap (B12) ☐ (2–4 h)
+### S21 — Resource / CPU cap (B12) ✅ (2–4 h)
 - **Change:** a `resources:` config block capping worker / BLAS thread counts so a long generation
   run doesn't redline the laptop. Pairs with S20 — Courtemanche runs are exactly when this bites.
 - **Verify:** thread caps observably applied; a capped run completes with the same output as an

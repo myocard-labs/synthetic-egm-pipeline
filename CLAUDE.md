@@ -6,13 +6,29 @@ reproducibility and honest provenance outrank convenience everywhere below.
 
 ## Verify before claiming
 
-**The fast gate runs on every change. Never report work as done without it.**
+**While iterating, run the test modules covering what you changed.**
+
+```
+pytest -q tests/test_<module>.py && ruff check . && mypy
+```
+
+Test modules are named after the modules they cover — `probe.py` → `test_probe.py` — so the
+selection is mechanical, not a judgement call. When a change touches a shared type
+(`SimulationResult`, a spec Protocol, a card), the blast radius is wider than the filename
+suggests: name the modules you ran and why.
+
+**Before handing work back, run the whole fast gate.**
 
 ```
 pytest -q && ruff check . && ruff format --check . && mypy
 ```
 
-Seconds. There is no excuse for skipping it.
+**Why this is now two tiers rather than one.** The fast suite is 361 cases across 19 files and is
+heavy enough to redline a laptop, which made running it on every edit a real drag on the work —
+`pyproject.toml` still describes it as finishing "in ~1 s", which was true once and stopped being
+true without anyone noticing. Targeted selection is the stopgap. **It is not a licence to skip the
+full gate**, which is the only thing that catches cross-module breakage, and which no amount of
+per-module confidence substitutes for.
 
 **The slow suite is a different decision, because it costs 30+ minutes.**
 

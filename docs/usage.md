@@ -152,6 +152,11 @@ backend:
   model: af_remodelled_220ms               # default; targets CV 80 cm/s, APD90 220 ms
   # model: courtemanche_control            # the human-atrial ionic model
 
+# Optional. Omit the whole block to leave the machine alone, which is what
+# every config written before this existed did.
+# resources:
+#   max_threads: 4                         # cap the solver; omit for no cap
+
 geometry:
   type: patch_2d                           # default 'patch_2d' (Phase 1: only option)
   size_mm: 40.0                            # default
@@ -292,6 +297,7 @@ Per-field reference:
 | `label_policy.type` | `global_density` / `local_density` | `global_density` | Label policy dispatch. |
 | `label_policy.threshold` | float | 0.1 | Density above which a trace is labeled fibrotic. |
 | `label_policy.radius_mm` | float | 2.0 | Used by `local_density` only. |
+| `resources.max_threads` | int >= 1 | omit = uncapped | Caps the solver's thread count so a long run leaves the machine usable. Applied through numba's runtime API before the first simulation, and the effective count is printed at start-up. Asking for more threads than the process has warns and uses the maximum rather than aborting a multi-hour run. **Does not change results** — see below. |
 | `run.trace_duration_ms` | float | 192.0 | Per-trace length **on disk** (T). Must give a sample count that is a multiple of 64 — rejected at config load otherwise, because egm-classifier's 1D MobileViT halves the sequence six times and an off-grid length fails outright at the first ragged stage rather than degrading. With `activation_position` set this is *not* how long the solver runs; see that block. |
 | `run.output_fs_hz` | float | 1000.0 | Output sample rate. Shared with IAFDB by decision, not coincidence — catch22 lag features depend on it — so changing it is a both-sides-or-neither call. |
 | `run.capture_oversample` | int >=1 | 4 | Backend captures at oversample × output_fs_hz. **Oversampling does not prevent aliasing** — it moves the capture Nyquist up and leaves everything between the two Nyquists to fold. The next key is what prevents it. |
@@ -391,6 +397,62 @@ Two other costs worth knowing:
 - **`af_remodelled_220ms`, the Aliev-Panfilov card, is still at `dr = 0.25`.**
   Comparing it against either Courtemanche card therefore compares two meshes as
   well as two membranes. That is an open question, not a settled design.
+
+#### Capping threads, and why the obvious way does not work
+
+A Courtemanche bank is tens of minutes per simulation and the generation loop is
+sequential, so a large run owns the machine for days. `resources.max_threads`
+gives some of it back.
+
+**Setting `OMP_NUM_THREADS` from a config file would do nothing.** That variable,
+and `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` with it, is read by the
+threading library *when it loads* — which happens on `import numpy`, long before
+any config file has been opened. Assigning it afterwards succeeds, sets the
+variable, changes nothing, and passes any test that reads the variable back. If
+you want a cap from outside the config, set it in the environment **before**
+starting python:
+
+```bash
+OMP_NUM_THREADS=4 synthegm-generate-dataset configs/mine.yaml
+```
+
+`NUMBA_NUM_THREADS` is the one that matters — numba **ignores**
+`OMP_NUM_THREADS` when sizing its own pool, so the variable most people reach
+for does nothing here.
+
+Inside the config, `resources.max_threads` works because the console script
+reads that one key *before* importing the solver, and sets `NUMBA_NUM_THREADS`
+from it. An explicit environment variable still wins. The start-up line reports
+what numba says, not what the config asked for, and the **maximum** is the
+number that tells you the cap really took hold:
+
+```
+threads: 2 (requested 2, process maximum 2)     <- capped: the pool itself is 2
+threads: 2 (requested 2, process maximum 8)     <- NOT capped: 6 threads still spin
+```
+
+The distinction is not pedantic. numba has a pool size, fixed at import, and a
+work assignment, settable at runtime. Limiting only the second leaves the other
+threads alive and — under the OpenMP layer — spinning, burning a core each
+while doing nothing. Capping to one thread that way measured **6.4 cores of
+load** on an 8-thread laptop while numba's own getter reported 1. Sizing the
+pool instead cut CPU time for a fixed amount of work from 67 s to 27 s.
+
+Consequently **the cap only works through the CLI.** Calling `generate_dataset`
+from your own script has already imported the solver, and no library call can
+shrink a pool that exists; set `NUMBA_NUM_THREADS` before importing the package
+if you need it there.
+
+**Only the solver's threads are capped.** BLAS is not, and this package does not
+depend on `threadpoolctl` in order to cap it — because a full simulation, with
+solver, electrogram tracking, bipolar pairing, band-limiting and cropping, makes
+**zero** BLAS calls. There is nothing there to cap.
+
+**A capped run produces bit-identical output to an uncapped one.** That is
+asserted, not assumed: the same seed at 1 thread and at the machine maximum must
+give exactly equal electrograms. Thread count is a performance knob and must be
+nothing else — if it ever changed a trace, every bank generated at any other
+thread count would be suspect.
 
 #### Retired keys — these error rather than being ignored
 
