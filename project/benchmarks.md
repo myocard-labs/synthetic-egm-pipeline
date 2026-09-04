@@ -100,8 +100,8 @@ below are obtained, and they are the reason the machine table exists.
 | ns per node-step, seconds per simulation | **recorded** | a fact about a machine as much as about this code; an assertion on one fails on any hardware it was not written on, and would then be widened until it meant nothing |
 | membrane factor, mesh factor | **asserted** | properties of the code and the cards rather than of the CPU, so they survive being carried to another machine |
 
-The membrane assertion band is **12–40×** around a measured 21–23×. That is wide
-on purpose — the laptop's own scatter is around 20 % and CPUs genuinely differ —
+The membrane assertion band is **12–40×**, against measurements of 21.3×, 23.2× and 29.0× across
+three sessions. That is wide on purpose — see the precision note below; the scatter is ~35 % —
 and its limits should be stated rather than assumed: it catches a kernel that
 became 3× slower (≈65×) or a Courtemanche that stopped being an ionic model
 (≈1×). **It would not catch a 50 % regression.** It is a gross-regression guard,
@@ -132,9 +132,34 @@ electrogram tracker, bipolar pairing, band-limiting and the crop.
 
 | machine | model | pitch | patch | grid | dt (ms) | capture (ms) | per sim |
 |---|---|---|---|---|---|---|---|
-| laptop | Aliev–Panfilov | 0.25 mm | 40 mm | 160² | 0.0102606 | 615 | **18.7 s** (18.7 / 23.9 / 25.3) |
-| laptop | Courtemanche control | 0.10 mm | 40 mm | 400² | 0.0086 | 615 | *pending* |
+| laptop | Aliev–Panfilov | 0.25 mm | 40 mm | 160² | 0.0102606 | 615 | **16.8 s** (16.8 / 16.8 / 23.3) |
+| laptop | Courtemanche control | 0.10 mm | 40 mm | 400² | 0.0086 | 615 | **2538 s ≈ 42 min** (2538 / 2713) |
 | desktop | either | — | — | — | — | — | **NOT MEASURED** |
+
+**Operational ratio: 151×.** Below the solver-side product (7.46 × 29.0 ≈ 216×), because the
+electrogram tracking and setup scale with node count but not with step count — so that overhead grows
+6.25× for Courtemanche while the solve grows far more. Direction as predicted; magnitude was not.
+
+**What it costs to actually generate.** Sequential loop, laptop:
+
+| | Aliev–Panfilov | Courtemanche |
+|---|---|---|
+| one simulation | 16.8 s | **42 min** |
+| 100-sim bank | 0.5 h | **70.5 h ≈ 2.9 days** |
+| a 5-knob × 3-level OAT screen (11 cells × 100 sims) | **5.1 h** | **776 h ≈ 32 days** |
+
+> **⚠ PROVISIONAL — laptop only.** The desktop is the machine a generation run would actually use
+> and has not been measured. Treat every figure here as an upper bound on time and draw no
+> conclusion about what Courtemanche can be used for until it has been run there.
+
+### Measurement precision — worse than the digits suggest
+
+The membrane factor has been measured three times on this machine: **21.3×, 23.2×, 29.0×** — a 35 %
+spread. The raw runs show why: three repetitions of the same 2000-step Courtemanche solve gave
+**55.03, 62.20 and 11.22 s**, a 5.5× spread within one measurement. Best-of-three recovers a usable
+slope, but **this hardware cannot resolve the ratio better than roughly ±30 %**, and any figure
+quoted from it to three significant figures is false precision. The 12–40× assertion band was
+correctly wide rather than lazily wide.
 
 Fastest of the repetitions is quoted, with all repetitions beside it. Other
 processes can only ever add time, so on a machine someone is also using the

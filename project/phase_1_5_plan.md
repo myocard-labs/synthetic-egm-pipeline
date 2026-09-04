@@ -2,7 +2,7 @@
 
 **Repo:** synthetic-egm-pipeline · **Phase:** 1.5
 **Phase design doc:** `intracardiac-platform/phases/phase_1_5/design.md`
-**Status:** in progress · **Progress:** 35/49 steps done — **Wave 1 complete; Wave 2 underway**
+**Status:** in progress · **Progress:** 37/49 steps done — **Wave 1 complete; Wave 2 underway**
 (S38 split into S38a/S38b/S38c, S16 into S16a/S16b and S18 into S18a/S18b/S18c, hence 46, plus S41 and S42 as local steps and S22b = 49; **S17 absorbed by S38c**, which
 does not reduce the total — it is a step accounted for, not a step deleted)
 **Execution order note (Daniel, 2026-09-03):** **SEP7 — the point stimulus and `s1s2` (S34–S35) —
@@ -1946,7 +1946,7 @@ as "the helper sets D_al" — true about the code, and previously insufficient.
   tensor and the mesh pitch, not of the patch extent, so it does not need 40 mm to be measurable.
 - **Depends on:** S18c.
 
-### S20 — Courtemanche runtime characterization + docs (SEP5) ◐ **PARTIAL** (3–5 h)
+### S20 — Courtemanche runtime characterization + docs (SEP5) ✅ (3–5 h)
 
 **Shipped 2026-09-03:** the `benchmark` marker and its CI exclusion, the harness
 (`tests/test_benchmarks.py`), `project/benchmarks.md` with methodology, the measured membrane factor
@@ -2167,7 +2167,7 @@ gives each bank one fixed direction, reinstating the shortcut.
   merely in the vocabulary.
 - **Depends on:** S22. **Blocks:** S23's sampler, on the role tag.
 
-### S23 — Sweep harness + pluggable sampler + OAT sampler + `sweep:` config (SEP11) ☐ (4–6 h)
+### S23 — Sweep harness + pluggable sampler + OAT sampler + `sweep:` config (SEP11) ✅ (4–6 h)
 - **Change:** the harness — a `Sampler` Protocol producing a design matrix over the knob list, and
   `generate_dataset` driven from that matrix instead of today's independent per-axis sampling
   (density uniform, edge uniform, height uniform). Ship `OATSampler` (per knob, a few levels with
@@ -2177,9 +2177,53 @@ gives each bank one fixed direction, reinstating the shortcut.
 - **Verify:** an OAT design varies exactly one knob per cell with the rest pinned at `nominal`; the
   no-sweep path is bit-identical to pre-SEP11 output at the same master seed; config tests cover the
   block + an unknown-sampler error.
-- **Depends on:** S22.
+
+**Reconciled 2026-09-03 — S22b changed what the harness can write.** The entry says
+`generate_dataset` is *"driven from that matrix instead of today's independent per-axis sampling
+(density uniform, edge uniform, height uniform)"*. Those three are exactly the values the resolver
+now **refuses to write**, because `_sample_specs` rebuilds `substrate`, `activation` and
+`electrodes` from the dataset config every simulation. **So the harness cannot drive them through
+the resolved specs, and its first job is to reach the distributions instead.**
+
+- **The missing roots.** `fibrosis_density_range` and `electrode_height_mm_range` live on
+  `DatasetConfig`, which is not in `TunableRun`. The mixer's `snr_db_range` already is. Widen the
+  bundle once more so every knob a design cell must set is reachable by a path — otherwise the
+  harness needs a side channel and the taxonomy leaks back out.
+- **Point-valued or range-endpoint? Decide per knob, and state why.** `bounds` is documented as
+  *"the sweep range, and the emulator's input domain"*, so a design cell picks a **point** in it and
+  a θ vector is scalars. But a knob whose realism includes its **spread** — SNR most obviously —
+  needs both endpoints as *two* θ dimensions, or every trace in a cell carries an identical value
+  while the real corpus has a distribution, and the cell's distance is dominated by that. S22b made
+  `mix.snr_db_range.low` and `.high` separately addressable for exactly this. Density and height
+  need the same call.
+- **Read `role` off the θ-spec; hard-code nothing.** `TunedParam.role` is
+  `label_param | nuisance` and already carries the distinction. A sampler that special-cases
+  parameter names is one that goes stale.
+- **`activation.edge` must not be sampled** (research, CL-185). Sweeping it inverts its purpose — the
+  edge is randomised so activation direction cannot become a shortcut feature, and a swept edge gives
+  each bank one fixed direction, reinstating it. Writes are refused, so the sampler must not try;
+  `activation.fixed_edge` is the config-level route for a deliberate direction study.
+- **Infeasible cells: record, never drop — but keep it general.** CL-185's rider assumed a θ write
+  could fail the stability bound. **Measured, it cannot along the CV axis** (CL-187): the calibrators
+  derive `dt` from the bound rather than checking against it. Keep the recording, because
+  infeasibility is real for other reasons and a dropped cell fits the emulator on a biased subset —
+  but **do not shape it around a stability boundary that is not there.**
+
+- **Verify:** an OAT design varies exactly one knob per cell with the rest pinned at `nominal`; the
+  no-sweep path is **bit-identical to pre-sweep output at the same master seed** — the check that
+  proves the harness is additive rather than a rewrite; a design cell's written values **survive into
+  the generated bank**, asserted on the bank rather than on the config, since surviving is precisely
+  what the refused paths do not do; config tests cover the block and an unknown-sampler error.
+- **Depends on:** S22b.
 
 ### S24 — `generation_params` writer + OAT example + docs — **unblocks STU7** (SEP11) ☐ (3–5 h)
+
+- **Carried in from S23: how do a sweep's cells identify themselves?** The swept banks are written
+  with `bank_id=None`, so every cell gets an id derived from its cell-model card — which means all
+  cells of one design share a derivation and differ only by filename. **If the cells are ever to be
+  joined back as one design** — and the emulator fits on exactly that set — the id scheme is the
+  thing that has to say so. Decide it here, alongside the `generation_params` writer, since that
+  writer is what records the design in the first place.
 - **Change:** populate the bank-root `{regime, knobs:[TunedParam]}` stubbed at S5 — regime from
   the fixed type discriminators, knobs from the sweep definition (bounds, transform, role, nominal).
   The OAT banks need this too: STU7 has to know which knob moved in which cell. Ships with the OAT

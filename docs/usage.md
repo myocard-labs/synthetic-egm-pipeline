@@ -490,6 +490,118 @@ give exactly equal electrograms. Thread count is a performance knob and must be
 nothing else — if it ever changed a trace, every bank generated at any other
 thread count would be suspect.
 
+#### Two levels of variation
+
+`generate_dataset` and `generate_sweep` both vary parameters, and it is
+reasonable to read them as duplicated work. They are not: they operate at
+different levels, and a sweep **contains** the ordinary run rather than
+replacing it.
+
+| | what varies | across what | who does it |
+|---|---|---|---|
+| **sim-varying** | fibrosis map, stimulus edge, electrode height, seed | simulations *within* one bank | `generate_dataset`, every run |
+| **study-varying** | the distribution parameters those are drawn *from* | *between* banks, one per design cell | `generate_sweep`, only when `sweep:` is set |
+
+An unswept run does sim-varying sampling and nothing else: each of its
+simulations draws a density from `substrate.density_range`, an edge, and a
+height from `electrodes.height_mm_range`. That is variation **inside** a bank,
+and it is what makes a bank a corpus rather than one simulation repeated.
+
+A sweep is a loop around that. For each design cell it sets different
+distribution parameters and then runs the ordinary generation — so a cell of ten
+simulations still draws ten fibrosis maps, ten edges and ten heights. The two
+are a hierarchy, not alternatives, and there is one CLI command: `sweep:` in the
+config is what turns the outer loop on.
+
+**The consequence that makes it click:** a sweep writes
+`substrate.density_range`, never `substrate.density`. The value a design cell
+sets is a *distribution*, and the inner loop draws from it. Writing the drawn
+value would be writing at the wrong level — the next simulation redraws it — and
+that is exactly why those paths are refused rather than silently ignored. If you
+find yourself wanting `substrate.density`, what you want is a range whose two
+ends are equal.
+
+#### `sweep:` — generating a bank per design point
+
+Optional. Absent means the ordinary single-bank run, which is what every config
+written before this existed does and what stays bit-identical.
+
+```yaml
+dataset:
+  n_simulations: 20                        # PER CELL, so the total multiplies
+output:
+  classifier_bank: ../banks/screen.h5      # becomes screen.cell000.h5, .cell001.h5, ...
+
+sweep:
+  sampler:
+    type: oat                              # one-at-a-time screen (the only one so far)
+    levels: 3                              # values per knob, endpoints included
+  knobs:
+    - path: substrate.density_range.high   # the DISTRIBUTION, not the drawn value
+      bounds: [0.1, 0.5]                   # required: the sweep range
+      role: label_param                    # label_param | nuisance
+      nominal: 0.3                         # optional; defaults to the midpoint
+    - path: mix.snr_db_range.low
+      bounds: [5.0, 15.0]
+      transform: identity                  # identity | log | logit
+```
+
+**A sweep writes ONE bank pair, not one per cell.** A bank is the unit that
+holds a design: its θ-spec records which knobs *this bank's sweep* varied, and
+an unswept bank is defined as one with an empty knob list. A bank per cell would
+give every file a spec describing a one-point sweep — neither of the two things
+the field expresses — and the design itself would be recorded nowhere.
+
+Nothing is lost. The synthetic bank stores the generation config **per
+simulation**, so each cell's parameter values are recoverable simulation by
+simulation, and `simulation_id` is offset per cell so it stays unique across the
+whole bank. An OAT screen of `k` knobs at `n` levels is `1 + k(n-1)` cells, each
+running `dataset.n_simulations` simulations — so the cost multiplies even though
+the file count does not.
+
+Cells whose values cannot be applied are recorded in the bank's description,
+counted, and listed on stderr. A missing file was never a good record of an
+infeasible cell: absence cannot be told apart from a run that never happened.
+
+**Sweep the distribution, not the drawn value.** `substrate.density`,
+`activation.edge` and `electrodes.height_mm` are redrawn for every simulation
+from the dataset config, so a value written to them would be discarded before
+the backend saw it. The resolver refuses them and names the range to write
+instead, and a sweep naming one is rejected when the config loads rather than
+after generating a design's worth of identical banks.
+
+| write this | not this | why |
+|---|---|---|
+| `substrate.density_range.low` / `.high` | `substrate.density` | redrawn per simulation |
+| `electrodes.height_mm_range.low` / `.high` | `electrodes.height_mm` | redrawn per simulation |
+| `mix.snr_db_range.low` / `.high` | `mix.snr_db` | drawn per trace; not a field |
+| `cell_model.targets.conduction_velocity_cm_s` | `cell_model.diffusion` | solved from the target |
+| a separate run per pitch | `geometry.dr_mm` | numerical, not physiological |
+
+**Ranges are addressed by their endpoints, and that is two θ dimensions.** A knob
+that is *drawn* has a spread, and the spread is part of the realism: pin SNR to
+one value and every trace in a cell carries it while the real corpus has a
+distribution. A point-valued design is still available — set both endpoints to
+the same number — so nothing is lost by the choice. Knobs that are fixed for the
+whole bank (`geometry.anisotropy_ratio`, a conductance scaling, a calibration
+target) are single scalars, because there is no distribution to describe.
+
+**The stimulus edge cannot be swept.** It is randomised per simulation precisely
+so activation direction cannot become a shortcut feature; fixing it per cell
+would reinstate that shortcut inside every bank. For a deliberate
+direction-sensitivity study, set `activation.fixed_edge` and compare separate
+runs.
+
+**Infeasible cells are reported, not hidden.** A cell whose values cannot be
+applied — a conduction-velocity target outside its domain, say — is listed on
+stderr with its reason and counted in the summary, and the rest of the design
+still runs. A sweep that silently produced fewer banks than the design asked for
+would leave anyone fitting a model on them unable to tell a boundary from a
+crash.
+
+`sweep:` and `mix:` cannot yet be combined; run the sweep clean and mix each
+bank with `synthegm-mix`.
+
 #### Retired keys — these error rather than being ignored
 
 Each was removed because leaving it accepted-but-inert is how a config comes to

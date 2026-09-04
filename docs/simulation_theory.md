@@ -999,6 +999,54 @@ across density, edge, electrode height. The classifier sees the
 bipolar morphology; the metadata supports analysis but is not part of
 the model input.
 
+## What it costs to run
+
+The two cell models differ in runtime by more than two orders of magnitude, and
+that difference decides what each one can be used for. The numbers below are
+measured rather than estimated — the harness is `tests/test_benchmarks.py`, and
+`pytest -m benchmark -s` reproduces them on your own hardware, which is the only
+figure that should inform a decision about your own hardware.
+
+Each model is timed **at the mesh pitch it is actually run at**, not at a shared
+one. Courtemanche's cards are solved at 0.1 mm and reading them at 0.25 mm
+borrows a conduction-velocity anchor, so a like-for-like table would compare two
+membranes over a configuration nobody should generate from. What follows is the
+*operational* cost: the whole production path per simulation — substrate
+realisation, the solve, electrogram tracking, bipolar pairing, band-limiting and
+the crop.
+
+| | Aliev–Panfilov | Courtemanche |
+|---|---|---|
+| mesh | 0.25 mm, 160² | 0.10 mm, 400² |
+| one simulation | **16.8 s** | **≈ 42 min** |
+| a 100-simulation bank | 0.5 h | **≈ 2.9 days** |
+
+> Measured on a Surface Pro 7 (i5-1035G4, 4 physical / 8 logical cores) under
+> interactive load, with a sequential generation loop. **Provisional**: the
+> machine a long run would actually use has not been measured, so treat these as
+> upper bounds on time.
+
+**Two factors produce that gap, and they are not the ones intuition suggests.**
+The mesh contributes 6.25× more nodes but *fewer* integration steps, because
+Courtemanche's stability-limited step is the larger of the two — so the mesh
+term is about 7.5×, not the ~39× a `dt ∝ dr²` rule of thumb predicts. The
+membrane term does the rest: twenty-one state variables and their gating
+exponentials against two coupled ODEs, measured between 21× and 29× across
+sessions. **That spread is real** — repeated timings of the same solve on this
+hardware vary by tens of percent — so the factor should be quoted as a range and
+never to three significant figures.
+
+**What follows for study design.** A parameter sweep writes one bank per design
+cell, so its cost multiplies by the cell count rather than the simulation count.
+A modest eleven-cell screen at a hundred simulations per cell is around **five
+hours** in Aliev–Panfilov and around **a month** in Courtemanche. The
+phenomenological model is therefore the one a sweep can use; the ionic model is
+affordable for a *comparison* — a small number of banks at one operating point —
+which is what it was added for. Its value is that the upstroke emerges from
+membrane currents rather than being shaped by hand, and electrogram amplitude
+scales with `dV/dt`; that is worth a great deal at one operating point and very
+little multiplied by a design.
+
 ## Annotated reading list
 
 The three **[anchor]** papers are the highest leverage if you only
