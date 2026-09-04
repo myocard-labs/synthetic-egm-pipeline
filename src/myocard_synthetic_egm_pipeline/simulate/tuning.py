@@ -166,21 +166,56 @@ class TunableRun:
     resolving to nothing.
     """
 
-    specs: SimulationSpecs
+    specs: SimulationSpecs | None = None
     card: ModelCard | None = None
     mixer: MixerConfig | None = None
+    dataset: Any = None
+    """The :class:`~...simulate.dataset.DatasetConfig`, when the caller has one.
+
+    Typed loosely to avoid a circular import — ``dataset`` imports the runner,
+    which imports this module's neighbours. Its presence is what makes the
+    *distribution* paths resolvable: ``substrate.density_range`` and
+    ``electrodes.height_mm_range`` live here, not on any per-simulation spec,
+    which is precisely why writes to the realized values were refused.
+    """
     dr_model_units: float | None = None
     """The solver's own space step. ``None`` means "the mesh pitch", which is
     the only value Courtemanche permits and the shipped Aliev-Panfilov default.
     Held because a re-solve needs it and it is a ``RunConfig`` knob rather than
     a property of any spec here."""
 
+    def __post_init__(self) -> None:
+        if self.specs is None and self.dataset is None:
+            raise ValueError(
+                "a TunableRun needs per-simulation specs, a dataset config, or "
+                "both: with neither there is nothing for a path to resolve "
+                "against."
+            )
+
+    @property
+    def geometry(self) -> Any:
+        """The geometry, from whichever half of the bundle holds one.
+
+        The dataset config wins when both are present: it is what a generation
+        run reads, and the specs are a record of one simulation drawn from it.
+        """
+        if self.dataset is not None:
+            return self.dataset.geometry
+        assert self.specs is not None
+        return self.specs.geometry
+
+    @property
+    def cell_model(self) -> Any:
+        if self.dataset is not None:
+            return self.dataset.cell_model
+        assert self.specs is not None
+        return self.specs.cell_model
+
     @property
     def effective_dr_model_units(self) -> float:
-        geometry = self.specs.geometry
         if self.dr_model_units is not None:
             return self.dr_model_units
-        return float(geometry.dr_mm)  # type: ignore[attr-defined]
+        return float(self.geometry.dr_mm)
 
 
 #: Roots that resolve against the per-simulation specs, named as they are on
@@ -229,6 +264,35 @@ _SIM_VARYING_ALTERNATIVE: Mapping[str, str] = {
     "electrodes.n_rows": "electrodes.n_rows",
     "electrodes.n_cols": "electrodes.n_cols",
     "electrodes.spacing_mm": "electrodes.spacing_mm",
+}
+
+#: Distribution paths → the ``DatasetConfig`` field that holds them.
+#:
+#: **These are the writable counterparts of the read-only realized values.**
+#: ``substrate.density`` is redrawn every simulation and refused; the range it
+#: is drawn from lives on the dataset config and is what a sweep owns. The path
+#: names follow the config file's own blocks rather than the dataclass field
+#: names, so a sweep and a config spell the same knob the same way.
+#:
+#: Point-valued or endpoint-valued, and the rule rather than a taste call:
+#: **a knob drawn per simulation or per trace is addressed by its
+#: distribution's endpoints; a knob fixed for the whole bank is addressed as a
+#: scalar.** Conduction-velocity target, anisotropy and a conductance scaling
+#: are one value for every simulation in a bank, so they are one θ dimension
+#: each. Density, electrode height and SNR are *drawn*, so their realism
+#: includes their spread — pin SNR to a point and every trace in a design cell
+#: carries an identical value while the real corpus has a distribution, and the
+#: cell's distance is then dominated by that mismatch rather than by anything
+#: being tuned. Density has the same problem with a sharper edge: pinned to one
+#: value, a cell's class balance would be set entirely by ``fraction_healthy``,
+#: which is not a swept knob, so an unswept quantity would drive the label
+#: distribution.
+#:
+#: Nothing is foreclosed by this: a point-valued design is the degenerate range
+#: with ``low == high``, so endpoints are strictly the more expressive choice.
+_DISTRIBUTION_PATHS: Mapping[str, str] = {
+    "substrate.density_range": "fibrosis_density_range",
+    "electrodes.height_mm_range": "electrode_height_mm_range",
 }
 
 #: Mixer fields a sweep may address.
@@ -404,6 +468,12 @@ def _computed_field_names(spec: Any) -> frozenset[str]:
     return frozenset()
 
 
+def _distribution_field(path: str) -> str | None:
+    """The dataset-config field a distribution path names, if it is one."""
+    head = ".".join(path.split(".")[:2])
+    return _DISTRIBUTION_PATHS.get(head)
+
+
 def _subject_for(run: TunableRun, root: str, path: str) -> Any:
     """The object a root resolves against, or a refusal naming what is missing."""
     if root == MIX_ROOT:
@@ -413,6 +483,32 @@ def _subject_for(run: TunableRun, root: str, path: str) -> Any:
                 "it is a clean run. Add a mix block before sweeping noise."
             )
         return run.mixer
+    if _distribution_field(path) is not None:
+        if run.dataset is None:
+            raise UnknownParameterError(
+                f"{path!r} addresses a distribution, which lives on the dataset "
+                "config, and this run carries none. Build the bundle with it to "
+                "sweep the range rather than the drawn value."
+            )
+        return run.dataset
+    if root in ("geometry", "cell_model"):
+        return getattr(run, root)
+    if run.specs is None:
+        # The commonest mistake reaches here: a sweep naming the drawn value
+        # rather than the range it is drawn from. A harness bundle carries no
+        # specs, so without this the answer would be "there are no specs" — true,
+        # unhelpful, and silent about the path that would have worked.
+        alternative = _SIM_VARYING_ALTERNATIVE.get(path)
+        remedy = (
+            f" To sweep it, write {alternative} instead — the distribution it is drawn from."
+            if alternative
+            else ""
+        )
+        raise UnknownParameterError(
+            f"{path!r} names a per-simulation value, and this run carries no "
+            f"specs — only a dataset config. {root} is drawn per simulation, so "
+            f"there is no realized value until one has been.{remedy}"
+        )
     return getattr(run.specs, root)
 
 
@@ -468,10 +564,15 @@ def enumerate_paths(run: TunableRun) -> tuple[str, ...]:
     # Courtemanche measures its APD instead, so its cards state no target and
     # there is nothing there to sweep.
     if run.card is not None:
-        solvable = _solvable_target_names(run.specs.cell_model)
+        solvable = _solvable_target_names(run.cell_model)
         for field in fields(ModelTargets):
             if field.name in solvable and getattr(run.card.targets, field.name) is not None:
                 found.append(f"cell_model.{TARGETS_FIELD}.{field.name}")
+
+    if run.dataset is not None:
+        for dist_path, field_name in _DISTRIBUTION_PATHS.items():
+            if _is_range(getattr(run.dataset, field_name)):
+                found.extend(f"{dist_path}.{key}" for key in _RANGE_KEYS)
 
     if run.mixer is not None:
         for field in fields(MixerConfig):
@@ -493,6 +594,13 @@ def get_value(run: TunableRun, path: str) -> Any:
     a solve produced. Only writing is refused.
     """
     root, spec, parts = _root_of(run, path)
+    field_name = _distribution_field(path)
+    if field_name is not None:
+        current = getattr(spec, field_name)
+        if len(parts) == 1:
+            return current
+        return current[_range_index(path, parts[1])]
+
     if root == "cell_model" and parts[0] == TARGETS_FIELD:
         return _target_value(run, path, parts)
 
@@ -567,6 +675,21 @@ def set_value(run: TunableRun, path: str, value: Any) -> TunableRun:
     by the type that owns the rule, in the words that type already uses.
     """
     root, spec, parts = _root_of(run, path)
+    field_name = _distribution_field(path)
+    if field_name is not None:
+        # Checked before every refusal below, because this is the path those
+        # refusals point at: `substrate.density` is refused and told to write
+        # `substrate.density_range`, and it would be absurd for the remedy to be
+        # refused by the same root rule that sent you to it.
+        current = getattr(spec, field_name)
+        if len(parts) == 1:
+            updated_range = tuple(value)
+        else:
+            endpoints = list(current)
+            endpoints[_range_index(path, parts[1])] = value
+            updated_range = tuple(endpoints)
+        return replace(run, dataset=replace(spec, **{field_name: updated_range}))
+
     if root == "cell_model" and parts[0] == TARGETS_FIELD:
         # Read first, so an unknown or absent target is refused before anything
         # is rebuilt. Then set the target and re-solve from it, which is the
@@ -575,9 +698,9 @@ def set_value(run: TunableRun, path: str, value: Any) -> TunableRun:
         card = run.card
         assert card is not None  # _target_value refuses a run without one
         name = parts[1]
-        solvable = _solvable_target_names(run.specs.cell_model)
+        solvable = _solvable_target_names(run.cell_model)
         if name not in solvable:
-            calibrator = _CALIBRATORS.get(type(run.specs.cell_model))
+            calibrator = _CALIBRATORS.get(type(run.cell_model))
             solver = calibrator.__name__ if calibrator else "this model's calibration"
             raise DerivedParameterError(
                 f"{path!r} is not solved from. {solver} does not take {name!r}, so "
@@ -672,7 +795,15 @@ def set_value(run: TunableRun, path: str, value: Any) -> TunableRun:
     if root == MIX_ROOT:
         return replace(run, mixer=updated)
 
-    written = replace(run, specs=_normalised(replace(run.specs, **{root: updated})))
+    # Written to both halves of the bundle where both exist. The dataset config
+    # is what a generation run reads; the specs are the record of one simulation
+    # drawn from it, and letting them disagree is how a bank comes to describe
+    # something other than what ran.
+    written = run
+    if run.dataset is not None and root in ("geometry", "cell_model"):
+        written = replace(written, dataset=replace(run.dataset, **{root: updated}))
+    if run.specs is not None:
+        written = replace(written, specs=_normalised(replace(run.specs, **{root: updated})))
     if root == "cell_model":
         # A conductance scaling is an *input* to the calibration, so changing
         # one changes what the solve returns. Leaving the card's solved values
@@ -797,12 +928,12 @@ def _resolved_card(run: TunableRun, *, path: str, value: object) -> TunableRun:
     if card is None:
         return run
 
-    inputs = _chosen_inputs(run.specs.cell_model)
-    dr_mm = float(run.specs.geometry.dr_mm)  # type: ignore[attr-defined]
+    inputs = _chosen_inputs(run.cell_model)
+    dr_mm = float(run.geometry.dr_mm)
     dr_model_units = run.effective_dr_model_units
 
     try:
-        if isinstance(run.specs.cell_model, AlievPanfilovCellModel):
+        if isinstance(run.cell_model, AlievPanfilovCellModel):
             if card.targets.apd90_ms is None:
                 raise ValueError(
                     "Aliev-Panfilov solves its time unit from an apd90_ms target "
@@ -815,7 +946,7 @@ def _resolved_card(run: TunableRun, *, path: str, value: object) -> TunableRun:
                 dr_model_units=dr_model_units,
                 **inputs,  # type: ignore[arg-type]
             )
-        elif isinstance(run.specs.cell_model, CourtemancheCellModel):
+        elif isinstance(run.cell_model, CourtemancheCellModel):
             solved = calibrate_courtemanche(
                 conduction_velocity_cm_s=card.targets.conduction_velocity_cm_s,
                 dr_mm=dr_mm,
@@ -825,7 +956,7 @@ def _resolved_card(run: TunableRun, *, path: str, value: object) -> TunableRun:
         else:
             raise ValueError(
                 f"no calibration is registered for cell model "
-                f"{run.specs.cell_model.type!r}, so its targets cannot be swept."
+                f"{run.cell_model.type!r}, so its targets cannot be swept."
             )
     except InfeasibleTargetError:
         raise
@@ -834,11 +965,12 @@ def _resolved_card(run: TunableRun, *, path: str, value: object) -> TunableRun:
 
     _ensure_stable(solved, dr_model_units=dr_model_units, path=path, value=value)
 
-    return replace(
-        run,
-        card=replace(card, solved=solved, measured=None),
-        specs=replace(run.specs, cell_model=solved),
-    )
+    resolved = replace(run, card=replace(card, solved=solved, measured=None))
+    if run.specs is not None:
+        resolved = replace(resolved, specs=replace(run.specs, cell_model=solved))
+    if run.dataset is not None:
+        resolved = replace(resolved, dataset=replace(run.dataset, cell_model=solved))
+    return resolved
 
 
 def _normalised(specs: SimulationSpecs) -> SimulationSpecs:

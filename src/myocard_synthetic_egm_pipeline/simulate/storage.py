@@ -19,10 +19,12 @@ This module imports no backend code (Guardrail 1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+from myocard_egm_contracts._generated.python.synthetic_bank import TunedParam
 from myocard_egm_data.banks import write_classifier_bank, write_synthetic_bank
 
 from myocard_synthetic_egm_pipeline.simulate.builders import (
@@ -75,6 +77,7 @@ def write_synthetic_bank_from_dataset(
     noise_channel: list[str] | None = None,
     noise_bank_source: str | None = None,
     bank_id_base: str | None = None,
+    knobs: Sequence[TunedParam] | None = None,
 ) -> Path:
     """Build + write a ``synthetic_bank`` 2.0 for a finished DatasetResult.
 
@@ -101,6 +104,7 @@ def write_synthetic_bank_from_dataset(
         noise_channel=noise_channel,
         noise_bank_source=noise_bank_source,
         bank_id_base=bank_id_base,
+        knobs=knobs,
     )
     return write_synthetic_bank(bank, output_path, overwrite=overwrite)
 

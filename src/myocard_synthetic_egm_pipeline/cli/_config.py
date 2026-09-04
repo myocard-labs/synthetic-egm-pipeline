@@ -20,6 +20,7 @@ Schema for both YAMLs is documented in the example configs under
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -84,6 +85,13 @@ from myocard_synthetic_egm_pipeline.simulate.sizing import (
     required_capture_duration_ms,
     required_stimulus_delay_ms,
     window_length_samples,
+)
+from myocard_synthetic_egm_pipeline.simulate.sweep import (
+    Knob,
+    OATSampler,
+    Sampler,
+    SweepConfig,
+    SweepConfigError,
 )
 
 DEFAULT_MODEL_CARD = "af_remodelled_220ms"
@@ -234,6 +242,85 @@ def _build_resources(doc: dict[str, Any]) -> ResourceLimits:
         return ResourceLimits(max_threads=max_threads)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
+
+
+#: Sampler ``type`` → its constructor. A table rather than an if-chain for the
+#: same reason the model-card parsers are one: a missing entry refuses an
+#: unknown sampler by name, and adding one is a single line.
+_SAMPLERS: dict[str, Callable[..., Sampler]] = {
+    "oat": OATSampler,
+}
+
+
+def _build_sweep(doc: dict[str, Any]) -> SweepConfig | None:
+    """Construct the optional ``sweep:`` block.
+
+    Absent means no sweep, which is the path every config written before this
+    existed takes and the one that must stay bit-identical.
+    """
+    block = _optional(doc, "sweep", default=None)
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ConfigError("sweep: must be a mapping with 'sampler' and 'knobs'.")
+
+    sampler_block = _optional(block, "sampler", default={}) or {}
+    if not isinstance(sampler_block, dict):
+        raise ConfigError("sweep.sampler must be a mapping with a 'type'.")
+    sampler_type = str(_optional(sampler_block, "type", default="oat"))
+    if sampler_type not in _SAMPLERS:
+        raise ConfigError(
+            f"sweep.sampler.type must be one of {', '.join(sorted(_SAMPLERS))}; "
+            f"got {sampler_type!r}. A space-filling sampler lands as another "
+            "entry here; the harness itself is sampler-agnostic."
+        )
+    options = {k: v for k, v in sampler_block.items() if k != "type"}
+
+    knob_blocks = _required(doc, "sweep", "knobs")
+    if not isinstance(knob_blocks, list) or not knob_blocks:
+        raise ConfigError("sweep.knobs must be a non-empty list of knob mappings.")
+
+    knobs: list[Knob] = []
+    for index, entry in enumerate(knob_blocks):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"sweep.knobs[{index}] must be a mapping.")
+        if "path" not in entry:
+            raise ConfigError(f"sweep.knobs[{index}] is missing 'path'.")
+        if "bounds" not in entry:
+            raise ConfigError(
+                f"sweep.knobs[{index}] ({entry['path']}) is missing 'bounds'. "
+                "It is the sweep range and the emulator's input domain, so "
+                "there is no sensible default."
+            )
+        bounds = _expect_range(entry["bounds"], field_path=f"sweep.knobs[{index}].bounds")
+        try:
+            knobs.append(
+                Knob(
+                    path=str(entry["path"]),
+                    bounds=bounds,
+                    role=str(entry.get("role", "nuisance")),
+                    transform=str(entry.get("transform", "identity")),
+                    nominal=None if entry.get("nominal") is None else float(entry["nominal"]),
+                )
+            )
+        except SweepConfigError as exc:
+            raise ConfigError(f"sweep.knobs[{index}]: {exc}") from exc
+
+    seen = [k.path for k in knobs]
+    duplicates = {p for p in seen if seen.count(p) > 1}
+    if duplicates:
+        raise ConfigError(
+            f"sweep.knobs names {', '.join(sorted(duplicates))} more than once. "
+            "One entry per knob: two entries would silently fight over the same "
+            "value, and the last one would win."
+        )
+
+    try:
+        sampler = _SAMPLERS[sampler_type](**options)
+    except (TypeError, SweepConfigError) as exc:
+        raise ConfigError(f"sweep.sampler ({sampler_type}): {exc}") from exc
+
+    return SweepConfig(sampler=sampler, knobs=tuple(knobs))
 
 
 def _build_label_policy(doc: dict[str, Any]) -> LabelPolicy:
@@ -737,6 +824,10 @@ class GenerateDatasetCLIConfig:
     # Backend choice
     backend_type: BackendType
 
+    # Optional parameter sweep. None means the ordinary single-bank run, which
+    # is the path that must stay bit-identical to pre-sweep output.
+    sweep: SweepConfig | None
+
     # Process resource caps. Not a strategy spec and not a RunConfig knob: it
     # changes how fast the run goes and nothing about what it produces, so it
     # has no business travelling with the physics.
@@ -1033,6 +1124,7 @@ def build_generate_dataset_config(doc: dict[str, Any]) -> GenerateDatasetCLIConf
         master_seed=master_seed,
         show_progress=show_progress,
         backend_type=backend_type,
+        sweep=_build_sweep(doc),
         resources=_build_resources(doc),
         geometry=geometry,
         fibrosis_density_range=density_range,

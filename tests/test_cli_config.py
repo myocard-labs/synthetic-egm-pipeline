@@ -702,3 +702,132 @@ def test_a_sub_one_filter_order_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="antialias_order"):
         build_generate_dataset_config(doc)
+
+
+# ---------------------------------------------------------------------------
+# The sweep: block
+# ---------------------------------------------------------------------------
+
+
+def _sweep_doc(sweep: object) -> dict[str, object]:
+    from pathlib import Path
+
+    return {
+        "_config_dir": Path("examples"),
+        "dataset": {"n_simulations": 2},
+        "geometry": {"size_mm": 12.0},
+        "output": {"classifier_bank": "out.h5"},
+        "sweep": sweep,
+    }
+
+
+def test_a_sweep_block_builds_a_design() -> None:
+    from myocard_synthetic_egm_pipeline.cli._config import build_generate_dataset_config
+
+    cfg = build_generate_dataset_config(
+        _sweep_doc(
+            {
+                "sampler": {"type": "oat", "levels": 3},
+                "knobs": [
+                    {
+                        "path": "substrate.density_range.high",
+                        "bounds": [0.1, 0.5],
+                        "role": "label_param",
+                    },
+                    {"path": "mix.snr_db_range.low", "bounds": [5.0, 15.0]},
+                ],
+            }
+        )
+    )
+
+    assert cfg.sweep is not None
+    assert cfg.sweep.sampler.type == "oat"
+    assert [k.path for k in cfg.sweep.knobs] == [
+        "substrate.density_range.high",
+        "mix.snr_db_range.low",
+    ]
+    assert cfg.sweep.knobs[0].role == "label_param"
+    # 1 baseline + 2 non-nominal levels per knob
+    assert len(cfg.sweep.design()) == 5
+
+
+def test_no_sweep_block_means_no_sweep() -> None:
+    """The default, and the path that must stay bit-identical."""
+    from myocard_synthetic_egm_pipeline.cli._config import build_generate_dataset_config
+
+    doc = _sweep_doc(None)
+    del doc["sweep"]
+    assert build_generate_dataset_config(doc).sweep is None
+
+
+def test_an_unknown_sampler_is_refused_by_name() -> None:
+    from myocard_synthetic_egm_pipeline.cli._config import (
+        ConfigError,
+        build_generate_dataset_config,
+    )
+
+    with pytest.raises(ConfigError, match=r"sweep\.sampler\.type must be one of"):
+        build_generate_dataset_config(
+            _sweep_doc(
+                {
+                    "sampler": {"type": "latin_hypercube"},
+                    "knobs": [{"path": "substrate.density_range.high", "bounds": [0.1, 0.5]}],
+                }
+            )
+        )
+
+
+def test_a_knob_without_bounds_is_refused() -> None:
+    """``bounds`` is the emulator's input domain, so there is no default."""
+    from myocard_synthetic_egm_pipeline.cli._config import (
+        ConfigError,
+        build_generate_dataset_config,
+    )
+
+    with pytest.raises(ConfigError, match="is missing 'bounds'"):
+        build_generate_dataset_config(
+            _sweep_doc({"knobs": [{"path": "substrate.density_range.high"}]})
+        )
+
+
+def test_a_duplicated_knob_is_refused() -> None:
+    """Two entries for one path would fight, and the last would silently win."""
+    from myocard_synthetic_egm_pipeline.cli._config import (
+        ConfigError,
+        build_generate_dataset_config,
+    )
+
+    with pytest.raises(ConfigError, match="more than once"):
+        build_generate_dataset_config(
+            _sweep_doc(
+                {
+                    "knobs": [
+                        {"path": "substrate.density_range.high", "bounds": [0.1, 0.5]},
+                        {"path": "substrate.density_range.high", "bounds": [0.2, 0.6]},
+                    ]
+                }
+            )
+        )
+
+
+def test_an_empty_knob_list_is_refused() -> None:
+    from myocard_synthetic_egm_pipeline.cli._config import (
+        ConfigError,
+        build_generate_dataset_config,
+    )
+
+    with pytest.raises(ConfigError, match="non-empty list"):
+        build_generate_dataset_config(_sweep_doc({"knobs": []}))
+
+
+def test_a_sweep_over_the_stimulus_edge_is_refused_at_config_time() -> None:
+    """The scientific constraint, surfaced while the config is being written."""
+    from myocard_synthetic_egm_pipeline.cli._config import (
+        ConfigError,
+        build_generate_dataset_config,
+    )
+
+    with pytest.raises(ConfigError, match="shortcut feature"):
+        build_generate_dataset_config(
+            _sweep_doc({"knobs": [{"path": "activation.edge", "bounds": [0.0, 1.0]}]})
+        )

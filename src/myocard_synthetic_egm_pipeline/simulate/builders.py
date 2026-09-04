@@ -42,6 +42,7 @@ from myocard_egm_contracts._generated.python.synthetic_bank import (
     Simulations,
     SyntheticBank,
     Traces,
+    TunedParam,
 )
 from myocard_egm_contracts.schema_info import current_version
 from myocard_egm_data.banks import (
@@ -325,6 +326,7 @@ def build_synthetic_bank_from_dataset(
     noise_channel: list[str] | None = None,
     noise_bank_source: str | None = None,
     bank_id_base: str | None = None,
+    knobs: Sequence[TunedParam] | None = None,
 ) -> SyntheticBank:
     """Build an in-memory ``synthetic_bank`` 2.0 from a DatasetResult.
 
@@ -428,20 +430,30 @@ def build_synthetic_bank_from_dataset(
         fs_hz=float(first.fs_hz),
         trace_duration_ms=float(first.trace_duration_ms),
         noise_bank_source=noise_bank_source,
-        generation_params=build_theta_spec(simulations),
+        generation_params=build_theta_spec(simulations, knobs),
         simulations=simulations,
         traces=traces,
     )
 
 
-def build_theta_spec(simulations: Simulations) -> GenerationParams:
+def build_theta_spec(
+    simulations: Simulations, knobs: Sequence[TunedParam] | None = None
+) -> GenerationParams:
     """Build the bank-scoped theta-spec.
 
     The regime is the set of structural ``type`` discriminators held
     fixed across the bank; ``knobs`` is the list of swept parameters.
-    Wave 1 sweeps nothing, so the knob list is empty — which the schema
-    requires anyway rather than allowing omission, because "nothing
-    varied" is worth stating explicitly. A parameter sweep fills the list.
+
+    **An unswept bank records an empty list, and a swept one records the whole
+    design.** Those are the two things the field is defined to express, and they
+    are why a sweep writes one bank rather than one per design cell: a bank is
+    the unit that holds a design. A bank per cell would give every file a
+    theta-spec describing a one-point sweep — neither of the two — and the
+    design itself would be recorded nowhere.
+
+    ``knobs`` are the design's, in the order the sampler produced them. The
+    order is load-bearing: an emulator's input vector is positional, so
+    reordering silently reinterprets it.
     """
     regime: dict[str, str] = {}
     if simulations.simulation_id:
@@ -454,7 +466,7 @@ def build_theta_spec(simulations: Simulations) -> GenerationParams:
             "backend": simulations.backend[0].root.type,
             "label_policy": simulations.label_policy[0].type,
         }
-    return GenerationParams(regime=regime, knobs=[])
+    return GenerationParams(regime=regime, knobs=list(knobs or []))
 
 
 # ---------------------------------------------------------------------------

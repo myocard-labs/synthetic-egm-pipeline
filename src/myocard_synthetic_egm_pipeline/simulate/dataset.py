@@ -26,6 +26,7 @@ whole dataset is reproducible.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +50,8 @@ from myocard_synthetic_egm_pipeline.constants import (
     DEFAULT_ELECTRODE_SPACING_MM,
     DEFAULT_FIBROSIS_DENSITY_RANGE,
 )
+from myocard_synthetic_egm_pipeline.mixer import MixerConfig
+from myocard_synthetic_egm_pipeline.simulate.calibration import ModelCard
 from myocard_synthetic_egm_pipeline.simulate.cell_models import CellModelSpec
 from myocard_synthetic_egm_pipeline.simulate.label_policy import LabelPolicy
 from myocard_synthetic_egm_pipeline.simulate.probe import ProbeGrid
@@ -62,6 +65,19 @@ from myocard_synthetic_egm_pipeline.simulate.specs import (
     PlanarEdgeStimulus,
     UniformRandomFibrosis,
     random_edge,
+)
+from myocard_synthetic_egm_pipeline.simulate.sweep import (
+    DesignCell,
+    InfeasibleCell,
+    SweepConfig,
+    SweepConfigError,
+    apply_cell,
+    build_design,
+)
+from myocard_synthetic_egm_pipeline.simulate.tuning import (
+    InfeasibleTargetError,
+    TunableRun,
+    set_value,
 )
 
 
@@ -465,3 +481,221 @@ def _simulate_probe_sweep(
 
 
 __all__ = ["DatasetConfig", "DatasetResult", "generate_dataset"]
+
+
+# ---------------------------------------------------------------------------
+# The sweep harness — a loop AROUND generate_dataset, never inside it
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SweepRun:
+    """One design cell's bank, and the parameters it was generated at."""
+
+    cell: DesignCell
+    config: DatasetConfig
+    result: DatasetResult
+    mixer: MixerConfig | None = None
+    """The mixer **as this cell set it**, when the design writes a noise knob.
+
+    Carried rather than left to the caller because a cell that swept
+    ``mix.snr_db_range`` and was then mixed with the config's original range
+    would record one SNR distribution and contain another — the design point
+    would be a fiction, and nothing downstream could see it.
+    """
+
+
+@dataclass(frozen=True)
+class SweepResult:
+    """Every cell that ran, and every cell that could not.
+
+    ``infeasible`` is a first-class half of the answer, not an error log. A
+    design with its failures discarded fits an emulator on a biased subset of
+    the space and cannot see the boundary; keeping them means the boundary can
+    be described.
+    """
+
+    runs: tuple[SweepRun, ...]
+    infeasible: tuple[InfeasibleCell, ...]
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.runs) + len(self.infeasible)
+
+
+def generate_sweep(
+    *,
+    config: DatasetConfig,
+    backend: SimulationBackend,
+    sweep: SweepConfig,
+    card: ModelCard | None = None,
+    mixer: MixerConfig | None = None,
+    position_generator: ActivationPositionGenerator | None = None,
+) -> SweepResult:
+    """Generate one dataset per design cell.
+
+    **A loop around :func:`generate_dataset`, not a change to it.** Each cell
+    writes its values onto a bundle through the path resolver, producing a new
+    :class:`DatasetConfig`, and that config is generated from by exactly the
+    code path a non-swept run uses. Nothing about the per-simulation draw is
+    replaced — which is what makes the no-sweep result bit-identical, and it is
+    asserted rather than assumed.
+
+    Every cell runs ``config.n_simulations`` simulations, so a design of ``c``
+    cells costs ``c`` times a plain run.
+
+    A cell the resolver refuses is recorded and the sweep continues. That is the
+    one place this function swallows an exception, and it swallows it into a
+    result rather than into silence.
+    """
+    design = build_design(sweep)
+    _reject_unwritable_knobs(TunableRun(dataset=config, card=card, mixer=mixer), design)
+
+    runs: list[SweepRun] = []
+    infeasible: list[InfeasibleCell] = []
+
+    for cell in design:
+        bundle = TunableRun(dataset=config, card=card, mixer=mixer)
+        try:
+            applied = apply_cell(bundle, cell)
+        except ValueError as exc:
+            # Broad on purpose. The resolver raises several distinct types and
+            # a backend may add more; a harness that caught only the ones known
+            # today would turn a new kind of infeasibility into a crashed sweep
+            # rather than a recorded point.
+            path, value = _blame(cell, exc)
+            infeasible.append(
+                InfeasibleCell(
+                    cell=cell,
+                    path=path,
+                    value=value,
+                    reason=str(exc),
+                    error_type=type(exc).__name__,
+                )
+            )
+            continue
+
+        cell_config = applied.dataset
+        assert isinstance(cell_config, DatasetConfig)
+        runs.append(
+            SweepRun(
+                cell=cell,
+                config=cell_config,
+                mixer=applied.mixer,
+                result=generate_dataset(
+                    config=cell_config,
+                    backend=backend,
+                    position_generator=position_generator,
+                ),
+            )
+        )
+
+    return SweepResult(runs=tuple(runs), infeasible=tuple(infeasible))
+
+
+def _reject_unwritable_knobs(run: TunableRun, design: Sequence[DesignCell]) -> None:
+    """Refuse a design naming a knob that can never be written, before running any.
+
+    **A path-level refusal is a malformed design; a value-level one is a
+    boundary.** The distinction matters because every cell carries every knob,
+    at nominal where it is not the varied one — so a single unwritable path
+    would make *every* cell infeasible and the sweep would report a design-space
+    boundary where it actually has a typo. One knob spelled wrong would look
+    like a physics finding.
+
+    So the knob list is dry-run once against the bundle. Anything the resolver
+    refuses for what a path *is* — derived, redrawn per simulation, numerical —
+    aborts the sweep with the resolver's own explanation. Only
+    :class:`InfeasibleTargetError`, which is about the *value*, survives to be
+    recorded per cell.
+    """
+    if not design:
+        return
+    probe = design[0]
+    for path in sorted(probe.values):
+        try:
+            set_value(run, path, probe.values[path])
+        except InfeasibleTargetError:
+            # About this value, not this path. A different level may well work,
+            # and if none do, that is a boundary worth recording cell by cell.
+            continue
+        except ValueError as exc:
+            raise SweepConfigError(
+                f"sweep.knobs names {path!r}, which cannot be written at all: {exc}"
+            ) from exc
+
+
+def merge_sweep_results(runs: Sequence[SweepRun]) -> DatasetResult:
+    """Concatenate every design cell's simulations into one dataset.
+
+    **A sweep produces one bank, not one per cell**, because a bank is the unit
+    that holds a design: its theta-spec states which knobs *this bank's sweep*
+    varied, and an unswept bank is defined as one with an empty knob list. A
+    bank per cell would give each file a spec describing a one-point sweep,
+    which is neither of the two things the field can express, and the design
+    would be recorded nowhere.
+
+    Nothing is lost by merging. The synthetic bank already stores the generation
+    config **per simulation**, so each cell's parameter values survive
+    simulation by simulation without needing an artifact of their own.
+
+    ``simulation_id`` is offset per cell. It is the join key between the
+    classifier bank and its theta partner and the schema requires it to be
+    unique within a bank, so ids restarting at zero in every cell would collide
+    — silently, since both banks would agree on the wrong answer.
+    """
+    results: list[SimulationResult] = []
+    labels: list[npt.NDArray[np.int64]] = []
+    simulation_ids: list[npt.NDArray[np.int64]] = []
+    pair_indices: list[npt.NDArray[np.int64]] = []
+    seeds: list[npt.NDArray[np.int64]] = []
+    labels_dict: dict[int, str] = {}
+    offset = 0
+
+    for run in runs:
+        cell = run.result
+        if labels_dict and cell.labels_dict != labels_dict:
+            raise ValueError(
+                "design cells disagree about their label mapping "
+                f"({cell.labels_dict!r} against {labels_dict!r}); they cannot be "
+                "merged into one bank, because a bank has a single labels dict."
+            )
+        labels_dict = labels_dict or cell.labels_dict
+
+        for local_id, result in enumerate(cell.results):
+            # Restamped, not merely offset in the id column: the per-simulation
+            # provenance carries its own copy, and a bank whose two records of
+            # one id disagreed would be worse than one that never had them.
+            result.run_metadata["simulation_id"] = offset + local_id
+            result.run_metadata["design_cell"] = run.cell.index
+            results.append(result)
+
+        labels.append(cell.labels)
+        simulation_ids.append(cell.simulation_ids + offset)
+        pair_indices.append(cell.pair_indices)
+        seeds.append(cell.seeds)
+        offset += len(cell.results)
+
+    empty = np.zeros(0, dtype=np.int64)
+    return DatasetResult(
+        results=results,
+        labels=np.concatenate(labels) if labels else empty,
+        labels_dict=labels_dict,
+        simulation_ids=np.concatenate(simulation_ids) if simulation_ids else empty,
+        pair_indices=np.concatenate(pair_indices) if pair_indices else empty,
+        seeds=np.concatenate(seeds) if seeds else empty,
+    )
+
+
+def _blame(cell: DesignCell, exc: ValueError) -> tuple[str, object]:
+    """Which knob the failure is about, from the exception if it says so.
+
+    The resolver's own errors carry the path; anything else is attributed to
+    the cell's varied knob, which is the honest guess for a one-at-a-time
+    design and is recorded as such rather than as a certainty.
+    """
+    path = getattr(exc, "path", None)
+    if isinstance(path, str) and path in cell.values:
+        return path, cell.values[path]
+    fallback = cell.varied if cell.varied is not None else "(baseline)"
+    return fallback, cell.values.get(fallback)

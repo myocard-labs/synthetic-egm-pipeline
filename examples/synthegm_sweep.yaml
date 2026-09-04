@@ -1,0 +1,136 @@
+# A one-at-a-time screen over the two knobs that most affect corpus similarity.
+#
+# WHAT THIS IS FOR
+# ----------------
+# Before fitting anything to the real corpus, it is worth knowing which knobs
+# actually move the features and which are inert. That is a SCREEN, and it is
+# cheap: one knob varied at a time, everything else pinned, so k knobs at n
+# levels cost 1 + k(n-1) banks rather than the n^k a grid would.
+#
+# The two knobs here are the ones a distance-to-corpus objective is most
+# sensitive to. Fibrosis burden sets how much of the signal is fractionated at
+# all; noise level sets how much of that survives to be measured. A screen that
+# found either inert would be far more informative than one that did not.
+#
+# WHAT IT COSTS
+# -------------
+# 2 knobs x 3 levels, plus the all-nominal baseline = 5 design cells.
+# 10 simulations each = 50 simulations, each 40 mm at dr = 0.25 mm on the
+# Aliev-Panfilov model — a few minutes per cell on a laptop, well under an hour
+# in total.
+#
+# It writes ONE bank pair for the whole sweep, not one per cell: screen.h5 and
+# screen.synthetic.h5. A bank is the unit that holds a design, and the theta
+# spec below is recorded on it. Each cell survives inside that bank as the
+# per-simulation config, with simulation_id offset so it stays unique.
+#
+# Raise dataset.n_simulations before trusting any single cell: within-cell
+# scatter is the noise floor a screen has to see through, and 10 simulations is
+# enough to see a large effect, not a subtle one.
+#
+# TWO LEVELS OF VARIATION, AND THEY ARE A HIERARCHY
+# -------------------------------------------------
+# This file sets STUDY-VARYING parameters: one design cell per point, each with
+# different distribution parameters. Inside every cell the ordinary SIM-VARYING
+# draw still happens — each simulation draws its own fibrosis map, its own
+# stimulus edge and its own electrode height, exactly as an unswept run does. A
+# sweep does not replace that; it wraps it, and both levels land in one bank.
+#
+# Which is why every knob below names a *_range and not the drawn value. See
+# docs/usage.md, "Two levels of variation".
+
+dataset:
+  n_simulations: 10                        # PER DESIGN CELL, so the total is 5 x this
+  master_seed: 42
+  show_progress: true
+
+backend:
+  type: finitewave
+  model: af_remodelled_220ms
+
+geometry:
+  type: patch_2d
+  size_mm: 40.0
+  dr_mm: 0.25
+  fiber_angle_rad: 0.0
+  anisotropy_ratio: 2.0
+
+substrate:
+  type: uniform_random_fibrosis
+  density_range: [0.0, 0.5]                # the sweep overwrites the upper end
+  fraction_healthy: 0.3
+
+activation:
+  type: planar_edge
+  fixed_edge: null                         # randomised per simulation, and NOT swept
+
+electrodes:
+  type: centered_grid_2d
+  n_rows: 5
+  n_cols: 5
+  spacing_mm: 2.0
+  height_mm_range: [0.2, 1.0]
+
+label_policy:
+  type: local_density
+  radius_mm: 2.0
+  threshold: 0.1
+
+run:
+  trace_duration_ms: 192.0
+  output_fs_hz: 1000.0
+  capture_oversample: 4
+
+activation_position:
+  low: 0.4
+  high: 0.6
+
+mix:
+  noise_bank: ../banks/iafdb_noise_v1.h5
+  snr_db_range: [10.0, 25.0]               # the sweep overwrites the lower end
+
+# ---------------------------------------------------------------------------
+# The theta-spec. One entry per swept knob.
+# ---------------------------------------------------------------------------
+sweep:
+  sampler:
+    type: oat                              # one-at-a-time; a space-filling design
+    levels: 3                              # is a swapped sampler, not a new harness
+
+  knobs:
+    # Fibrosis burden, addressed as the TOP of the range the per-simulation
+    # draw samples from. Widening it raises the average burden across the bank
+    # while keeping healthy tissue represented, which is what a real corpus
+    # looks like — pinning it to one value would give every simulation the same
+    # burden and leave `fraction_healthy` alone deciding the class balance.
+    #
+    # role: nuisance, which surprises people. `label_param` means "the thing
+    # the classifier is meant to detect", and this study has no classifier in
+    # it — it is calibrating a generator against a real corpus. Density is the
+    # label axis for the CLASSIFIER's corpus and a realism knob for THIS one,
+    # and the role tag describes the study it appears in.
+    - path: substrate.density_range.high
+      bounds: [0.2, 0.5]                   # 0.5 is the ceiling for propagation
+      role: nuisance
+      nominal: 0.35
+      transform: identity
+
+    # Noise floor, addressed as the BOTTOM of the SNR range — the worst traces
+    # in the bank, which is where a distance metric usually lives. Raising it
+    # cleans up the tail without touching the best traces.
+    #
+    # Swept as an endpoint rather than a point on purpose: a bank whose traces
+    # all share one SNR has no spread, and the real corpus does, so the cell's
+    # distance would be dominated by that mismatch rather than by anything the
+    # screen varied.
+    - path: mix.snr_db_range.low
+      bounds: [5.0, 15.0]
+      role: nuisance
+      nominal: 10.0
+      transform: identity
+
+output:
+  classifier_bank: ../banks/screen.classifier.h5      # one pair for the sweep, not one per cell
+  description: >
+    OAT screen over fibrosis burden and noise floor, 3 levels each,
+    10 simulations per design cell.

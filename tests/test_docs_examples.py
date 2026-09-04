@@ -182,3 +182,57 @@ def test_documented_yaml_configs_load(tmp_path: Path) -> None:
 
         for build in builders:
             build(doc)
+
+
+# ---------------------------------------------------------------------------
+# Every shipped example, found by globbing rather than by being named
+# ---------------------------------------------------------------------------
+
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+
+
+def test_every_shipped_example_config_loads() -> None:
+    """Each file in ``examples/`` builds a typed config.
+
+    **Globbed, not listed.** Until this existed every example was loaded only by
+    a test that named it, so a newly shipped example got no coverage at all
+    until somebody remembered to add one — and an example that cannot load is
+    worse than no example, because it is the first thing a new user copies.
+
+    Dispatch is by top-level block, the same way the documented-config test
+    picks a builder, so a mix config and a generate config are each checked
+    against the builder that owns them.
+    """
+    configs = sorted(EXAMPLES_DIR.glob("*.yaml"))
+    assert configs, f"no example configs found in {EXAMPLES_DIR}"
+
+    for path in configs:
+        doc = load_yaml(path)
+        builders = [build for key, build in _YAML_BUILDERS.items() if key in doc]
+        assert builders, (
+            f"{path.name} matches no known config shape (expected a top-level "
+            f"{' or '.join(_YAML_BUILDERS)} key)."
+        )
+        for build in builders:
+            build(doc)
+
+
+def test_the_sweep_example_screens_the_two_knobs_it_documents() -> None:
+    """The shipped screen is the design it says it is.
+
+    Asserted on the built design rather than on the YAML text: a comment
+    claiming five cells is worth nothing if the sampler produces four.
+    """
+    doc = load_yaml(EXAMPLES_DIR / "synthegm_sweep.yaml")
+    cfg = build_generate_dataset_config(doc)
+
+    assert cfg.sweep is not None
+    assert [k.path for k in cfg.sweep.knobs] == [
+        "substrate.density_range.high",
+        "mix.snr_db_range.low",
+    ]
+    assert all(k.role == "nuisance" for k in cfg.sweep.knobs)
+
+    cells = cfg.sweep.design()
+    assert len(cells) == 5, "the header's cell count no longer matches the design"
+    assert sum(1 for c in cells if c.varied is None) == 1, "no all-nominal baseline"

@@ -26,6 +26,7 @@ from myocard_synthetic_egm_pipeline.simulate.dataset import (
     DatasetConfig,
     DatasetResult,
     generate_dataset,
+    generate_sweep,
 )
 from myocard_synthetic_egm_pipeline.simulate.label_policy import (
     GlobalDensityLabel,
@@ -89,6 +90,7 @@ __all__ = [
     "compute_phi_e",
     "downsample",
     "generate_dataset",
+    "generate_sweep",
     "random_edge",
     "run_single",
     "write_classifier_bank_from_dataset",

@@ -40,6 +40,12 @@ from myocard_synthetic_egm_pipeline.simulate.tuning import (
 )
 
 
+def _specs_of(run: TunableRun) -> SimulationSpecs:
+    """The fixture always builds specs; narrow once rather than at every use."""
+    assert run.specs is not None
+    return run.specs
+
+
 def _diffusion(spec: object) -> float:
     """Read a solved diffusion off either concrete cell model.
 
@@ -168,7 +174,7 @@ def test_a_categorical_read_returns_every_value_it_was_built_with() -> None:
     """
     for edge in ("top", "bottom", "left", "right"):
         run = specs_for(*AP_CARD)
-        run = replace(run, specs=replace(run.specs, activation=PlanarEdgeStimulus(edge=edge)))
+        run = replace(run, specs=replace(_specs_of(run), activation=PlanarEdgeStimulus(edge=edge)))
         assert get_value(run, "activation.edge") == edge
 
 
@@ -257,11 +263,11 @@ def test_the_electrode_rebuild_still_happens_on_a_write_that_is_allowed(
     ``geometry``, which does survive. Asserting on the array rather than the
     scalar is the point either way.
     """
-    before = specs.specs.electrodes.positions_mm.copy()
+    before = _specs_of(specs).electrodes.positions_mm.copy()
     updated = set_value(specs, "geometry.size_mm", 60.0)
 
-    assert isinstance(updated.specs.electrodes, CenteredGrid2D)
-    assert not np.allclose(before[:, :2], updated.specs.electrodes.positions_mm[:, :2])
+    assert isinstance(_specs_of(updated).electrodes, CenteredGrid2D)
+    assert not np.allclose(before[:, :2], _specs_of(updated).electrodes.positions_mm[:, :2])
 
 
 def test_growing_the_patch_recentres_the_electrodes(specs: TunableRun) -> None:
@@ -271,10 +277,10 @@ def test_growing_the_patch_recentres_the_electrodes(specs: TunableRun) -> None:
     them as surely as the grid's own layout does. A rule that rebuilt only after
     writes to ``electrodes.*`` would miss this one.
     """
-    before = specs.specs.electrodes.positions_mm.copy()
+    before = _specs_of(specs).electrodes.positions_mm.copy()
     updated = set_value(specs, "geometry.size_mm", 60.0)
 
-    assert not np.allclose(before[:, :2], updated.specs.electrodes.positions_mm[:, :2]), (
+    assert not np.allclose(before[:, :2], _specs_of(updated).electrodes.positions_mm[:, :2]), (
         "the grid was not recentred, so it now sits off-centre in the larger patch"
     )
 
@@ -385,7 +391,7 @@ def test_the_re_solved_card_also_replaces_the_spec_the_run_would_use(
     """
     updated = set_value(specs, "cell_model.targets.conduction_velocity_cm_s", 95.0)
     assert updated.card is not None
-    assert updated.specs.cell_model == updated.card.solved
+    assert _specs_of(updated).cell_model == updated.card.solved
 
 
 def test_a_re_solve_clears_the_stale_measurement(specs: TunableRun) -> None:
@@ -699,7 +705,7 @@ def test_writing_the_mesh_pitch_is_refused(specs: TunableRun) -> None:
 
 def test_reading_the_mesh_pitch_still_works(specs: TunableRun) -> None:
     """The pitch a simulation ran at is a fact worth recording."""
-    assert get_value(specs, "geometry.dr_mm") == pytest.approx(specs.specs.geometry.dr_mm)  # type: ignore[attr-defined]
+    assert get_value(specs, "geometry.dr_mm") == pytest.approx(specs.geometry.dr_mm)
 
 
 def test_the_mesh_pitch_is_not_offered_as_sweepable(specs: TunableRun) -> None:
